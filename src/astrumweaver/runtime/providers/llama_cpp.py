@@ -303,9 +303,21 @@ class HttpLlamaCppApi:
         timeout_seconds: float = 300.0,
         transport: httpx.AsyncBaseTransport | None = None,
         api_key: str | None = None,
+        unix_socket_path: str | None = None,
     ) -> None:
         if api_key is not None and (not isinstance(api_key, str) or not api_key):
             raise ValueError("llama.cpp client API key must be nonempty")
+        if unix_socket_path is not None:
+            if (
+                not Path(unix_socket_path).is_absolute()
+                or not unix_socket_path.endswith(".sock")
+                or api_key is None
+                or transport is not None
+            ):
+                raise ValueError("private Unix socket requires absolute .sock path and an owned bearer")
+            # A Worker-private UDS transport has no attacker-raceable TCP port.
+            # It is protected by the owning temporary directory's mode 0700.
+            transport = httpx.AsyncHTTPTransport(uds=unix_socket_path)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=timeout_seconds,
@@ -500,10 +512,18 @@ class LlamaCppSubprocessController:
         embeddings: bool = False,
         pooling: str | None = None,
         api_key_file: str | None = None,
+        unix_socket_path: str | None = None,
     ) -> None:
         if api_key_file is not None and not Path(api_key_file).is_absolute():
             raise ValueError("llama.cpp API-key file must be absolute")
+        if unix_socket_path is not None and (
+            not Path(unix_socket_path).is_absolute()
+            or not unix_socket_path.endswith(".sock")
+            or api_key_file is None
+        ):
+            raise ValueError("private native Unix socket requires owned absolute path and key file")
         self.api_key_file = api_key_file
+        self.unix_socket_path = unix_socket_path
         self.executable = executable
         self.base_url = base_url
         self.model_ref = model_ref
@@ -528,12 +548,17 @@ class LlamaCppSubprocessController:
         assert parsed.hostname is not None
         assert parsed.port is not None
 
+        # A composite runtime binds a random, Worker-owned Unix-domain socket
+        # inside its private 0700 directory. It must NOT listen on the public
+        # loopback port carried in the backwards-compatible base_url manifest.
+        listen_args = (
+            ["--host", self.unix_socket_path]
+            if self.unix_socket_path is not None
+            else ["--host", parsed.hostname, "--port", str(parsed.port)]
+        )
         args: list[str] = [
             self.executable,
-            "--host",
-            parsed.hostname,
-            "--port",
-            str(parsed.port),
+            *listen_args,
             "--model",
             self.model_ref,
             "--alias",

@@ -419,6 +419,7 @@ class DualLlamaCppProvider:
     def _child(
         self, context: RuntimeCompatibilityContext, role: str,
         *, api_key: str | None = None, api_key_file: str | None = None,
+        unix_socket_path: str | None = None,
     ) -> tuple[LlamaCppProvider, RuntimeCompatibilityContext]:
         model = (
             self.config.embedding_model if role == "embedding" else self.config.decision_model
@@ -427,18 +428,19 @@ class DualLlamaCppProvider:
             self.config.embedding_provider if role == "embedding"
             else self.config.decision_provider
         )
-        if (api_key is None) != (api_key_file is None):
-            raise ValueError("private inference authentication must be complete")
+        if not ((api_key is None) == (api_key_file is None) == (unix_socket_path is None)):
+            raise ValueError("private inference authentication and UDS socket must be complete")
         if api_key is not None:
             # Never serialize ephemeral bearer secrets into the runtime manifest.
             provider = LlamaCppProvider(
                 child_config,
                 api_factory=lambda url: HttpLlamaCppApi(
                     url, timeout_seconds=child_config.request_timeout_seconds,
-                    api_key=api_key,
+                    api_key=api_key, unix_socket_path=unix_socket_path,
                 ),
                 process_factory=lambda **kwargs: LlamaCppSubprocessController(
                     **kwargs, api_key_file=api_key_file,
+                    unix_socket_path=unix_socket_path,
                 ),
             )
         else:
@@ -531,11 +533,19 @@ class DualLlamaCppProvider:
 
             embed_key, embed_file = key_for("embedding")
             decision_key, decision_file = key_for("decision")
+            # The socket paths live inside owned_auth's mode-0700 directory.
+            # A different unprivileged UID cannot pre-bind, race, or connect
+            # to them; unlike fixed TCP loopback ports there is no local
+            # listener to impersonate during authenticated /health probes.
+            embed_sock = str(Path(owned_auth.name) / "embedding.sock")
+            decision_sock = str(Path(owned_auth.name) / "decision.sock")
             embedding_provider, embed_context = self._child(
                 context, "embedding", api_key=embed_key, api_key_file=embed_file,
+                unix_socket_path=embed_sock,
             )
             decision_provider, decision_context = self._child(
                 context, "decision", api_key=decision_key, api_key_file=decision_file,
+                unix_socket_path=decision_sock,
             )
             embedding_setup = embedding_provider.setup_intent(embed_context)
             decision_setup = decision_provider.setup_intent(decision_context)

@@ -16,14 +16,23 @@ bypass is introduced. Job execution dispatches by exact capability:
 - `text.embed` → Qwen3-Embedding-0.6B Q8_0, `--embeddings --pooling last`
 - `decision.system_one` → LiquidAI d1-3B Q4_K_M, native decision head
 
-Each child uses a distinct **loopback port without embedded URL credentials**,
-pinned GGUF artifact SHA-256, an absolute Nix-store
+Each child uses a distinct Unix-domain socket within a Worker-owned
+mode-0700 temporary directory rather than a TCP listener in the shared
+network namespace. The two existing `base_url` loopback-port settings remain
+backwards-compatible logical endpoints in the reviewed manifest; they are
+**not TCP listeners** in dual-runtime mode. The Worker uses authenticated
+HTTPX over `AsyncHTTPTransport(uds=...)`, and the native pinned llama.cpp
+server listens with `--host /private/child.sock`. Another Unix UID cannot
+pre-bind or connect to the socket through its protected parent directory.
+Both children retain pinned GGUF SHA-256, the exact Nix-store
 `astrumweaver-llama-server` wrapper, full GPU offload (`fit=off`), offline
 mode and no web UI.
 
-**Loopback alone is not authorization.** Each native child has its own
-random ephemeral bearer token, stored in a Worker-owned mode-0700 temporary
-directory as a mode-0600 API-key file. The pinned native server receives
+**Local transport alone is not authorization.** Each native child has its own
+random ephemeral bearer token, stored in the same Worker-owned mode-0700
+temporary directory as a mode-0600 API-key file. Socket names are random
+per Worker instance and exist only in that 0700 directory.
+The pinned native server receives
 only the **key-file pathname** through its CLI option (`--api-key-file`),
 not the secret in process argv or the Control/runtime/serving manifests.
 `HttpLlamaCppApi` sends that child's token in `Authorization: Bearer`
@@ -33,12 +42,12 @@ Worker-side HTTP client disables environment-derived proxy settings
 proxy cannot receive the child's bearer or inference data. This also applies
 when `NO_PROXY` is absent. Unauthenticated legacy single-model clients
 retain their existing proxy-environment behavior for compatibility.
-An unprivileged local account without
-access to the private key file cannot use the model inference endpoints
-even if it can connect to the loopback socket. Every Worker instance
-generates fresh distinct tokens, removed after both owned native children
-are released. Production must use a dedicated Worker service UID rather
-than share the same UID with untrusted local accounts.
+An unprivileged local account without access to the private directory
+cannot connect to or impersonate its child Unix socket and cannot read
+the private key file. Every Worker instance generates fresh distinct tokens
+and socket paths, removed after both owned native children are released.
+Production must use a dedicated Worker service UID rather than share the
+same UID with untrusted local accounts.
 The pinned wrapper invokes the native inference process with `env -i`,
 without inherited Worker/Client bearer or cloud credentials.
 Operator-approved composite model identity is:
@@ -107,7 +116,7 @@ The trusted wrapper itself starts in the Worker's ambient environment and
 therefore remains within the operator trust boundary.
 
 Accepted launchers must be pinned top-level Nix store outputs. Both children
-must pass owned health and model alias checks before Worker admission. A dual Worker must have a reviewed serving manifest
+must pass authenticated private-UDS health and model alias checks before Worker admission. A dual Worker must have a reviewed serving manifest
 with exactly two contracts (one embedding operation and one decision operation)
 and the matching pinned semantic IDs; extra contracts fail closed.
 If one child fails during startup, stop both. Retain the original startup
