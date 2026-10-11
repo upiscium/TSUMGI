@@ -32,10 +32,6 @@ python312Packages.buildPythonPackage {
     httpx
     pydantic
     uvicorn
-    # The installed Nix console scripts retain this package's interpreter,
-    # even when a Control buildEnv adds psycopg to its separate Python env.
-    # Control/migrate must therefore import psycopg from this exact closure.
-    psycopg
   ];
 
   pythonImportsCheck = [

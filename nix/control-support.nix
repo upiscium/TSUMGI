@@ -1,10 +1,7 @@
-{ lib, buildEnv, stdenvNoCC, python312, python312Packages, astrumweaver, integration }:
+{ lib, buildEnv, stdenvNoCC, callPackage, astrumweaver, integration }:
 
 let
-  pythonEnv = python312.withPackages (_: [
-    astrumweaver
-    python312Packages.psycopg
-  ]);
+  controlCli = callPackage ./control-cli-env.nix { inherit astrumweaver; };
 
   migrations = stdenvNoCC.mkDerivation {
     pname = "astrumweaver-control-assets";
@@ -20,7 +17,7 @@ in
 buildEnv {
   name = "astrumweaver-control-support-0.1.0-dev";
   paths = [
-    pythonEnv
+    controlCli
     migrations
     integration
   ];
