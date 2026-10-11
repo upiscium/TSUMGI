@@ -1144,3 +1144,69 @@ async def test_streaming_body_iterator_close_cancels_inflight_job():
     await anext(iterator)
     await iterator.aclose()
     assert repository.get_job(job.job_id).status is JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_streaming_body_close_before_first_iteration_cancels_job():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository,
+        ChatProfileCatalog((gateway,)),
+        poll_interval_seconds=0.001,
+    )
+    iterator = await service.stream(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "close-before-start"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    )
+    job = repository.list_jobs()[0]
+    assert job.status is JobStatus.QUEUED
+    await iterator.aclose()
+    assert repository.get_job(job.job_id).status is JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_asgi_streaming_response_closes_owning_stream_before_first_event():
+    from astrumweaver.gateway.api import _OwnedChatStreamingResponse
+
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository,
+        ChatProfileCatalog((gateway,)),
+        poll_interval_seconds=0.001,
+    )
+    iterator = await service.stream(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "asgi-close"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    )
+    job = repository.list_jobs()[0]
+    response = _OwnedChatStreamingResponse(iterator, media_type="text/event-stream")
+
+    async def broken_send(_message):
+        raise OSError("simulated broken client connection")
+
+    async def no_messages():
+        return {"type": "http.disconnect"}
+
+    from starlette.requests import ClientDisconnect
+
+    with pytest.raises(ClientDisconnect):
+        await response(
+            {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}},
+            no_messages,
+            broken_send,
+        )
+    assert repository.get_job(job.job_id).status is JobStatus.CANCELLED
