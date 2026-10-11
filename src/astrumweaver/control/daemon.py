@@ -10,6 +10,15 @@ from typing import Any
 
 import uvicorn
 
+from ..gateway.api import create_chat_router, load_chat_catalog
+from ..gateway.embedding_api import (
+    create_embedding_router,
+    load_embedding_catalog,
+)
+from ..gateway.decision_api import (
+    create_decision_router,
+    load_decision_catalog,
+)
 from .api import create_app
 from .auth import ClientAuthMode
 from .postgres import PostgresControlRepository
@@ -23,6 +32,9 @@ def _load_toml(path: str) -> dict[str, Any]:
 def build_app(config_path: str):
     config = _load_toml(config_path)
     section = dict(config.get("control") or {})
+    chat_section = dict(config.get("chat_gateway") or {})
+    embedding_section = dict(config.get("embedding_gateway") or {})
+    decision_section = dict(config.get("decision_gateway") or {})
 
     database_url = os.environ.get("ASTRUMWEAVER_DATABASE_URL", "")
     client_token = os.environ.get("ASTRUMWEAVER_CLIENT_TOKEN", "")
@@ -53,14 +65,101 @@ def build_app(config_path: str):
         database_url,
         worker_ttl_seconds=int(section.get("worker_ttl_seconds", 60)),
         lease_seconds=int(section.get("lease_seconds", 300)),
+        event_max_count=int(section.get("event_max_count", 4096)),
+        event_max_payload_bytes=int(
+            section.get("event_max_payload_bytes", 65536)
+        ),
+        event_max_total_bytes=int(
+            section.get("event_max_total_bytes", 4 * 1024 * 1024)
+        ),
+        event_max_read=int(section.get("event_max_read", 512)),
     )
-    return create_app(
+    app = create_app(
         repository,
         client_token=client_token or None,
         worker_token=worker_token,
         client_auth=client_auth,
         maintenance_interval_seconds=float(section.get("maintenance_interval_seconds", 5.0)),
     )
+
+    enabled = chat_section.get("enabled", False)
+    if type(enabled) is not bool:
+        raise RuntimeError("chat_gateway.enabled must be boolean")
+    if enabled:
+        catalog_path = str(chat_section.get("catalog", "")).strip()
+        if not catalog_path:
+            raise RuntimeError(
+                "chat_gateway.catalog is required when chat gateway is enabled"
+            )
+        catalog = load_chat_catalog(catalog_path)
+        app.include_router(
+            create_chat_router(
+                repository,
+                catalog,
+                client_auth=client_auth,
+                client_token=client_token or None,
+                poll_interval_seconds=float(
+                    chat_section.get("poll_interval_seconds", 0.05)
+                ),
+            )
+        )
+
+    embedding_enabled = embedding_section.get("enabled", False)
+    if type(embedding_enabled) is not bool:
+        raise RuntimeError("embedding_gateway.enabled must be boolean")
+    if embedding_enabled:
+        catalog_path = str(
+            embedding_section.get("catalog", "")
+        ).strip()
+        if not catalog_path:
+            raise RuntimeError(
+                "embedding_gateway.catalog is required when "
+                "embedding gateway is enabled"
+            )
+        embedding_catalog = load_embedding_catalog(catalog_path)
+        app.include_router(
+            create_embedding_router(
+                repository,
+                embedding_catalog,
+                client_auth=client_auth,
+                client_token=client_token or None,
+                poll_interval_seconds=float(
+                    embedding_section.get(
+                        "poll_interval_seconds",
+                        0.05,
+                    )
+                ),
+            )
+        )
+
+    decision_enabled = decision_section.get("enabled", False)
+    if type(decision_enabled) is not bool:
+        raise RuntimeError("decision_gateway.enabled must be boolean")
+    if decision_enabled:
+        catalog_path = str(
+            decision_section.get("catalog", "")
+        ).strip()
+        if not catalog_path:
+            raise RuntimeError(
+                "decision_gateway.catalog is required when "
+                "decision gateway is enabled"
+            )
+        decision_catalog = load_decision_catalog(catalog_path)
+        app.include_router(
+            create_decision_router(
+                repository,
+                decision_catalog,
+                client_auth=client_auth,
+                client_token=client_token or None,
+                poll_interval_seconds=float(
+                    decision_section.get(
+                        "poll_interval_seconds",
+                        0.05,
+                    )
+                ),
+            )
+        )
+    return app
 
 
 def main() -> None:

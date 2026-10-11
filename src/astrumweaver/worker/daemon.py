@@ -10,10 +10,20 @@ import os
 import signal
 import tomllib
 from typing import Any
+from uuid import uuid4
 
 import uvicorn
 
 from ..contracts import AcceleratorDevice, ResourceShape, WorkerSpec
+from ..serving import (
+    ServingDeploymentDeclaration,
+    WorkerServingAdvertisement,
+)
+from ..gateway.embedding import EMBEDDING_OPERATION_SCHEMA
+from ..gateway.decision import DECISION_OPERATION_SCHEMA
+from ..runtime.providers.dual_llama_cpp import (
+    DUAL_LLAMA_CPP_PROVIDER_ID, DualLlamaCppProviderConfig,
+)
 from ..runtime import (
     RuntimeDeploymentSpec,
     RuntimeLifecycleManager,
@@ -28,6 +38,7 @@ from .runtime import (
     load_executor,
     require_exact_gpu_set,
     require_executor_capabilities,
+    require_executor_serving_features,
     require_isolated_gpu_access,
 )
 
@@ -51,6 +62,57 @@ def _load_runtime_deployment(path: str) -> RuntimeDeploymentSpec:
         return RuntimeDeploymentSpec.from_dict(value)
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("runtime deployment manifest is invalid") from exc
+
+
+def _load_serving_deployment(path: str) -> ServingDeploymentDeclaration:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("cannot load serving deployment manifest") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("serving deployment manifest must contain an object")
+    try:
+        return ServingDeploymentDeclaration.from_dict(value)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("serving deployment manifest is invalid") from exc
+
+
+def _build_serving_advertisement(
+    declaration: ServingDeploymentDeclaration,
+    *,
+    spec: WorkerSpec,
+    runtime_deployment: RuntimeDeploymentSpec | None,
+) -> WorkerServingAdvertisement:
+    if (
+        runtime_deployment is not None
+        and declaration.deployment.provider_id != runtime_deployment.provider_id
+    ):
+        raise RuntimeError(
+            "serving deployment provider does not match runtime deployment"
+        )
+    if runtime_deployment is not None and runtime_deployment.provider_id == DUAL_LLAMA_CPP_PROVIDER_ID:
+        frozen = DualLlamaCppProviderConfig(**dict(runtime_deployment.provider_config))
+        if declaration.deployment.model_artifact_sha256 != "sha256:" + frozen.bundle_sha256:
+            raise RuntimeError("dual serving declaration does not bind both pinned models")
+        observed_contracts = [
+            (contract.capability, contract.operation_schema, contract.semantic_revision)
+            for contract in declaration.contracts
+        ]
+        expected_contracts = {
+            ("text.embed", EMBEDDING_OPERATION_SCHEMA, frozen.embedding_space_id),
+            ("decision.system_one", DECISION_OPERATION_SCHEMA, frozen.decision_semantics_id),
+        }
+        if len(observed_contracts) != 2 or set(observed_contracts) != expected_contracts:
+            raise RuntimeError("dual serving contracts do not match pinned child semantics")
+    contract_capabilities = frozenset(
+        contract.capability for contract in declaration.contracts
+    )
+    if not contract_capabilities.issubset(spec.capabilities):
+        raise RuntimeError(
+            "serving deployment capability is not advertised by Worker"
+        )
+    return declaration.advertisement(epoch=str(uuid4()))
 
 
 def _build_spec(section: dict[str, Any]) -> WorkerSpec:
@@ -130,14 +192,34 @@ def _run_gpu_preflight(
     )
 
 
+def _require_dual_serving_manifest(
+    deployment: RuntimeDeploymentSpec,
+    declaration: ServingDeploymentDeclaration | None,
+) -> None:
+    if (getattr(deployment, "provider_id", None) == DUAL_LLAMA_CPP_PROVIDER_ID
+            and declaration is None):
+        raise RuntimeError("dual runtime requires a reviewed serving manifest")
+
+
+def _require_runtime_concurrency(
+    deployment: RuntimeDeploymentSpec,
+    max_concurrency: int,
+) -> None:
+    if (getattr(deployment, "provider_id", None) == DUAL_LLAMA_CPP_PROVIDER_ID
+            and max_concurrency != 1):
+        raise RuntimeError("dual runtime requires max_concurrency=1")
+
+
 async def run_worker(
     config_path: str,
     runtime_manifest_path: str | None = None,
+    serving_manifest_path: str | None = None,
 ) -> None:
     config = _load_toml(config_path)
     worker_section = dict(config.get("worker") or {})
     executor_section = dict(config.get("executor") or {})
     runtime_section = dict(config.get("runtime") or {})
+    serving_section = dict(config.get("serving") or {})
 
     required = ("id", "class", "control_url")
     missing = [name for name in required if not worker_section.get(name)]
@@ -154,6 +236,16 @@ async def run_worker(
         raise RuntimeError(
             "configure exactly one of executor.factory or runtime.manifest"
         )
+    serving_manifest = (
+        str(serving_manifest_path).strip()
+        if serving_manifest_path is not None
+        else str(serving_section.get("manifest", "")).strip()
+    )
+    serving_declaration = (
+        None
+        if not serving_manifest
+        else _load_serving_deployment(serving_manifest)
+    )
 
     worker_token = os.environ.get("ASTRUMWEAVER_WORKER_TOKEN", "")
     if not worker_token:
@@ -170,10 +262,15 @@ async def run_worker(
     )
     runtime_manager: RuntimeLifecycleManager | None = None
     supervisor: RuntimeHealthSupervisor | None = None
+    deployment: RuntimeDeploymentSpec | None = None
 
     try:
         if runtime_manifest:
             deployment = _load_runtime_deployment(runtime_manifest)
+            _require_runtime_concurrency(
+                deployment, int(worker_section.get("max_concurrency", 1)),
+            )
+            _require_dual_serving_manifest(deployment, serving_declaration)
             managed_runtime = managed_runtime_from_deployment(
                 deployment,
                 worker=spec,
@@ -198,6 +295,17 @@ async def run_worker(
             )
 
         require_executor_capabilities(executor, spec.capabilities)
+        if serving_declaration is not None:
+            require_executor_serving_features(executor, serving_declaration)
+        serving = (
+            None
+            if serving_declaration is None
+            else _build_serving_advertisement(
+                serving_declaration,
+                spec=spec,
+                runtime_deployment=deployment,
+            )
+        )
 
         worker_runtime = WorkerRuntime(
             spec=spec,
@@ -205,6 +313,7 @@ async def run_worker(
             executor=executor,
             client=client,
             runtime_supervisor=supervisor,
+            serving=serving,
             poll_interval_seconds=float(
                 worker_section.get("poll_interval_seconds", 1.0)
             ),
@@ -348,11 +457,19 @@ def main() -> None:
             "[runtime].manifest in worker configuration"
         ),
     )
+    parser.add_argument(
+        "--serving-manifest",
+        help=(
+            "optional reviewed serving deployment manifest; overrides "
+            "[serving].manifest in worker configuration"
+        ),
+    )
     args = parser.parse_args()
     asyncio.run(
         run_worker(
             args.config,
             runtime_manifest_path=args.runtime_manifest,
+            serving_manifest_path=args.serving_manifest,
         )
     )
 

@@ -19,6 +19,20 @@ __all__ = [
     "RuntimeDeploymentAcceptanceRunner",
     "render_runtime_deployment_markdown",
     "write_runtime_deployment_evidence",
+    "OpenCodeChatAcceptanceError",
+    "OpenCodeChatAcceptanceEvidence",
+    "OpenCodeChatAcceptanceRunner",
+    "render_opencode_chat_markdown",
+    "write_opencode_chat_evidence",
+    "CodingPilotError",
+    "CodingPilotEvidence",
+    "CodingPilotLaneSummary",
+    "CodingPilotRun",
+    "CodingPilotScope",
+    "CodingPilotTask",
+    "build_coding_pilot_evidence",
+    "render_coding_pilot_markdown",
+    "write_coding_pilot_evidence",
 ]
 
 from .runtime_deployment import (
@@ -27,4 +41,25 @@ from .runtime_deployment import (
     RuntimeDeploymentAcceptanceRunner,
     render_runtime_deployment_markdown,
     write_runtime_deployment_evidence,
+)
+
+
+from .opencode_chat import (
+    OpenCodeChatAcceptanceError,
+    OpenCodeChatAcceptanceEvidence,
+    OpenCodeChatAcceptanceRunner,
+    render_opencode_chat_markdown,
+    write_opencode_chat_evidence,
+)
+
+from .coding_pilot import (
+    CodingPilotError,
+    CodingPilotEvidence,
+    CodingPilotLaneSummary,
+    CodingPilotRun,
+    CodingPilotScope,
+    CodingPilotTask,
+    build_evidence as build_coding_pilot_evidence,
+    render_coding_pilot_markdown,
+    write_coding_pilot_evidence,
 )

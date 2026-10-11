@@ -54,6 +54,26 @@ against the same TSUMGI candidate as the installer. A different
 candidate upgrade, and profile rollback are documented under
 [Installation — RuntimeBackend Nix profile](installation.md#runtimebackend-nix-profile).
 
+## Native decision mode
+
+The provider can be configured with `decision = true` for a deployment whose
+GGUF model exposes llama.cpp's native System-One decision head.
+
+Decision mode is mutually exclusive with embedding mode and does not enable
+chat/Jinja templates. It does not require a separate llama-server CLI switch;
+llama.cpp discovers the decision head from model metadata.
+
+AstrumWeaver does not trust configuration alone. After startup, and again in
+runtime health checks, the provider inspects `/v1/models` and requires the
+configured alias to advertise `architecture.output_modalities` containing
+`decisions`. A normal generation model therefore cannot become Ready as a
+`decision.system_one` Worker merely because its Worker configuration claims the
+capability.
+
+Provider execution uses `/v1/systemone`. Scores are exposed only through the
+reviewed #96 decision adapter and retain its explicit uncalibrated,
+choice-set-probability semantics.
+
 ## Model format
 
 The initial provider requires:
@@ -84,8 +104,15 @@ The server exposes OpenAI-compatible endpoints used by the generic executor:
 
 ```text
 /v1/chat/completions
+/v1/chat/completions/input_tokens
 /v1/completions
 ```
+
+The Stage A #94 chat adapter uses the input-token endpoint before inference so
+the actual deployed Jinja/chat template, message history and tool schemas are
+included in context accounting. It rejects the request before generation if
+actual input tokens or the reserved output budget exceed the resolved #93
+serving limits.
 
 Readiness is checked with:
 
@@ -102,6 +129,40 @@ The configured model alias is verified through:
 The first implementation refuses to attach to an already-running external llama.cpp server on the managed endpoint.
 
 #31 may replace the subprocess controller with deployment-specific NixOS/systemd service controllers without changing the provider/executor contracts.
+
+## Dedicated embedding mode
+
+#95 adds an explicit llama.cpp embedding deployment mode. It is not enabled by
+default and is mutually exclusive with the current chat-template/tool mode.
+
+Provider configuration freezes:
+
+```text
+embeddings = true
+pooling = "last"   # first accepted retrieval profile
+```
+
+The managed process adds:
+
+```text
+--embeddings
+--pooling last
+```
+
+and the executor advertises only:
+
+```text
+text.embed
+```
+
+rather than `llm.chat` / `text.generate`. The first adapter supports vector
+pooling policies `mean`, `cls`, and `last`; an exact serving profile also
+binds the selected pooling policy and `normalization-l2` as serving features.
+
+The adapter calls the local `/tokenize` endpoint to recheck per-item and
+aggregate token bounds, then `/v1/embeddings` for the vector batch. Returned
+vectors are accepted only when count, input ordering, dimensions and finite
+components match the immutable embedding-space contract.
 
 ## GPU identity
 
@@ -331,6 +392,35 @@ The generic payload supplies fields such as:
   ]
 }
 ```
+
+### Structured tools
+
+A llama.cpp runtime may advertise the #93 `tools` serving feature only when
+provider configuration enables:
+
+```text
+jinja = true
+```
+
+AstrumWeaver then starts `llama-server` with `--jinja`. An optional reviewed
+template path:
+
+```text
+chat_template_file = "/templates/tool-use.jinja"
+```
+
+is passed as `--chat-template-file` and is rejected unless Jinja mode is
+enabled. The corresponding serving `DeploymentIdentity` must also bind an
+immutable `template_artifact_sha256` before the Stage A gateway accepts a
+tools-enabled profile.
+
+The Worker daemon compares every serving-contract feature with the executor's
+locally proven `serving_features` before registration. Therefore a manifest
+cannot advertise `tools` merely because the capability is named `llm.chat`.
+
+Stage A accepts `parallel_tool_calls=false` but deliberately rejects
+`parallel_tool_calls=true` until an exact model/template pair has separate
+parallel-call evidence.
 
 ### Text generation
 

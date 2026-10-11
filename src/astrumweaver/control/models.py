@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from ..contracts import JobRequirements, WorkerSpec
 from ..execution import JobResult
+from ..serving import ServingJobBinding, WorkerServingAdvertisement
 
 
 def utc_now() -> datetime:
@@ -39,10 +40,21 @@ class WorkerRegistration:
     spec: WorkerSpec
     max_concurrency: int = 1
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    serving: WorkerServingAdvertisement | None = None
 
     def __post_init__(self) -> None:
         if self.max_concurrency < 1:
             raise ValueError("max_concurrency must be positive")
+        if self.serving is not None:
+            if not isinstance(self.serving, WorkerServingAdvertisement):
+                raise TypeError("serving must be WorkerServingAdvertisement")
+            advertised = frozenset(
+                contract.capability for contract in self.serving.contracts
+            )
+            if not advertised.issubset(self.spec.capabilities):
+                raise ValueError(
+                    "serving contract capability must be advertised by WorkerSpec"
+                )
         object.__setattr__(self, "metadata", _mapping(self.metadata))
 
 
@@ -51,9 +63,15 @@ class WorkerHeartbeat:
     state: WorkerState | None = None
     active_job_id: str | None = None
     lease_token: str | None = None
+    runtime_instance_epoch: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if self.runtime_instance_epoch is not None:
+            value = self.runtime_instance_epoch.strip()
+            if not value:
+                raise ValueError("runtime_instance_epoch must not be blank")
+            object.__setattr__(self, "runtime_instance_epoch", value)
         object.__setattr__(self, "metadata", _mapping(self.metadata))
 
 
@@ -66,12 +84,17 @@ class WorkerRecord:
     registered_at: datetime
     last_seen_at: datetime
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    serving: WorkerServingAdvertisement | None = None
 
     def __post_init__(self) -> None:
         if self.max_concurrency < 1:
             raise ValueError("max_concurrency must be positive")
         if self.active_jobs < 0:
             raise ValueError("active_jobs must not be negative")
+        if self.serving is not None and not isinstance(
+            self.serving, WorkerServingAdvertisement
+        ):
+            raise TypeError("serving must be WorkerServingAdvertisement")
         object.__setattr__(self, "metadata", _mapping(self.metadata))
 
     @property
@@ -88,6 +111,8 @@ class JobSubmission:
     max_attempts: int = 3
     idempotency_key: str | None = None
     available_at: datetime | None = None
+    deadline_at: datetime | None = None
+    serving: ServingJobBinding | None = None
 
     def __post_init__(self) -> None:
         capability = self.capability.strip()
@@ -99,8 +124,66 @@ class JobSubmission:
             raise ValueError("idempotency_key must not be blank")
         if self.available_at is not None and self.available_at.tzinfo is None:
             raise ValueError("available_at must be timezone-aware")
+        if self.deadline_at is not None and self.deadline_at.tzinfo is None:
+            raise ValueError("deadline_at must be timezone-aware")
+        if (
+            self.available_at is not None
+            and self.deadline_at is not None
+            and self.available_at >= self.deadline_at
+        ):
+            raise ValueError("available_at must be earlier than deadline_at")
+        if self.deadline_at is not None and self.serving is None:
+            raise ValueError("deadline_at is only supported for serving jobs")
+        if self.serving is not None:
+            if not isinstance(self.serving, ServingJobBinding):
+                raise TypeError("serving must be ServingJobBinding")
+            if self.serving.capability != capability:
+                raise ValueError("serving capability must match job capability")
+            if self.deadline_at is None:
+                raise ValueError("serving jobs require deadline_at")
         object.__setattr__(self, "capability", capability)
         object.__setattr__(self, "payload", _mapping(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class JobEventRecord:
+    job_id: str
+    attempt: int
+    sequence: int
+    worker_id: str
+    runtime_instance_epoch: str | None
+    kind: str
+    payload: Mapping[str, Any]
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        job_id = self.job_id.strip()
+        worker_id = self.worker_id.strip()
+        kind = self.kind.strip()
+        if not job_id:
+            raise ValueError("job_id must not be blank")
+        if type(self.attempt) is not int or self.attempt < 1:
+            raise ValueError("attempt must be a positive integer")
+        if type(self.sequence) is not int or self.sequence < 1:
+            raise ValueError("sequence must be a positive integer")
+        if not worker_id:
+            raise ValueError("worker_id must not be blank")
+        if self.runtime_instance_epoch is not None:
+            epoch = self.runtime_instance_epoch.strip()
+            if not epoch:
+                raise ValueError("runtime_instance_epoch must not be blank")
+            object.__setattr__(self, "runtime_instance_epoch", epoch)
+        if not kind:
+            raise ValueError("kind must not be blank")
+        if not isinstance(self.created_at, datetime):
+            raise TypeError("created_at must be a datetime")
+        if self.created_at.tzinfo is None:
+            raise ValueError("created_at must be timezone-aware")
+        object.__setattr__(self, "job_id", job_id)
+        object.__setattr__(self, "worker_id", worker_id)
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "payload", _mapping(self.payload))
+        object.__setattr__(self, "created_at", self.created_at.astimezone(UTC))
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,9 +201,14 @@ class JobRecord:
     created_at: datetime
     available_at: datetime
     updated_at: datetime
+    deadline_at: datetime | None = None
+    serving: ServingJobBinding | None = None
     assigned_worker_id: str | None = None
     lease_token: str | None = None
     lease_expires_at: datetime | None = None
+    claimed_deployment_revision: str | None = None
+    claimed_serving_contract_revision: str | None = None
+    claimed_runtime_instance_epoch: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     result: JobResult | None = None
@@ -129,6 +217,49 @@ class JobRecord:
     def __post_init__(self) -> None:
         if self.sequence < 1:
             raise ValueError("sequence must be positive")
+        if self.deadline_at is not None and self.deadline_at.tzinfo is None:
+            raise ValueError("deadline_at must be timezone-aware")
+        if self.serving is not None and not isinstance(self.serving, ServingJobBinding):
+            raise TypeError("serving must be ServingJobBinding")
+        if self.serving is None:
+            if self.deadline_at is not None:
+                raise ValueError("deadline_at requires a serving binding")
+        else:
+            if self.deadline_at is None:
+                raise ValueError("serving jobs require deadline_at")
+            if self.serving.capability != self.capability:
+                raise ValueError("serving binding capability must match job capability")
+
+        claimed = (
+            self.claimed_deployment_revision,
+            self.claimed_serving_contract_revision,
+            self.claimed_runtime_instance_epoch,
+        )
+        any_claimed = any(value is not None for value in claimed)
+        all_claimed = all(value is not None for value in claimed)
+        if any_claimed and not all_claimed:
+            raise ValueError("claimed serving identity fields must be all set or all unset")
+        if all_claimed:
+            if self.serving is None:
+                raise ValueError("claimed serving identity requires a serving binding")
+            if self.claimed_deployment_revision != self.serving.deployment_revision:
+                raise ValueError("claimed deployment revision must match serving binding")
+            if (
+                self.claimed_serving_contract_revision
+                != self.serving.serving_contract_revision
+            ):
+                raise ValueError(
+                    "claimed serving contract revision must match serving binding"
+                )
+            if not str(self.claimed_runtime_instance_epoch).strip():
+                raise ValueError("claimed runtime instance epoch must not be blank")
+        if (
+            self.status is JobStatus.RUNNING
+            and self.serving is not None
+            and not all_claimed
+        ):
+            raise ValueError("running serving job requires claimed attempt identity")
+
         object.__setattr__(self, "payload", _mapping(self.payload))
         if self.error is not None:
             object.__setattr__(self, "error", _mapping(self.error))
@@ -138,6 +269,7 @@ class JobRecord:
 
 
 __all__ = [
+    "JobEventRecord",
     "JobRecord",
     "JobStatus",
     "JobSubmission",

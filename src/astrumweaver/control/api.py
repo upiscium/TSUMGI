@@ -16,13 +16,22 @@ from ..control.models import WorkerState
 from ..control.repository import (
     ConflictError,
     ControlRepository,
+    DeadlineExceededError,
+    EventBufferFull,
+    NoCompatibleDeployment,
     NotFoundError,
+    OverloadedError,
     RepositoryError,
     StorageUnavailable,
 )
 from ..control.serde import job_result_from_dict
 from ..transport import (
+    JOB_EVENTS_EXTENSION,
     PROTOCOL_VERSION,
+    SERVING_EXTENSION,
+    _extensions,
+    _require_job_events_extension,
+    job_event_record_to_dict,
     job_record_to_dict,
     job_submission_from_dict,
     worker_heartbeat_from_dict,
@@ -60,6 +69,25 @@ async def _json_v1(request: Request) -> dict[str, Any]:
     return body
 
 
+async def _optional_json_v1(request: Request) -> dict[str, Any]:
+    if not await request.body():
+        return {}
+    return await _json_v1(request)
+
+
+def _serving_epoch(body: dict[str, Any]) -> str | None:
+    extensions = _extensions(body)
+    raw = body.get("runtime_instance_epoch")
+    if raw is None:
+        return None
+    if SERVING_EXTENSION not in extensions:
+        raise ValueError("serving-bindings-v1 extension is required")
+    epoch = str(raw).strip()
+    if not epoch:
+        raise ValueError("runtime_instance_epoch must not be blank")
+    return epoch
+
+
 def create_app(
     repository: ControlRepository,
     *,
@@ -86,6 +114,7 @@ def create_app(
             await asyncio.sleep(maintenance_interval_seconds)
             try:
                 await asyncio.to_thread(repository.expire_stale_workers)
+                await asyncio.to_thread(repository.expire_deadline_jobs)
                 await asyncio.to_thread(repository.recover_expired_jobs)
             except Exception:
                 # Repository/API calls still expose current storage failures.
@@ -123,6 +152,24 @@ def create_app(
     async def not_found_handler(_: Request, exc: NotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
+    @app.exception_handler(DeadlineExceededError)
+    async def deadline_handler(_: Request, exc: DeadlineExceededError) -> JSONResponse:
+        return JSONResponse(status_code=408, content={"detail": str(exc)})
+
+    @app.exception_handler(NoCompatibleDeployment)
+    async def no_compatible_handler(
+        _: Request, exc: NoCompatibleDeployment
+    ) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(OverloadedError)
+    async def overloaded_handler(_: Request, exc: OverloadedError) -> JSONResponse:
+        return JSONResponse(status_code=429, content={"detail": str(exc)})
+
+    @app.exception_handler(EventBufferFull)
+    async def event_buffer_handler(_: Request, exc: EventBufferFull) -> JSONResponse:
+        return JSONResponse(status_code=429, content={"detail": str(exc)})
+
     @app.exception_handler(ConflictError)
     async def conflict_handler(_: Request, exc: ConflictError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -141,12 +188,20 @@ def create_app(
 
     @app.get("/v1/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "protocol_version": PROTOCOL_VERSION}
+        return {
+            "status": "ok",
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": [SERVING_EXTENSION, JOB_EVENTS_EXTENSION],
+        }
 
     @app.get("/v1/ready")
     async def ready() -> dict[str, Any]:
         await asyncio.to_thread(repository.check_storage)
-        return {"ready": True, "protocol_version": PROTOCOL_VERSION}
+        return {
+            "ready": True,
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": [SERVING_EXTENSION, JOB_EVENTS_EXTENSION],
+        }
 
     @app.post("/v1/jobs", status_code=201, dependencies=[Depends(require_client)])
     async def submit_job(request: Request) -> dict[str, Any]:
@@ -193,17 +248,65 @@ def create_app(
             body = await _json_v1(request)
             state_value = body["state"]
             state = WorkerState(str(state_value))
+            runtime_instance_epoch = _serving_epoch(body)
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        record = await asyncio.to_thread(repository.set_worker_state, worker_id, state)
+        record = await asyncio.to_thread(
+            repository.set_worker_state,
+            worker_id,
+            state,
+            runtime_instance_epoch=runtime_instance_epoch,
+        )
         return worker_record_to_dict(record)
 
     @app.post("/v1/workers/{worker_id}/jobs/claim", dependencies=[Depends(require_worker)])
-    async def claim_job(worker_id: str) -> Response:
-        record = await asyncio.to_thread(repository.claim_next_job, worker_id)
+    async def claim_job(worker_id: str, request: Request) -> Response:
+        try:
+            body = await _optional_json_v1(request)
+            runtime_instance_epoch = _serving_epoch(body)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        record = await asyncio.to_thread(
+            repository.claim_next_job,
+            worker_id,
+            runtime_instance_epoch=runtime_instance_epoch,
+        )
         if record is None:
             return Response(status_code=204)
         return JSONResponse(status_code=200, content=job_record_to_dict(record))
+
+    @app.post(
+        "/v1/workers/{worker_id}/jobs/{job_id}/events",
+        dependencies=[Depends(require_worker)],
+    )
+    async def append_job_event(
+        worker_id: str,
+        job_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            body = await _json_v1(request)
+            _require_job_events_extension(body)
+            lease_token = str(body["lease_token"])
+            runtime_instance_epoch = _serving_epoch(body)
+            kind = str(body["kind"]).strip()
+            payload = body.get("payload")
+            if not kind:
+                raise ValueError("event kind must not be blank")
+            if not isinstance(payload, dict):
+                raise TypeError("event payload must be an object")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        record = await asyncio.to_thread(
+            repository.append_job_event,
+            job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            runtime_instance_epoch=runtime_instance_epoch,
+            kind=kind,
+            payload=payload,
+        )
+        return job_event_record_to_dict(record)
 
     @app.get(
         "/v1/workers/{worker_id}/jobs/{job_id}",
@@ -233,6 +336,7 @@ def create_app(
         try:
             body = await _json_v1(request)
             lease_token = str(body["lease_token"])
+            runtime_instance_epoch = _serving_epoch(body)
             result = job_result_from_dict(body["result"])
             if result is None:
                 raise ValueError("result is required")
@@ -244,6 +348,7 @@ def create_app(
             result,
             worker_id=worker_id,
             lease_token=lease_token,
+            runtime_instance_epoch=runtime_instance_epoch,
         )
         return job_record_to_dict(record)
 
@@ -255,6 +360,7 @@ def create_app(
         try:
             body = await _json_v1(request)
             lease_token = str(body["lease_token"])
+            runtime_instance_epoch = _serving_epoch(body)
             error = body.get("error", "executor failed")
             if not isinstance(error, (str, dict)):
                 raise TypeError("error must be a string or object")
@@ -268,6 +374,7 @@ def create_app(
             retryable=retryable,
             worker_id=worker_id,
             lease_token=lease_token,
+            runtime_instance_epoch=runtime_instance_epoch,
         )
         return job_record_to_dict(record)
 

@@ -110,6 +110,9 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 - [Runtime Providers and Execution Demand](docs/runtime-providers.md)
 - [Runtime Compatibility Matrix](docs/runtime-compatibility.md)
 - [Runtime Setup Backend](docs/runtime-setup.md)
+- [OpenCode Chat Acceptance](docs/opencode-chat-acceptance.md)
+- [Decision Shadow Acceptance](docs/decision-shadow-acceptance.md)
+- [Liquid d1-3B System-One Acceptance](docs/decision-d1-3b-acceptance.md) — new experimental text-only profile; prior OpenJev evidence retained
 - [Interactive Worker/runtime Setup TUI](docs/setup-tui.md)
 
 ## License

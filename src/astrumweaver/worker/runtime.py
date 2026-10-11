@@ -17,8 +17,22 @@ from typing import Any
 from ..contracts import WorkerSpec
 from ..control.models import WorkerState
 from ..control.serde import worker_spec_from_dict
-from ..transport import PROTOCOL_VERSION
-from ..execution import JobExecutor, JobResult
+from ..transport import JOB_EVENTS_EXTENSION, PROTOCOL_VERSION, SERVING_EXTENSION
+from ..execution import (
+    JobEvent,
+    JobEventSink,
+    JobExecutionError,
+    JobExecutor,
+    JobRequest,
+    JobResult,
+    StreamingJobExecutor,
+)
+from ..serving import (
+    ServingDeploymentDeclaration,
+    ServingJobBinding,
+    WorkerServingAdvertisement,
+    worker_serving_matches,
+)
 from ..gpu_mapping import (
     discover_gpu_mapping,
     load_reviewed_gpu_map,
@@ -116,6 +130,38 @@ def require_executor_capabilities(
         )
 
 
+def require_executor_serving_features(
+    executor: JobExecutor,
+    declaration: ServingDeploymentDeclaration,
+) -> None:
+    raw = getattr(executor, "serving_features", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise TypeError("executor serving_features must be a mapping")
+
+    for contract in declaration.contracts:
+        values = raw.get(contract.capability, ())
+        if isinstance(values, str):
+            values = (values,)
+        try:
+            supported = frozenset(str(value).strip() for value in values)
+        except TypeError as exc:
+            raise TypeError(
+                "executor serving feature values must be iterable"
+            ) from exc
+        if any(not value for value in supported):
+            raise ValueError(
+                "executor serving features must be non-blank strings"
+            )
+        missing = contract.features - supported
+        if missing:
+            raise RuntimeError(
+                "executor does not support advertised serving features for "
+                f"{contract.capability}: " + ", ".join(sorted(missing))
+            )
+
+
 def load_executor(specifier: str, config: Mapping[str, Any] | None = None) -> JobExecutor:
     module_name, separator, attribute_name = specifier.partition(":")
     if not separator or not module_name or not attribute_name:
@@ -135,6 +181,17 @@ def load_executor(specifier: str, config: Mapping[str, Any] | None = None) -> Jo
     return executor
 
 
+class _WorkerJobEventSink:
+    def __init__(self, runtime: "WorkerRuntime", claimed: ClaimedJob) -> None:
+        self._runtime = runtime
+        self._claimed = claimed
+
+    async def emit(self, event: JobEvent) -> None:
+        if not isinstance(event, JobEvent):
+            raise TypeError("streaming executor must emit JobEvent values")
+        await self._runtime._publish_job_event(self._claimed, event)
+
+
 class WorkerRuntime:
     """One execution owner with a persistent, job-independent heartbeat deadline.
 
@@ -152,6 +209,7 @@ class WorkerRuntime:
         poll_interval_seconds: float = 1.0,
         heartbeat_interval_seconds: float = 5.0,
         runtime_supervisor: RuntimeHealthSupervisor | None = None,
+        serving: WorkerServingAdvertisement | None = None,
     ) -> None:
         if max_concurrency != 1:
             raise ValueError("v1 WorkerRuntime currently requires max_concurrency=1")
@@ -165,6 +223,9 @@ class WorkerRuntime:
         self.executor = executor
         self.client = client
         self.runtime_supervisor = runtime_supervisor
+        if serving is not None and not isinstance(serving, WorkerServingAdvertisement):
+            raise TypeError("serving must be WorkerServingAdvertisement")
+        self.serving = serving
         self.poll_interval_seconds = poll_interval_seconds
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self._stop = asyncio.Event()
@@ -253,6 +314,18 @@ class WorkerRuntime:
                 raise ValueError("Worker identity changed")
             if record["max_concurrency"] != self.max_concurrency:
                 raise ValueError("Worker capacity changed")
+            raw_serving = record.get("serving")
+            acknowledged_serving = (
+                None
+                if raw_serving is None
+                else WorkerServingAdvertisement.from_dict(raw_serving)
+            )
+            if acknowledged_serving is not None and SERVING_EXTENSION not in set(
+                record.get("extensions") or ()
+            ):
+                raise ValueError("Worker acknowledgement lacks serving extension")
+            if acknowledged_serving != self.serving:
+                raise ValueError("Worker serving identity changed")
         except (KeyError, TypeError, ValueError) as exc:
             error = ControlTransportError(502, "invalid Worker acknowledgement")
             self._control_failed(error)
@@ -271,10 +344,13 @@ class WorkerRuntime:
         async with self._control_lock:
             sent_at = time.monotonic()
             try:
+                if isinstance(self.executor, StreamingJobExecutor):
+                    await self.client.require_extension(JOB_EVENTS_EXTENSION)
                 record = await self.client.register(
                     spec=self.spec,
                     max_concurrency=self.max_concurrency,
                     metadata={"runtime": "astrumweaver-worker"},
+                    serving=self.serving,
                 )
                 self._acknowledge_control(record, sent_at=sent_at)
             except ControlTransportError as exc:
@@ -304,6 +380,11 @@ class WorkerRuntime:
                 active_job_id=None if active is None else active.request.job_id,
                 lease_token=None if active is None else active.lease_token,
                 state=state,
+                runtime_instance_epoch=(
+                    None
+                    if self.serving is None
+                    else self.serving.runtime_instance.epoch
+                ),
             )
             self._acknowledge_control(record, sent_at=sent_at)
         except ControlTransportError as exc:
@@ -352,7 +433,14 @@ class WorkerRuntime:
                             await self._heartbeat_locked()
                         if not self.ready:
                             continue
-                        claimed = await self.client.claim(self.spec.worker_id)
+                        claimed = await self.client.claim(
+                            self.spec.worker_id,
+                            runtime_instance_epoch=(
+                                None
+                                if self.serving is None
+                                else self.serving.runtime_instance.epoch
+                            ),
+                        )
                         self._active = claimed
                     if claimed is None:
                         await self._wait_for_poll()
@@ -385,7 +473,15 @@ class WorkerRuntime:
             async with self._control_lock:
                 if self._registered:
                     with contextlib.suppress(ControlTransportError):
-                        await self.client.set_state(self.spec.worker_id, WorkerState.OFFLINE)
+                        await self.client.set_state(
+                            self.spec.worker_id,
+                            WorkerState.OFFLINE,
+                            runtime_instance_epoch=(
+                                None
+                                if self.serving is None
+                                else self.serving.runtime_instance.epoch
+                            ),
+                        )
                 self._registered = False
 
     async def drain(self) -> None:
@@ -396,19 +492,112 @@ class WorkerRuntime:
                 # resources. Heartbeat's guarded transition cannot do so.
                 await self._heartbeat_locked()
 
+    def _validate_claim_serving(self, claimed: ClaimedJob) -> None:
+        metadata = claimed.request.metadata
+        raw_binding = metadata.get("serving")
+        claimed_values = (
+            metadata.get("claimed_deployment_revision"),
+            metadata.get("claimed_serving_contract_revision"),
+            metadata.get("claimed_runtime_instance_epoch"),
+        )
+        if raw_binding is None:
+            if any(value is not None for value in claimed_values):
+                raise RuntimeError("legacy claim carried partial serving identity")
+            return
+        binding = ServingJobBinding.from_dict(raw_binding)
+        if self.serving is None or not worker_serving_matches(self.serving, binding):
+            raise RuntimeError("claimed serving binding does not match local deployment")
+        if claimed_values != (
+            self.serving.deployment_revision,
+            binding.serving_contract_revision,
+            self.serving.runtime_instance.epoch,
+        ):
+            raise RuntimeError("claimed serving attempt identity does not match local runtime")
+
+    def _executor_request(self, claimed: ClaimedJob) -> JobRequest:
+        """Attach locally revalidated serving semantics for workload adapters."""
+        raw_binding = claimed.request.metadata.get("serving")
+        if raw_binding is None:
+            return claimed.request
+        if self.serving is None:
+            raise RuntimeError("serving claim has no local serving advertisement")
+        binding = ServingJobBinding.from_dict(raw_binding)
+        contract = self.serving.contract_by_revision(
+            binding.serving_contract_revision
+        )
+        if contract is None:
+            raise RuntimeError("claimed serving contract is unavailable locally")
+        metadata = dict(claimed.request.metadata)
+        metadata["serving_semantic_revision"] = contract.semantic_revision
+        return JobRequest(
+            job_id=claimed.request.job_id,
+            capability=claimed.request.capability,
+            payload=claimed.request.payload,
+            metadata=metadata,
+        )
+
+    async def _publish_job_event(
+        self,
+        claimed: ClaimedJob,
+        event: JobEvent,
+    ) -> None:
+        if self._active is not claimed:
+            raise RuntimeError("Job event belongs to an inactive local attempt")
+        async with self._control_lock:
+            if self._active is not claimed:
+                raise RuntimeError("Job event belongs to an inactive local attempt")
+            self._require_runtime()
+            if time.monotonic() >= self._next_heartbeat_at:
+                await self._heartbeat_locked()
+            if not self.control_available:
+                raise ControlTransportError(0, "Worker authority is unconfirmed")
+            try:
+                await self.client.publish_event(
+                    self.spec.worker_id,
+                    claimed.request.job_id,
+                    claimed.lease_token,
+                    kind=event.kind,
+                    payload=event.payload,
+                    runtime_instance_epoch=(
+                        None
+                        if self.serving is None
+                        else self.serving.runtime_instance.epoch
+                    ),
+                )
+            except ControlTransportError as exc:
+                if exc.status_code == 429:
+                    raise JobExecutionError(
+                        "event_buffer_full",
+                        "Control rejected the bounded Job event buffer",
+                        retryable=False,
+                    ) from exc
+                self._control_failed(exc)
+                raise
+
     async def _execute_claim(self, claimed: ClaimedJob) -> None:
         # The private direct-entry test path also installs the active attempt;
         # normal callers install it under the claim lock before reaching here.
         if self._active is not None and self._active is not claimed:
             raise RuntimeError("Worker already owns a different local attempt")
         self._require_runtime()
+        self._validate_claim_serving(claimed)
+        executor_request = self._executor_request(claimed)
         self._active = claimed
         runtime_failure = (
             asyncio.create_task(self.runtime_supervisor.failed.wait(), name="astrumweaver-runtime-failure")
             if self.runtime_supervisor is not None else None
         )
+        execution_call = (
+            self.executor.execute_stream(
+                executor_request,
+                _WorkerJobEventSink(self, claimed),
+            )
+            if isinstance(self.executor, StreamingJobExecutor)
+            else self.executor.execute(executor_request)
+        )
         execution = asyncio.create_task(
-            self.executor.execute(claimed.request), name="astrumweaver-job-execution"
+            execution_call,
+            name="astrumweaver-job-execution",
         )
         try:
             while not execution.done():
@@ -418,6 +607,7 @@ class WorkerRuntime:
                 await asyncio.wait(
                     {execution} if runtime_failure is None else {execution, runtime_failure},
                     timeout=max(0.0, self._next_heartbeat_at - time.monotonic()),
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
 
             self._require_runtime()
@@ -427,6 +617,16 @@ class WorkerRuntime:
                 result = await execution
             except asyncio.CancelledError:
                 raise
+            except JobExecutionError as exc:
+                if self.runtime_supervisor is not None:
+                    await self.runtime_supervisor.check()
+                    self._require_runtime()
+                error = {
+                    "type": type(exc).__name__,
+                    "code": exc.code,
+                    "message": str(exc),
+                }
+                retryable = exc.retryable
             except Exception as exc:
                 if self.runtime_supervisor is not None:
                     # Detect a dead runtime before consuming another queued
@@ -455,11 +655,19 @@ class WorkerRuntime:
                     await self.client.fail(
                         self.spec.worker_id, claimed.request.job_id,
                         claimed.lease_token, error=error, retryable=retryable,
+                        runtime_instance_epoch=(
+                            None if self.serving is None
+                            else self.serving.runtime_instance.epoch
+                        ),
                     )
                 else:
                     await self.client.complete(
                         self.spec.worker_id, claimed.request.job_id,
                         claimed.lease_token, result,
+                        runtime_instance_epoch=(
+                            None if self.serving is None
+                            else self.serving.runtime_instance.epoch
+                        ),
                     )
                 # Do not let a waiting drain heartbeat reuse this terminal lease.
                 self._active = None

@@ -39,6 +39,22 @@
           exec python3 ${self}/tools/check_generated_nixos.py --source ${self} "$@"
         '';
       };
+      # Experimental opt-in GPU runtime, distinct from the default Worker.
+      cudaPkgs = import nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+      };
+      decisionLlamaCuda = cudaArch:
+        let
+          core = cudaPkgs.callPackage ./nix/decision-llama-cuda.nix { inherit cudaArch; };
+          driverBridge = cudaPkgs.callPackage ./nix/decision-llama-driver-bridge.nix {
+            inherit core;
+          };
+        in
+        cudaPkgs.buildEnv {
+          name = "astrumweaver-d1-decision-cuda-sm${cudaArch}-runtime";
+          paths = [ core driverBridge ];
+        };
       fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
         if [ "$1" = "--query-gpu=uuid" ]; then
           echo GPU-example-smoke
@@ -183,6 +199,8 @@
       packages.${system} = {
         inherit astrumweaver control worker installer integration;
         runtime-llama-cpp = runtimeLlamaCpp;
+        decision-llama-cuda-sm61 = decisionLlamaCuda "61";
+        decision-llama-cuda-sm86 = decisionLlamaCuda "86";
         default = astrumweaver;
       };
 
@@ -225,6 +243,7 @@
           test -x ${worker}/bin/astrumweaver-gpu-isolation-probe
           test -x ${worker}/bin/astrumweaver-setup-tui
           test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
+          test -x ${worker}/bin/astrumweaver-opencode-chat-accept
 
           # Execute the actual packaged TUI wrapper through a profile-like
           # symlink.  The wrapper must pass that lexical bin directory into
@@ -318,6 +337,11 @@ EOF
         runtime-deployment-accept-cli = pkgs.runCommand "astrumweaver-runtime-deployment-accept-cli" { } ''
           test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
           ${worker}/bin/astrumweaver-runtime-deployment-accept --help >/dev/null
+          touch "$out"
+        '';
+        opencode-chat-accept-cli = pkgs.runCommand "astrumweaver-opencode-chat-accept-cli" { } ''
+          test -x ${worker}/bin/astrumweaver-opencode-chat-accept
+          ${worker}/bin/astrumweaver-opencode-chat-accept --help >/dev/null
           touch "$out"
         '';
         runtime-module-eval = pkgs.runCommand "astrumweaver-runtime-module-eval" {
