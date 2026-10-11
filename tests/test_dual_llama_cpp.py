@@ -244,6 +244,9 @@ def managed_pair(tmp_path):
     managed = DualLlamaCppManagedRuntime(
         embedding, decision, provider.config.embedding_model, provider.config.decision_model,
         trusted_model_owner_uid=os.getuid(),
+        gpu_uuid="GPU-dual-example",
+        required_total_vram_mb=provider.config.required_total_vram_mb,
+        gpu_memory_probe=lambda _uuid: 4096,
     )
     return managed, embedding, decision
 
