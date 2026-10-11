@@ -434,7 +434,8 @@ def test_dual_gateway_catalogs_bind_distinct_child_semantics(tmp_path):
     from dataclasses import replace
     from astrumweaver.gateway.embedding import (
         EMBEDDING_OPERATION_SCHEMA, LLAMA_CPP_EMBEDDING_ADAPTER,
-        EmbeddingGatewayProfile, EmbeddingSpaceIdentity, text_policy_digest,
+        EmbeddingGatewayError, EmbeddingGatewayProfile, EmbeddingSpaceIdentity,
+        text_policy_digest,
     )
     from astrumweaver.gateway.decision import (
         DECISION_OPERATION_SCHEMA, DECISION_SCORE_KIND, LLAMA_CPP_SCORE_SEMANTICS,
@@ -450,7 +451,7 @@ def test_dual_gateway_catalogs_bind_distinct_child_semantics(tmp_path):
         adapter_artifact_sha256="sha256:" + "b" * 64,
         model_artifact_sha256="sha256:" + cfg.bundle_sha256,
         execution_config_sha256="sha256:" + "c" * 64,
-        quantization="composite-q8-q4",
+        quantization="Q8_0",  # dual deployment binds the embedding child label
         tokenizer_artifact_sha256="sha256:" + "7" * 64,
     )
     space = EmbeddingSpaceIdentity(
@@ -513,6 +514,7 @@ def test_dual_gateway_catalogs_bind_distinct_child_semantics(tmp_path):
         "adapter_id":LLAMA_CPP_EMBEDDING_ADAPTER,
         "deployment":dep.to_dict(),"contract":emb_contract.to_dict(),
         "profile":eprofile.to_dict(),"space":space.to_dict(),
+        "dual_decision_model_sha256":"sha256:"+cfg.decision_model.sha256,
         "query_prefix":"","document_prefix":"",
     })
     dec = DecisionGatewayProfile.from_dict({
@@ -522,6 +524,50 @@ def test_dual_gateway_catalogs_bind_distinct_child_semantics(tmp_path):
     })
     assert embed.embedding_space_id == space.embedding_space_id
     assert dec.decision_semantics_id == semantics.decision_semantics_id
+
+    # A dual Gateway must not publish a space whose child bytes differ
+    # from the model pinned inside the reviewed Worker composite bundle.
+    base_catalog = {
+        "adapter_id": LLAMA_CPP_EMBEDDING_ADAPTER,
+        "deployment": dep.to_dict(),
+        "contract": emb_contract.to_dict(),
+        "profile": eprofile.to_dict(),
+        "space": space.to_dict(),
+        "query_prefix": "",
+        "document_prefix": "",
+        "dual_decision_model_sha256": "sha256:" + cfg.decision_model.sha256,
+    }
+    with pytest.raises(EmbeddingGatewayError, match="decision child digest"):
+        EmbeddingGatewayProfile.from_dict({
+            key: value for key, value in base_catalog.items()
+            if key != "dual_decision_model_sha256"
+        })
+    with pytest.raises(EmbeddingGatewayError, match="pinned composite bundle"):
+        EmbeddingGatewayProfile.from_dict({
+            **base_catalog,
+            "dual_decision_model_sha256": "sha256:" + "0" * 64,
+        })
+
+    for bad_space in (
+        replace(space, model_artifact_sha256="sha256:" + "9" * 64),
+        replace(space, quantization="Q4_K_M"),
+    ):
+        # Both the Gateway contract and its serving profile can be internally
+        # consistent with a false space ID; the child/bundle evidence must
+        # independently reject it.
+        false_contract = replace(
+            emb_contract, semantic_revision=bad_space.embedding_space_id,
+        )
+        false_profile = replace(
+            eprofile, serving_contract_revision=false_contract.revision,
+        )
+        with pytest.raises(EmbeddingGatewayError, match="embedding space"):
+            EmbeddingGatewayProfile.from_dict({
+                **base_catalog,
+                "space": bad_space.to_dict(),
+                "contract": false_contract.to_dict(),
+                "profile": false_profile.to_dict(),
+            })
     composite = replace(cfg,
         embedding_space_id=space.embedding_space_id,
         decision_semantics_id=semantics.decision_semantics_id,

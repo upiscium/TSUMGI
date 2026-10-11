@@ -13,13 +13,13 @@ import os
 import secrets
 import stat
 import tempfile
-import json
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Any, Mapping
 
 from ...execution import JobExecutionError, JobExecutor, JobRequest, JobResult, ResidencyReport
+from ...serving import dual_model_bundle_sha256
 from ..contracts import (
     CompatibilityReason, ExecutionDemand, GPUTopology, ManagedRuntime,
     ModelDemand, ModelTopology, ModelPreparationPolicy, ResidencyPolicy,
@@ -134,14 +134,9 @@ class DualLlamaCppProviderConfig:
     @property
     def bundle_sha256(self) -> str:
         """Binding of both pinned model artifacts in fixed role order."""
-        material = {
-            "schema": "dual-llama-cpp-models-v1",
-            "embedding_sha256": self.embedding_model.sha256,
-            "decision_sha256": self.decision_model.sha256,
-        }
-        return hashlib.sha256(
-            json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+        return dual_model_bundle_sha256(
+            self.embedding_model.sha256, self.decision_model.sha256,
+        )
 
     @property
     def bundle_model_ref(self) -> str:

@@ -56,6 +56,25 @@ Operator-approved composite model identity is:
 compact separators and exactly:
 `{"schema":"dual-llama-cpp-models-v1","embedding_sha256":"...","decision_sha256":"..."}`.
 
+A dual Embedding Gateway catalog entry **must** include
+`dual_decision_model_sha256: "sha256:<decision-child-GGUF-digest>"`.
+The Gateway computes the v1 composite bundle digest from the
+`EmbeddingSpaceIdentity.model_artifact_sha256` (the embedding child) and
+this peer digest, then requires exact agreement with
+`DeploymentIdentity.model_artifact_sha256`. The Worker independently
+requires that deployment bundle to match its own reviewed
+`embedding_model.sha256` and `decision_model.sha256`. Thus a superficially
+self-consistent but false Embedding Space ID cannot silently describe a
+different model's vectors. Missing/wrong peer identity fails closed.
+For the dual embedding catalog, `DeploymentIdentity.quantization` refers to
+the embedding child (e.g. `Q8_0`) and must match
+`EmbeddingSpaceIdentity.quantization`; the decision child's exact bytes
+remain committed by the bundle digest. As in legacy single-model deployments,
+the quantization label is operator-provided provenance, not a runtime GGUF
+header attestation. Old experimental dual catalogs with a composite
+quantization label or missing peer digest must be explicitly regenerated
+before use; legacy single-model catalogs are unchanged.
+
 RuntimeDeploymentSpec provider_config holds `embedding_model`,
 `decision_model`, `embedding_provider`, `decision_provider` and
 `required_total_vram_mb`, plus pinned `embedding_space_id` and `decision_semantics_id`. These child semantic digests must

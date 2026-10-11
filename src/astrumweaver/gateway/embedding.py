@@ -17,6 +17,7 @@ from ..serving import (
     ResolvedServingProfile,
     ServingContract,
     ServingJobBinding,
+    dual_model_bundle_sha256,
     resolve_profile,
 )
 
@@ -193,6 +194,7 @@ class EmbeddingGatewayProfile:
     document_suffix: str
     request_timeout_seconds: float
     max_attempts: int = 2
+    dual_decision_model_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.resolved, ResolvedServingProfile):
@@ -232,11 +234,36 @@ class EmbeddingGatewayProfile:
             "adapter_id": adapter_id,
         }
         if deployment.provider_id == "llama-cpp":
-            # Single model: parent deployment identifies the same GGUF and
-            # quantization as the embedding space. In a composite deployment
-            # parent identifies the bundle; the space instead identifies the
-            # embedding child, pinned by the Worker composite runtime.
+            if self.dual_decision_model_sha256 is not None:
+                raise EmbeddingGatewayError(
+                    "invalid_profile",
+                    "a single-model profile cannot contain a dual child digest",
+                )
             expected["model_artifact_sha256"] = deployment.model_artifact_sha256
+            expected["quantization"] = deployment.quantization
+        else:
+            # A bundle digest cannot be compared directly to a child digest.
+            # Reconstruct the exact role-ordered bundle from the embedding
+            # space's claimed child and the reviewed peer child digest. Worker
+            # independently reconstructs the same bundle from its pinned GGUFs.
+            if self.dual_decision_model_sha256 is None:
+                raise EmbeddingGatewayError(
+                    "invalid_profile",
+                    "dual embedding profile requires a decision child digest",
+                )
+            peer = _digest(
+                self.dual_decision_model_sha256, "dual_decision_model_sha256",
+            )
+            bundle = "sha256:" + dual_model_bundle_sha256(
+                self.space.model_artifact_sha256[7:], peer[7:],
+            )
+            if bundle != deployment.model_artifact_sha256:
+                raise EmbeddingGatewayError(
+                    "invalid_profile",
+                    "embedding space child model does not match pinned composite bundle",
+                )
+            # For a dual embedding deployment, the operator's quantization
+            # label describes its embedding child. It is not a bundle label.
             expected["quantization"] = deployment.quantization
         for name, value in expected.items():
             if getattr(self.space, name) != value:
@@ -349,6 +376,7 @@ class EmbeddingGatewayProfile:
                 document_suffix=data.get("document_suffix", ""),
                 request_timeout_seconds=data.get("request_timeout_seconds", 60.0),
                 max_attempts=data.get("max_attempts", 2),
+                dual_decision_model_sha256=data.get("dual_decision_model_sha256"),
             )
         except EmbeddingGatewayError:
             raise
