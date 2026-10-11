@@ -1137,6 +1137,7 @@ async def test_transport_disconnect_cancels_running_owned_stream(asgi_spec):
     response = _OwnedChatStreamingResponse(
         iterator,
         cancel_owned_job=lambda: service._cancel(job_id),
+        retain_cleanup=service._retain_cleanup,
         media_type="text/event-stream",
     )
     sent = []
@@ -1201,6 +1202,7 @@ async def test_stream_normal_durable_success_survives_response_close():
     response = _OwnedChatStreamingResponse(
         iterator,
         cancel_owned_job=lambda: service._cancel(job_id),
+        retain_cleanup=service._retain_cleanup,
         media_type="text/event-stream",
     )
     sent = []
@@ -1329,6 +1331,7 @@ async def test_server_cancels_response_task_still_fences_owned_stream_job():
     response = _OwnedChatStreamingResponse(
         iterator,
         cancel_owned_job=lambda: service._cancel(job_id),
+        retain_cleanup=service._retain_cleanup,
         media_type="text/event-stream",
     )
     started = asyncio.Event()
@@ -1414,3 +1417,66 @@ async def test_stream_submission_cancelled_while_db_insert_is_running_has_no_orp
     assert jobs[0].status is JobStatus.CANCELLED
     assert jobs[0].max_attempts == 1
     assert repository.get_worker("chat-worker").active_jobs == 0
+
+
+@pytest.mark.asyncio
+async def test_repeated_task_cancel_while_submit_blocked_cannot_orphan_job():
+    """Two direct cancellations must not kill late-submit durable cleanup."""
+    from threading import Event
+
+    started = Event()
+    release = Event()
+    finished = Event()
+
+    class BlockingRepository(InMemoryControlRepository):
+        def submit_job(self, submission, *, now=None):
+            started.set()
+            if not release.wait(timeout=3):
+                raise RuntimeError("bounded fake submit timeout")
+            try:
+                return super().submit_job(submission, now=now)
+            finally:
+                finished.set()
+
+    repository = BlockingRepository()
+    profile, advertisement = serving_values(timeout=10.0)
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository, ChatProfileCatalog((profile,)), poll_interval_seconds=0.001,
+    )
+    task = asyncio.create_task(service.stream_owned(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "twice cancelled"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    ))
+    deadline = asyncio.get_running_loop().time() + 1
+    try:
+        while not started.is_set():
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.001)
+        task.cancel()
+        # Let the first cancellation enter the shielded cleanup path.
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        task.cancel()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    deadline = asyncio.get_running_loop().time() + 2
+    while not finished.is_set() or (
+        not repository.list_jobs()
+        or repository.list_jobs()[0].status is not JobStatus.CANCELLED
+    ):
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(0.001)
+    assert repository.list_jobs()[0].max_attempts == 1
+    assert repository.get_worker("chat-worker").active_jobs == 0
+    while service._pending_cancellations:
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(0.001)

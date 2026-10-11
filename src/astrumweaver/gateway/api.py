@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..control.auth import ClientAuthMode
-from ..control.models import JobStatus, JobSubmission, utc_now
+from ..control.models import JobRecord, JobStatus, JobSubmission, utc_now
 from ..control.repository import (
     ConflictError,
     ControlRepository,
@@ -106,6 +106,15 @@ class ChatGatewayService:
         self.repository = repository
         self.catalog = catalog
         self.poll_interval_seconds = float(poll_interval_seconds)
+        # Keep orphan-prevention work alive if an ASGI request is cancelled
+        # again while its synchronous repository admission is still running.
+        self._pending_cancellations: set[asyncio.Task[None]] = set()
+
+    def _retain_cleanup(self, task: asyncio.Task[None]) -> None:
+        # An ASGI request can be cancelled repeatedly; keep a strong owner
+        # for cleanup until the durable repository operation has completed.
+        self._pending_cancellations.add(task)
+        task.add_done_callback(self._pending_cancellations.discard)
 
     async def _cancel(self, job_id: str) -> None:
         try:
@@ -114,6 +123,16 @@ class ChatGatewayService:
             # Cancellation is best-effort at this edge. Durable Worker fencing
             # remains authoritative even if the acknowledgement is lost.
             return
+
+    async def _cleanup_cancelled_submit(
+        self, submit_task: asyncio.Task[JobRecord],
+    ) -> None:
+        try:
+            submitted = await submit_task
+        except Exception:
+            # Failed admission has no durable Job that needs cleanup.
+            return
+        await self._cancel(submitted.job_id)
 
     @staticmethod
     def _terminal(record, *, profile_id: str) -> dict[str, object]:
@@ -214,14 +233,15 @@ class ChatGatewayService:
         try:
             record = await asyncio.shield(submit_task)
         except asyncio.CancelledError:
+            # The HTTP task may be directly cancelled more than once. The
+            # independent retained task must complete the submit->cancel
+            # cleanup even if this request task stops awaiting it.
+            cleanup = asyncio.create_task(
+                self._cleanup_cancelled_submit(submit_task)
+            )
+            self._retain_cleanup(cleanup)
             with anyio.CancelScope(shield=True):
-                try:
-                    submitted = await asyncio.shield(submit_task)
-                except Exception:
-                    # Failed admission created no durable owner.
-                    pass
-                else:
-                    await self._cancel(submitted.job_id)
+                await asyncio.shield(cleanup)
             raise
         except DeadlineExceededError as exc:
             raise ChatGatewayError(
@@ -446,10 +466,12 @@ class _OwnedChatStreamingResponse(StreamingResponse):
         content: AsyncIterator[str],
         *,
         cancel_owned_job: Callable[[], Awaitable[None]],
+        retain_cleanup: Callable[[asyncio.Task[None]], None],
         **kwargs: Any,
     ) -> None:
         super().__init__(content, **kwargs)
         self._cancel_owned_job = cancel_owned_job
+        self._retain_cleanup = retain_cleanup
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         try:
@@ -459,6 +481,7 @@ class _OwnedChatStreamingResponse(StreamingResponse):
             # Shield the durable cancellation from further ASGI task-group
             # cancellation. Success/failure terminal jobs are a no-op.
             cancel_task = asyncio.create_task(self._cancel_owned_job())
+            self._retain_cleanup(cancel_task)
             with anyio.CancelScope(shield=True):
                 await asyncio.shield(cancel_task)
 
@@ -549,6 +572,7 @@ def create_chat_router(
                 return _OwnedChatStreamingResponse(
                     iterator,
                     cancel_owned_job=lambda: service._cancel(job_id),
+                    retain_cleanup=service._retain_cleanup,
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
