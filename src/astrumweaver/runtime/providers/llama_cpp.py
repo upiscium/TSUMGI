@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -14,7 +15,34 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ...execution import JobExecutor, JobRequest, JobResult, ResidencyItem, ResidencyReport
+from ...execution import (
+    JobEvent,
+    JobEventSink,
+    JobExecutionError,
+    JobExecutor,
+    JobRequest,
+    JobResult,
+    ResidencyItem,
+    ResidencyReport,
+)
+from ...gateway.chat import (
+    CHAT_JOB_SCHEMA,
+    LLAMA_CPP_CHAT_ADAPTER,
+    ChatGatewayError,
+    validate_chat_stream_chunk,
+)
+from ...gateway.embedding import (
+    EMBEDDING_JOB_SCHEMA,
+    LLAMA_CPP_EMBEDDING_ADAPTER,
+    EmbeddingGatewayError,
+    validate_embedding_response,
+)
+from ...gateway.decision import (
+    DECISION_JOB_SCHEMA,
+    LLAMA_CPP_SYSTEM_ONE_ADAPTER,
+    DecisionGatewayError,
+    validate_decision_provider_response,
+)
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -34,6 +62,8 @@ from ..contracts import (
 
 LLAMA_CPP_PROVIDER_ID = "llama-cpp"
 LLAMA_CPP_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
+LLAMA_CPP_EMBEDDING_CAPABILITIES = frozenset({"text.embed"})
+LLAMA_CPP_DECISION_CAPABILITIES = frozenset({"decision.system_one"})
 
 
 def _nonblank(value: str, field_name: str) -> str:
@@ -69,6 +99,11 @@ class LlamaCppProviderConfig:
     n_cpu_ffn: int | None = None
     offline: bool = True
     no_webui: bool = True
+    jinja: bool = False
+    chat_template_file: str | None = None
+    embeddings: bool = False
+    pooling: str | None = None
+    decision: bool = False
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -100,6 +135,43 @@ class LlamaCppProviderConfig:
             raise ValueError("context_size must not be negative")
         if self.main_gpu < 0:
             raise ValueError("main_gpu must not be negative")
+        if type(self.jinja) is not bool:
+            raise TypeError("jinja must be boolean")
+        if type(self.embeddings) is not bool:
+            raise TypeError("embeddings must be boolean")
+        if type(self.decision) is not bool:
+            raise TypeError("decision must be boolean")
+        if self.embeddings and self.decision:
+            raise ValueError(
+                "llama.cpp deployment cannot mix embedding and decision modes"
+            )
+        if self.decision and (self.jinja or self.chat_template_file is not None):
+            raise ValueError(
+                "decision mode cannot enable chat templates"
+            )
+        if self.embeddings:
+            if self.jinja or self.chat_template_file is not None:
+                raise ValueError(
+                    "embedding mode cannot enable chat templates"
+                )
+            pooling = _nonblank(self.pooling or "", "pooling")
+            if pooling not in {"mean", "cls", "last"}:
+                raise ValueError(
+                    "embedding mode pooling must be mean, cls, or last"
+                )
+            object.__setattr__(self, "pooling", pooling)
+        elif self.pooling is not None:
+            raise ValueError("pooling requires embeddings=true")
+        if self.chat_template_file is not None:
+            template = _nonblank(
+                self.chat_template_file,
+                "chat_template_file",
+            )
+            if not self.jinja:
+                raise ValueError(
+                    "chat_template_file requires jinja=true"
+                )
+            object.__setattr__(self, "chat_template_file", template)
 
         if self.gpu_layers is not None:
             value = self.gpu_layers
@@ -203,7 +275,22 @@ class LlamaCppApi(Protocol):
 
     async def chat(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
+    def chat_stream(
+        self,
+        payload: Mapping[str, Any],
+    ) -> AsyncIterator[Mapping[str, Any]]: ...
+
+    async def chat_input_tokens(self, payload: Mapping[str, Any]) -> int: ...
+
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    async def embeddings(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    async def system_one(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    async def decision_capable(self, model_id: str) -> bool: ...
+
+    async def tokenize(self, content: str) -> int: ...
 
     async def close(self) -> None: ...
 
@@ -215,11 +302,33 @@ class HttpLlamaCppApi:
         *,
         timeout_seconds: float = 300.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        api_key: str | None = None,
+        unix_socket_path: str | None = None,
     ) -> None:
+        if api_key is not None and (not isinstance(api_key, str) or not api_key):
+            raise ValueError("llama.cpp client API key must be nonempty")
+        if unix_socket_path is not None:
+            if (
+                not Path(unix_socket_path).is_absolute()
+                or not unix_socket_path.endswith(".sock")
+                or api_key is None
+                or transport is not None
+            ):
+                raise ValueError("private Unix socket requires absolute .sock path and an owned bearer")
+            # A Worker-private UDS transport has no attacker-raceable TCP port.
+            # It is protected by the owning temporary directory's mode 0700.
+            transport = httpx.AsyncHTTPTransport(uds=unix_socket_path)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=timeout_seconds,
             transport=transport,
+            headers=(None if api_key is None else {"Authorization": "Bearer " + api_key}),
+            # The composite native child uses a secret bearer. Never allow
+            # inherited HTTP_PROXY/HTTPS_PROXY/ALL_PROXY to receive that secret
+            # or unredacted inference traffic. Preserve unauthenticated legacy
+            # clients' existing environment-proxy behavior.
+            trust_env=api_key is None,
+            follow_redirects=False,
         )
 
     async def health(self) -> bool:
@@ -265,12 +374,111 @@ class HttpLlamaCppApi:
             json=payload,
         )
 
+    async def chat_stream(
+        self,
+        payload: Mapping[str, Any],
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        async with self._client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json=dict(payload),
+        ) as response:
+            response.raise_for_status()
+            async for raw_line in response.aiter_lines():
+                line = raw_line.strip()
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    raise RuntimeError("llama.cpp stream returned invalid SSE framing")
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    return
+                try:
+                    value = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        "llama.cpp stream returned invalid JSON"
+                    ) from exc
+                if not isinstance(value, Mapping):
+                    raise RuntimeError(
+                        "llama.cpp stream returned a non-object event"
+                    )
+                yield value
+
+    async def chat_input_tokens(self, payload: Mapping[str, Any]) -> int:
+        body = await self._json(
+            "POST",
+            "/v1/chat/completions/input_tokens",
+            json=payload,
+        )
+        value = body.get("input_tokens")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RuntimeError(
+                "llama.cpp token-count endpoint returned invalid input_tokens"
+            )
+        return value
+
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return await self._json(
             "POST",
             "/v1/completions",
             json=payload,
         )
+
+    async def embeddings(
+        self,
+        payload: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return await self._json(
+            "POST",
+            "/v1/embeddings",
+            json=payload,
+        )
+
+    async def system_one(
+        self,
+        payload: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return await self._json(
+            "POST",
+            "/v1/systemone",
+            json=payload,
+        )
+
+    async def decision_capable(self, model_id: str) -> bool:
+        body = await self._json("GET", "/v1/models")
+        data = body.get("data", ())
+        if not isinstance(data, list):
+            raise RuntimeError("llama.cpp /v1/models returned invalid data")
+        for item in data:
+            if not isinstance(item, Mapping) or item.get("id") != model_id:
+                continue
+            architecture = item.get("architecture")
+            if not isinstance(architecture, Mapping):
+                return False
+            outputs = architecture.get("output_modalities")
+            return (
+                isinstance(outputs, list)
+                and all(isinstance(value, str) for value in outputs)
+                and "decisions" in outputs
+            )
+        return False
+
+    async def tokenize(self, content: str) -> int:
+        body = await self._json(
+            "POST",
+            "/tokenize",
+            json={"content": content, "add_special": False},
+        )
+        tokens = body.get("tokens")
+        if not isinstance(tokens, list) or any(
+            isinstance(token, bool) or not isinstance(token, int)
+            for token in tokens
+        ):
+            raise RuntimeError(
+                "llama.cpp tokenize endpoint returned invalid tokens"
+            )
+        return len(tokens)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -299,7 +507,23 @@ class LlamaCppSubprocessController:
         launch_policy: LlamaCppLaunchPolicy,
         offline: bool,
         no_webui: bool,
+        jinja: bool = False,
+        chat_template_file: str | None = None,
+        embeddings: bool = False,
+        pooling: str | None = None,
+        api_key_file: str | None = None,
+        unix_socket_path: str | None = None,
     ) -> None:
+        if api_key_file is not None and not Path(api_key_file).is_absolute():
+            raise ValueError("llama.cpp API-key file must be absolute")
+        if unix_socket_path is not None and (
+            not Path(unix_socket_path).is_absolute()
+            or not unix_socket_path.endswith(".sock")
+            or api_key_file is None
+        ):
+            raise ValueError("private native Unix socket requires owned absolute path and key file")
+        self.api_key_file = api_key_file
+        self.unix_socket_path = unix_socket_path
         self.executable = executable
         self.base_url = base_url
         self.model_ref = model_ref
@@ -309,6 +533,10 @@ class LlamaCppSubprocessController:
         self.launch_policy = launch_policy
         self.offline = offline
         self.no_webui = no_webui
+        self.jinja = jinja
+        self.chat_template_file = chat_template_file
+        self.embeddings = embeddings
+        self.pooling = pooling
         self._process: asyncio.subprocess.Process | None = None
 
     @property
@@ -320,12 +548,17 @@ class LlamaCppSubprocessController:
         assert parsed.hostname is not None
         assert parsed.port is not None
 
+        # A composite runtime binds a random, Worker-owned Unix-domain socket
+        # inside its private 0700 directory. It must NOT listen on the public
+        # loopback port carried in the backwards-compatible base_url manifest.
+        listen_args = (
+            ["--host", self.unix_socket_path]
+            if self.unix_socket_path is not None
+            else ["--host", parsed.hostname, "--port", str(parsed.port)]
+        )
         args: list[str] = [
             self.executable,
-            "--host",
-            parsed.hostname,
-            "--port",
-            str(parsed.port),
+            *listen_args,
             "--model",
             self.model_ref,
             "--alias",
@@ -343,6 +576,21 @@ class LlamaCppSubprocessController:
             args.append("--no-webui")
         if self.offline:
             args.append("--offline")
+        if self.api_key_file is not None:
+            args.extend(["--api-key-file", self.api_key_file])
+        if self.jinja:
+            args.append("--jinja")
+        if self.chat_template_file is not None:
+            args.extend(
+                ["--chat-template-file", self.chat_template_file]
+            )
+        if self.embeddings:
+            args.append("--embeddings")
+            if self.pooling is None:
+                raise RuntimeError(
+                    "embedding-mode llama.cpp process requires pooling"
+                )
+            args.extend(["--pooling", self.pooling])
 
         if self.gpu_uuids:
             visible = [f"CUDA{index}" for index in range(len(self.gpu_uuids))]
@@ -431,12 +679,81 @@ class LlamaCppExecutor(JobExecutor):
         model_ref: str,
         model_alias: str,
         residency_metadata: Mapping[str, Any],
+        tools_enabled: bool = False,
+        embeddings: bool = False,
+        pooling: str | None = None,
+        decision: bool = False,
     ) -> None:
         self.api = api
         self.model_ref = _nonblank(model_ref, "model_ref")
         self.model_alias = _nonblank(model_alias, "model_alias")
         self.residency_metadata = dict(residency_metadata)
-        self._inflight: dict[str, asyncio.Task[Mapping[str, Any]]] = {}
+        if type(tools_enabled) is not bool:
+            raise TypeError("tools_enabled must be boolean")
+        if type(embeddings) is not bool:
+            raise TypeError("embeddings must be boolean")
+        if type(decision) is not bool:
+            raise TypeError("decision must be boolean")
+        if embeddings and decision:
+            raise ValueError(
+                "llama.cpp executor cannot mix embedding and decision modes"
+            )
+        if (embeddings or decision) and tools_enabled:
+            raise ValueError(
+                "llama.cpp specialized executor cannot enable chat tools"
+            )
+        if embeddings:
+            normalized_pooling = _nonblank(pooling or "", "pooling")
+            if normalized_pooling not in {"mean", "cls", "last"}:
+                raise ValueError(
+                    "embedding pooling must be mean, cls, or last"
+                )
+        else:
+            if pooling is not None:
+                raise ValueError("pooling requires embedding mode")
+            normalized_pooling = None
+        self.tools_enabled = tools_enabled
+        self.embedding_mode = embeddings
+        self.decision_mode = decision
+        self.pooling = normalized_pooling
+        self.capabilities = (
+            LLAMA_CPP_EMBEDDING_CAPABILITIES
+            if embeddings
+            else LLAMA_CPP_DECISION_CAPABILITIES
+            if decision
+            else LLAMA_CPP_CAPABILITIES
+        )
+        self.serving_features = (
+            {
+                "text.embed": frozenset(
+                    {
+                        "float",
+                        f"pooling-{normalized_pooling}",
+                        "normalization-l2",
+                    }
+                )
+            }
+            if embeddings
+            else {
+                "decision.system_one": frozenset(
+                    {
+                        "native-decision-head",
+                        "choice-probabilities",
+                        "multi-token-choice-labels",
+                        "provider-temperature-softmax",
+                    }
+                )
+            }
+            if decision
+            else {
+                "llm.chat": (
+                    frozenset({"tools"})
+                    if tools_enabled
+                    else frozenset()
+                )
+            }
+        )
+        self._inflight: dict[str, asyncio.Task[Any]] = {}
 
     def _payload(self, job: JobRequest) -> dict[str, Any]:
         payload = dict(job.payload)
@@ -452,16 +769,645 @@ class LlamaCppExecutor(JobExecutor):
         payload["stream"] = False
         return payload
 
+    def _gateway_chat_payload(
+        self,
+        job: JobRequest,
+    ) -> tuple[dict[str, Any], dict[str, int]] | None:
+        envelope = dict(job.payload)
+        if envelope.get("schema_version") != CHAT_JOB_SCHEMA:
+            return None
+        if set(envelope) != {"schema_version", "adapter_id", "request", "limits"}:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job envelope uses unsupported fields",
+                retryable=False,
+            )
+        if envelope.get("adapter_id") != LLAMA_CPP_CHAT_ADAPTER:
+            raise JobExecutionError(
+                "unsupported_chat_adapter",
+                "chat job targets an unsupported provider adapter",
+                retryable=False,
+            )
+        raw_request = envelope.get("request")
+        raw_limits = envelope.get("limits")
+        if not isinstance(raw_request, Mapping) or not isinstance(raw_limits, Mapping):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job request/limits must be objects",
+                retryable=False,
+            )
+        request = dict(raw_request)
+        if not isinstance(request.get("messages"), list):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job requires a messages array",
+                retryable=False,
+            )
+        if type(request.get("stream")) is not bool:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job stream flag must be boolean",
+                retryable=False,
+            )
+        output_tokens = request.get("max_tokens")
+        if (
+            isinstance(output_tokens, bool)
+            or not isinstance(output_tokens, int)
+            or output_tokens < 1
+        ):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job max_tokens must be a positive integer",
+                retryable=False,
+            )
+        limits: dict[str, int] = {}
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = raw_limits.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise JobExecutionError(
+                    "invalid_chat_job",
+                    "chat job token limits must be positive integers",
+                    retryable=False,
+                )
+            limits[key] = value
+        if (
+            limits["input_tokens"] > limits["total_tokens"]
+            or limits["output_tokens"] > limits["total_tokens"]
+        ):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job token limit exceeds total context",
+                retryable=False,
+            )
+        if output_tokens > limits["output_tokens"]:
+            raise JobExecutionError(
+                "output_limit_exceeded",
+                "chat output budget exceeds the bound serving profile",
+                retryable=False,
+            )
+        supplied_model = request.pop("model", None)
+        if supplied_model is not None:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "gateway chat job must not supply a runtime model name",
+                retryable=False,
+            )
+        uses_tools = bool(request.get("tools"))
+        tool_choice = request.get("tool_choice")
+        uses_tools = uses_tools or (
+            tool_choice is not None and tool_choice != "none"
+        )
+        for message in request.get("messages", ()):
+            if isinstance(message, Mapping) and (
+                message.get("role") == "tool"
+                or message.get("tool_calls") is not None
+            ):
+                uses_tools = True
+                break
+        if uses_tools and not self.tools_enabled:
+            raise JobExecutionError(
+                "unsupported_feature",
+                "llama.cpp serving deployment does not enable structured tools",
+                retryable=False,
+            )
+
+        request["model"] = self.model_alias
+        return request, limits
+
+    def _gateway_embedding_payload(
+        self,
+        job: JobRequest,
+    ) -> tuple[dict[str, Any], dict[str, int], str]:
+        envelope = dict(job.payload)
+        if envelope.get("schema_version") != EMBEDDING_JOB_SCHEMA:
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding job requires the reviewed gateway envelope",
+                retryable=False,
+            )
+        if set(envelope) != {
+            "schema_version",
+            "adapter_id",
+            "embedding_space_id",
+            "request",
+            "limits",
+        }:
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding job envelope uses unsupported fields",
+                retryable=False,
+            )
+        if envelope.get("adapter_id") != LLAMA_CPP_EMBEDDING_ADAPTER:
+            raise JobExecutionError(
+                "unsupported_embedding_adapter",
+                "embedding job targets an unsupported provider adapter",
+                retryable=False,
+            )
+        space_id = envelope.get("embedding_space_id")
+        semantic_revision = job.metadata.get("serving_semantic_revision")
+        if (
+            not isinstance(space_id, str)
+            or semantic_revision != space_id
+        ):
+            raise JobExecutionError(
+                "embedding_space_mismatch",
+                "embedding job does not match the locally verified serving space",
+                retryable=False,
+            )
+        raw_request = envelope.get("request")
+        raw_limits = envelope.get("limits")
+        if not isinstance(raw_request, Mapping) or not isinstance(raw_limits, Mapping):
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding job request/limits must be objects",
+                retryable=False,
+            )
+        request = dict(raw_request)
+        if set(request) != {"input", "encoding_format"}:
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding runtime request uses unsupported fields",
+                retryable=False,
+            )
+        inputs = request.get("input")
+        if (
+            not isinstance(inputs, list)
+            or not inputs
+            or any(not isinstance(item, str) or not item for item in inputs)
+        ):
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding runtime input must be non-empty strings",
+                retryable=False,
+            )
+        if request.get("encoding_format") != "float":
+            raise JobExecutionError(
+                "unsupported_embedding_encoding",
+                "embedding runtime supports only float vectors",
+                retryable=False,
+            )
+
+        required_limits = (
+            "item_tokens",
+            "item_bytes",
+            "batch_items",
+            "batch_bytes",
+            "aggregate_tokens",
+            "dimensions",
+        )
+        limits: dict[str, int] = {}
+        for key in required_limits:
+            value = raw_limits.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise JobExecutionError(
+                    "invalid_embedding_job",
+                    "embedding job limits must be positive integers",
+                    retryable=False,
+                )
+            limits[key] = value
+        if set(raw_limits) != set(required_limits):
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding job limits use unsupported fields",
+                retryable=False,
+            )
+        if len(inputs) > limits["batch_items"]:
+            raise JobExecutionError(
+                "embedding_batch_exceeded",
+                "embedding job exceeds the bound batch-item limit",
+                retryable=False,
+            )
+        sizes = [len(item.encode("utf-8")) for item in inputs]
+        if any(size > limits["item_bytes"] for size in sizes):
+            raise JobExecutionError(
+                "embedding_input_exceeded",
+                "embedding item exceeds the bound byte limit",
+                retryable=False,
+            )
+        if sum(sizes) > limits["batch_bytes"]:
+            raise JobExecutionError(
+                "embedding_batch_exceeded",
+                "embedding batch exceeds the bound byte limit",
+                retryable=False,
+            )
+        request["model"] = self.model_alias
+        return request, limits, space_id
+
+    def _gateway_decision_payload(
+        self,
+        job: JobRequest,
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, int],
+        str,
+        tuple[str, ...],
+        tuple[str, ...],
+    ]:
+        envelope = dict(job.payload)
+        if envelope.get("schema_version") != DECISION_JOB_SCHEMA:
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision job requires the reviewed gateway envelope",
+                retryable=False,
+            )
+        expected_fields = {
+            "schema_version",
+            "adapter_id",
+            "decision_semantics_id",
+            "choice_ids",
+            "provider_choice_keys",
+            "request",
+            "limits",
+        }
+        if set(envelope) != expected_fields:
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision job envelope uses unsupported fields",
+                retryable=False,
+            )
+        if envelope.get("adapter_id") != LLAMA_CPP_SYSTEM_ONE_ADAPTER:
+            raise JobExecutionError(
+                "unsupported_decision_adapter",
+                "decision job targets an unsupported provider adapter",
+                retryable=False,
+            )
+        semantics_id = envelope.get("decision_semantics_id")
+        semantic_revision = job.metadata.get("serving_semantic_revision")
+        if (
+            not isinstance(semantics_id, str)
+            or semantic_revision != semantics_id
+        ):
+            raise JobExecutionError(
+                "decision_semantics_mismatch",
+                "decision job does not match locally verified semantics",
+                retryable=False,
+            )
+        raw_request = envelope.get("request")
+        raw_limits = envelope.get("limits")
+        if not isinstance(raw_request, Mapping) or not isinstance(
+            raw_limits, Mapping
+        ):
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision job request/limits must be objects",
+                retryable=False,
+            )
+        request = dict(raw_request)
+        if set(request) != {"state", "questions"}:
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision runtime request uses unsupported fields",
+                retryable=False,
+            )
+        state = request.get("state")
+        questions = request.get("questions")
+        if not isinstance(state, str) or not state.strip():
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision runtime state must be non-empty text",
+                retryable=False,
+            )
+        if not isinstance(questions, Mapping) or set(questions) != {"decision"}:
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision runtime requires exactly one bounded question",
+                retryable=False,
+            )
+        question = questions.get("decision")
+        if not isinstance(question, Mapping) or set(question) != {
+            "type",
+            "instructions",
+            "criteria",
+        }:
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision runtime question has an invalid shape",
+                retryable=False,
+            )
+        if question.get("type") != "choice":
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "first decision adapter supports choice questions only",
+                retryable=False,
+            )
+        instructions = question.get("instructions")
+        criteria = question.get("criteria")
+        if not isinstance(instructions, str) or not instructions.strip():
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision instructions must be non-empty text",
+                retryable=False,
+            )
+        if not isinstance(criteria, Mapping) or len(criteria) < 2:
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision criteria must contain at least two choices",
+                retryable=False,
+            )
+
+        choice_ids_raw = envelope.get("choice_ids")
+        provider_keys_raw = envelope.get("provider_choice_keys")
+        if (
+            not isinstance(choice_ids_raw, list)
+            or not isinstance(provider_keys_raw, list)
+            or len(choice_ids_raw) != len(provider_keys_raw)
+            or len(choice_ids_raw) != len(criteria)
+            or len(set(choice_ids_raw)) != len(choice_ids_raw)
+            or len(set(provider_keys_raw)) != len(provider_keys_raw)
+            or any(
+                not isinstance(value, str) or not value
+                for value in choice_ids_raw
+            )
+            or any(
+                not isinstance(value, str) or not value
+                for value in provider_keys_raw
+            )
+        ):
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision choice mapping is invalid",
+                retryable=False,
+            )
+        provider_keys = tuple(provider_keys_raw)
+        if set(criteria) != set(provider_keys):
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision provider keys do not match criteria",
+                retryable=False,
+            )
+
+        required_limits = {
+            "state_bytes",
+            "question_bytes",
+            "choice_count",
+            "choice_id_bytes",
+            "choice_label_bytes",
+            "state_tokens",
+            "question_tokens",
+            "choice_label_tokens",
+            "aggregate_tokens",
+        }
+        if set(raw_limits) != required_limits:
+            raise JobExecutionError(
+                "invalid_decision_job",
+                "decision job limits use unsupported fields",
+                retryable=False,
+            )
+        limits: dict[str, int] = {}
+        for key in required_limits:
+            value = raw_limits.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise JobExecutionError(
+                    "invalid_decision_job",
+                    "decision job limits must be positive integers",
+                    retryable=False,
+                )
+            limits[key] = value
+        if len(choice_ids_raw) > limits["choice_count"]:
+            raise JobExecutionError(
+                "decision_input_exceeded",
+                "decision job exceeds the bound choice-count limit",
+                retryable=False,
+            )
+        if len(state.encode("utf-8")) > limits["state_bytes"]:
+            raise JobExecutionError(
+                "decision_input_exceeded",
+                "decision state exceeds the bound byte limit",
+                retryable=False,
+            )
+        if len(instructions.encode("utf-8")) > limits["question_bytes"]:
+            raise JobExecutionError(
+                "decision_input_exceeded",
+                "decision question exceeds the bound byte limit",
+                retryable=False,
+            )
+        for choice_id in choice_ids_raw:
+            if len(choice_id.encode("utf-8")) > limits["choice_id_bytes"]:
+                raise JobExecutionError(
+                    "decision_input_exceeded",
+                    "decision choice ID exceeds the bound byte limit",
+                    retryable=False,
+                )
+        for label in criteria.values():
+            if not isinstance(label, str) or not label.strip():
+                raise JobExecutionError(
+                    "invalid_decision_job",
+                    "decision choice labels must be non-empty text",
+                    retryable=False,
+                )
+            if len(label.encode("utf-8")) > limits["choice_label_bytes"]:
+                raise JobExecutionError(
+                    "decision_input_exceeded",
+                    "decision choice label exceeds the bound byte limit",
+                    retryable=False,
+                )
+
+        return (
+            request,
+            limits,
+            semantics_id,
+            tuple(choice_ids_raw),
+            provider_keys,
+        )
+
+    async def _enforce_decision_token_limits(
+        self,
+        request: Mapping[str, Any],
+        limits: Mapping[str, int],
+    ) -> None:
+        state = str(request["state"])
+        question = request["questions"]["decision"]
+        instructions = str(question["instructions"])
+        criteria = question["criteria"]
+        state_tokens = await self.api.tokenize(state)
+        question_tokens = await self.api.tokenize(instructions)
+        label_tokens = [
+            await self.api.tokenize(str(label))
+            for label in criteria.values()
+        ]
+        if state_tokens > limits["state_tokens"]:
+            raise JobExecutionError(
+                "decision_input_exceeded",
+                "decision state exceeds the bound token limit",
+                retryable=False,
+            )
+        if question_tokens > limits["question_tokens"]:
+            raise JobExecutionError(
+                "decision_input_exceeded",
+                "decision question exceeds the bound token limit",
+                retryable=False,
+            )
+        if any(
+            count > limits["choice_label_tokens"]
+            for count in label_tokens
+        ):
+            raise JobExecutionError(
+                "decision_input_exceeded",
+                "decision choice label exceeds the bound token limit",
+                retryable=False,
+            )
+        if (
+            state_tokens + question_tokens + sum(label_tokens)
+            > limits["aggregate_tokens"]
+        ):
+            raise JobExecutionError(
+                "decision_input_exceeded",
+                "decision request exceeds the aggregate token limit",
+                retryable=False,
+            )
+
+    async def _enforce_embedding_token_limits(
+        self,
+        inputs: list[str],
+        limits: Mapping[str, int],
+    ) -> None:
+        counts = [await self.api.tokenize(item) for item in inputs]
+        if any(count > limits["item_tokens"] for count in counts):
+            raise JobExecutionError(
+                "embedding_input_exceeded",
+                "embedding item exceeds the bound token limit",
+                retryable=False,
+            )
+        if sum(counts) > limits["aggregate_tokens"]:
+            raise JobExecutionError(
+                "embedding_batch_exceeded",
+                "embedding batch exceeds the aggregate token limit",
+                retryable=False,
+            )
+
+    async def _enforce_chat_limits(
+        self,
+        payload: Mapping[str, Any],
+        limits: Mapping[str, int],
+    ) -> None:
+        input_tokens = await self.api.chat_input_tokens(payload)
+        output_tokens = int(payload["max_tokens"])
+        if input_tokens > limits["input_tokens"]:
+            raise JobExecutionError(
+                "context_length_exceeded",
+                "chat input exceeds the deployed input-token limit",
+                retryable=False,
+            )
+        if input_tokens + output_tokens > limits["total_tokens"]:
+            raise JobExecutionError(
+                "context_length_exceeded",
+                "chat input plus output reservation exceeds deployed context",
+                retryable=False,
+            )
+
     async def execute(self, job: JobRequest) -> JobResult:
         if job.capability not in self.capabilities:
             raise ValueError(
                 f"llama.cpp executor does not support capability: {job.capability}"
             )
 
-        payload = self._payload(job)
+        if job.capability == "decision.system_one":
+            (
+                payload,
+                limits,
+                semantics_id,
+                _choice_ids,
+                provider_keys,
+            ) = self._gateway_decision_payload(job)
+            await self._enforce_decision_token_limits(payload, limits)
+            call = self.api.system_one(payload)
+            task = asyncio.create_task(call)
+            self._inflight[job.job_id] = task
+            try:
+                response = await task
+            finally:
+                self._inflight.pop(job.job_id, None)
+            try:
+                _scores, usage = validate_decision_provider_response(
+                    response,
+                    provider_choice_keys=provider_keys,
+                )
+            except DecisionGatewayError as exc:
+                raise JobExecutionError(
+                    "invalid_provider_response",
+                    "llama.cpp returned an invalid decision response",
+                    retryable=False,
+                ) from exc
+            return JobResult(
+                outputs=dict(response),
+                metrics=dict(usage),
+                metadata={
+                    "runtime_provider": LLAMA_CPP_PROVIDER_ID,
+                    "model": self.model_ref,
+                    "model_alias": self.model_alias,
+                    "decision_semantics_id": semantics_id,
+                    "score_kind": "choice_set_probability",
+                    "calibration_status": "uncalibrated",
+                },
+            )
+
+        if job.capability == "text.embed":
+            payload, limits, space_id = self._gateway_embedding_payload(job)
+            inputs = list(payload["input"])
+            await self._enforce_embedding_token_limits(inputs, limits)
+            call = self.api.embeddings(payload)
+            task = asyncio.create_task(call)
+            self._inflight[job.job_id] = task
+            try:
+                response = await task
+            finally:
+                self._inflight.pop(job.job_id, None)
+            try:
+                data, usage = validate_embedding_response(
+                    response,
+                    item_count=len(inputs),
+                    dimensions=limits["dimensions"],
+                )
+            except EmbeddingGatewayError as exc:
+                raise JobExecutionError(
+                    "invalid_provider_response",
+                    "llama.cpp returned invalid embedding vectors",
+                    retryable=False,
+                ) from exc
+            metrics = {
+                key: value
+                for key, value in usage.items()
+                if isinstance(value, int)
+            }
+            return JobResult(
+                outputs={
+                    "object": "list",
+                    "data": data,
+                    "model": self.model_alias,
+                    "usage": usage,
+                },
+                metrics=metrics,
+                metadata={
+                    "runtime_provider": LLAMA_CPP_PROVIDER_ID,
+                    "model": self.model_ref,
+                    "model_alias": self.model_alias,
+                    "embedding_space_id": space_id,
+                    "pooling": self.pooling,
+                    "normalization": "l2",
+                },
+            )
+
+        gateway_chat = (
+            self._gateway_chat_payload(job)
+            if job.capability == "llm.chat"
+            else None
+        )
+        if gateway_chat is None:
+            payload = self._payload(job)
+        else:
+            payload, limits = gateway_chat
+
         if job.capability == "llm.chat":
             if not isinstance(payload.get("messages"), list):
                 raise ValueError("llm.chat requires a messages list")
+            if gateway_chat is not None:
+                if payload.get("stream") is True:
+                    raise JobExecutionError(
+                        "streaming_requires_event_sink",
+                        "streaming chat requires the fenced Job event channel",
+                        retryable=False,
+                    )
+                await self._enforce_chat_limits(payload, limits)
             call = self.api.chat(payload)
         else:
             if not isinstance(payload.get("prompt"), str):
@@ -514,6 +1460,83 @@ class LlamaCppExecutor(JobExecutor):
             },
         )
 
+    async def execute_stream(
+        self,
+        job: JobRequest,
+        sink: JobEventSink,
+    ) -> JobResult:
+        if job.capability != "llm.chat":
+            return await self.execute(job)
+        gateway_chat = self._gateway_chat_payload(job)
+        if gateway_chat is None:
+            return await self.execute(job)
+        payload, limits = gateway_chat
+        if payload.get("stream") is not True:
+            return await self.execute(job)
+
+        await self._enforce_chat_limits(payload, limits)
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+
+        metrics: dict[str, int | float] = {}
+        text_parts: list[str] = []
+        current = asyncio.current_task()
+        if current is None:
+            raise RuntimeError("streaming execution task is unavailable")
+        self._inflight[job.job_id] = current
+        try:
+            async for raw_chunk in self.api.chat_stream(payload):
+                try:
+                    chunk = validate_chat_stream_chunk(raw_chunk)
+                except ChatGatewayError as exc:
+                    raise JobExecutionError(
+                        "invalid_provider_response",
+                        "llama.cpp returned an invalid chat stream chunk",
+                        retryable=False,
+                    ) from exc
+                choices = chunk.get("choices")
+                if isinstance(choices, list) and choices:
+                    choice = choices[0]
+                    if isinstance(choice, Mapping):
+                        delta = choice.get("delta")
+                        if isinstance(delta, Mapping):
+                            content = delta.get("content")
+                            if isinstance(content, str):
+                                text_parts.append(content)
+                usage = chunk.get("usage")
+                if isinstance(usage, Mapping):
+                    for key in (
+                        "prompt_tokens",
+                        "completion_tokens",
+                        "total_tokens",
+                    ):
+                        value = usage.get(key)
+                        if (
+                            isinstance(value, (int, float))
+                            and not isinstance(value, bool)
+                        ):
+                            metrics[key] = value
+                await sink.emit(
+                    JobEvent(
+                        kind="chat.completion.chunk",
+                        payload=chunk,
+                    )
+                )
+        finally:
+            if self._inflight.get(job.job_id) is current:
+                self._inflight.pop(job.job_id, None)
+
+        return JobResult(
+            outputs={"streamed": True},
+            metrics=metrics,
+            text="".join(text_parts) if text_parts else None,
+            metadata={
+                "runtime_provider": LLAMA_CPP_PROVIDER_ID,
+                "model": self.model_ref,
+                "model_alias": self.model_alias,
+            },
+        )
+
     async def cancel(self, job_id: str) -> None:
         task = self._inflight.get(job_id)
         if task is None or task.done():
@@ -548,6 +1571,10 @@ class LlamaCppManagedRuntime(ManagedRuntime):
         model_alias: str,
         startup_timeout_seconds: float,
         launch_policy: LlamaCppLaunchPolicy,
+        tools_enabled: bool = False,
+        embeddings: bool = False,
+        pooling: str | None = None,
+        decision: bool = False,
     ) -> None:
         self.api = api
         self.process = process
@@ -556,11 +1583,16 @@ class LlamaCppManagedRuntime(ManagedRuntime):
         self.model_alias = model_alias
         self.startup_timeout_seconds = startup_timeout_seconds
         self.launch_policy = launch_policy
+        self.decision_mode = decision
         self._closed = False
         self._executor = LlamaCppExecutor(
             api=api,
             model_ref=model_ref,
             model_alias=model_alias,
+            tools_enabled=tools_enabled,
+            embeddings=embeddings,
+            pooling=pooling,
+            decision=decision,
             residency_metadata={
                 "residency_policy": context.demand.residency_policy.value,
                 "gpu_topology": context.demand.gpu_topology.value,
@@ -621,6 +1653,12 @@ class LlamaCppManagedRuntime(ManagedRuntime):
                 raise RuntimeError(
                     "llama.cpp server did not expose the configured model alias"
                 )
+            if self.decision_mode and not await self.api.decision_capable(
+                self.model_alias
+            ):
+                raise RuntimeError(
+                    "llama.cpp model does not advertise native decision output"
+                )
         except Exception:
             if started_here:
                 with contextlib.suppress(Exception):
@@ -665,6 +1703,25 @@ class LlamaCppManagedRuntime(ManagedRuntime):
                 detail="configured llama.cpp model alias is unavailable",
                 metadata={"runtime_provider": LLAMA_CPP_PROVIDER_ID},
             )
+        if self.decision_mode:
+            try:
+                decision_capable = await self.api.decision_capable(
+                    self.model_alias
+                )
+            except Exception:
+                return RuntimeHealth(
+                    state=RuntimeHealthState.DEGRADED,
+                    ready=False,
+                    detail="llama.cpp decision capability is unavailable",
+                    metadata={"runtime_provider": LLAMA_CPP_PROVIDER_ID},
+                )
+            if not decision_capable:
+                return RuntimeHealth(
+                    state=RuntimeHealthState.FAILED,
+                    ready=False,
+                    detail="configured model is not a native decision model",
+                    metadata={"runtime_provider": LLAMA_CPP_PROVIDER_ID},
+                )
         # An owned process may exit during the awaited inventory request.
         if not self.process.running:
             return RuntimeHealth(
@@ -997,7 +2054,18 @@ class LlamaCppProvider(RuntimeProvider):
                 "n_cpu_ffn": policy.n_cpu_ffn,
                 "offline": self.config.offline,
                 "no_webui": self.config.no_webui,
-                "capabilities": sorted(LLAMA_CPP_CAPABILITIES),
+                "jinja": self.config.jinja,
+                "chat_template_file": self.config.chat_template_file,
+                "embeddings": self.config.embeddings,
+                "pooling": self.config.pooling,
+                "decision": self.config.decision,
+                "capabilities": sorted(
+                    LLAMA_CPP_EMBEDDING_CAPABILITIES
+                    if self.config.embeddings
+                    else LLAMA_CPP_DECISION_CAPABILITIES
+                    if self.config.decision
+                    else LLAMA_CPP_CAPABILITIES
+                ),
             },
             model_preparation=ModelPreparationPolicy.REFERENCE_ONLY,
             model_ref=context.demand.model.model_ref,
@@ -1025,6 +2093,55 @@ class LlamaCppProvider(RuntimeProvider):
         )
         model_alias = str(cfg.get("model_alias") or "astrumweaver")
         executable = str(cfg.get("executable") or self.config.executable)
+        jinja = cfg.get("jinja", self.config.jinja)
+        if type(jinja) is not bool:
+            raise ValueError("llama.cpp deployment jinja must be boolean")
+        raw_template = cfg.get(
+            "chat_template_file",
+            self.config.chat_template_file,
+        )
+        chat_template_file = (
+            None
+            if raw_template is None
+            else _nonblank(str(raw_template), "chat_template_file")
+        )
+        if chat_template_file is not None and not jinja:
+            raise ValueError(
+                "llama.cpp chat_template_file requires jinja=true"
+            )
+        embeddings = cfg.get("embeddings", self.config.embeddings)
+        if type(embeddings) is not bool:
+            raise ValueError("llama.cpp deployment embeddings must be boolean")
+        decision = cfg.get("decision", self.config.decision)
+        if type(decision) is not bool:
+            raise ValueError("llama.cpp deployment decision must be boolean")
+        if embeddings and decision:
+            raise ValueError(
+                "llama.cpp deployment cannot mix embedding and decision modes"
+            )
+        raw_pooling = cfg.get("pooling", self.config.pooling)
+        pooling = (
+            None
+            if raw_pooling is None
+            else _nonblank(str(raw_pooling), "pooling")
+        )
+        if embeddings:
+            if jinja or chat_template_file is not None:
+                raise ValueError(
+                    "llama.cpp embedding deployment cannot enable chat templates"
+                )
+            if pooling not in {"mean", "cls", "last"}:
+                raise ValueError(
+                    "llama.cpp embedding deployment requires supported pooling"
+                )
+        elif pooling is not None:
+            raise ValueError(
+                "llama.cpp deployment pooling requires embeddings=true"
+            )
+        if decision and (jinja or chat_template_file is not None):
+            raise ValueError(
+                "llama.cpp decision deployment cannot enable chat templates"
+            )
 
         split_mode = LlamaCppSplitMode(
             str(cfg.get("split_mode") or _launch_policy(context, self.config).split_mode)
@@ -1075,6 +2192,10 @@ class LlamaCppProvider(RuntimeProvider):
             launch_policy=policy,
             offline=bool(cfg.get("offline", self.config.offline)),
             no_webui=bool(cfg.get("no_webui", self.config.no_webui)),
+            jinja=jinja,
+            chat_template_file=chat_template_file,
+            embeddings=embeddings,
+            pooling=pooling,
         )
 
         return LlamaCppManagedRuntime(
@@ -1085,4 +2206,8 @@ class LlamaCppProvider(RuntimeProvider):
             model_alias=model_alias,
             startup_timeout_seconds=self.config.startup_timeout_seconds,
             launch_policy=policy,
+            tools_enabled=jinja,
+            embeddings=embeddings,
+            pooling=pooling,
+            decision=decision,
         )

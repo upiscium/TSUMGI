@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections.abc import Mapping
 
 import httpx
 import pytest
 
 from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.execution import JobRequest
+from astrumweaver.execution import JobExecutionError, JobRequest
 from astrumweaver.runtime import (
     ExecutionDemand,
     GPUTopology,
@@ -650,6 +651,11 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
                     "data": [{"id": "astrumweaver", "object": "model"}],
                 },
             )
+        if request.url.path == "/v1/chat/completions/input_tokens":
+            return httpx.Response(
+                200,
+                json={"object": "response.input_tokens", "input_tokens": 3},
+            )
         if request.url.path == "/v1/chat/completions":
             return httpx.Response(
                 200,
@@ -694,6 +700,13 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
             }
         )
         assert chat["choices"][0]["message"]["content"] == "hello"
+        assert await api.chat_input_tokens(
+            {
+                "model": "astrumweaver",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            }
+        ) == 3
         completion = await api.completion(
             {
                 "model": "astrumweaver",
@@ -709,8 +722,84 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
         "/health",
         "/v1/models",
         "/v1/chat/completions",
+        "/v1/chat/completions/input_tokens",
         "/v1/completions",
     ]
+
+
+@pytest.mark.asyncio
+async def test_http_api_parses_openai_sse_until_done() -> None:
+    observed: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'data: {"choices":[{"index":0,"delta":{"content":"a"},'
+                '"finish_reason":null}]}\n\n'
+                'data: {"choices":[{"index":0,"delta":{"content":"b"},'
+                '"finish_reason":"stop"}]}\n\n'
+                'data: {"choices":[],"usage":{"prompt_tokens":2,'
+                '"completion_tokens":2,"total_tokens":4}}\n\n'
+                'data: [DONE]\n\n'
+            ),
+        )
+
+    api = HttpLlamaCppApi(
+        "http://127.0.0.1:8080",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        chunks = [
+            chunk
+            async for chunk in api.chat_stream(
+                {
+                    "model": "astrumweaver",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                }
+            )
+        ]
+    finally:
+        await api.close()
+
+    assert [chunk["choices"] for chunk in chunks[:2]] == [
+        [{"index": 0, "delta": {"content": "a"}, "finish_reason": None}],
+        [{"index": 0, "delta": {"content": "b"}, "finish_reason": "stop"}],
+    ]
+    assert chunks[2]["usage"]["total_tokens"] == 4
+    assert observed[0]["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_http_api_rejects_non_data_sse_frame() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text="event: message\n\ndata: [DONE]\n\n",
+        )
+
+    api = HttpLlamaCppApi(
+        "http://127.0.0.1:8080",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="SSE framing"):
+            _ = [
+                chunk
+                async for chunk in api.chat_stream(
+                    {
+                        "model": "astrumweaver",
+                        "messages": [],
+                        "stream": True,
+                    }
+                )
+            ]
+    finally:
+        await api.close()
 
 
 class FakeApi:
@@ -719,14 +808,25 @@ class FakeApi:
         *,
         reachable: bool = True,
         models: tuple[str, ...] = ("astrumweaver",),
+        decision_capable: bool = False,
     ) -> None:
         self.reachable = reachable
         self.model_ids = models
+        self.decision_capable_value = decision_capable
         self.closed = False
         self.chat_started = asyncio.Event()
         self.block_chat = False
         self.chat_payloads: list[dict] = []
+        self.chat_stream_payloads: list[dict] = []
+        self.chat_stream_chunks: list[dict] = []
+        self.chat_stream_error: Exception | None = None
+        self.chat_token_payloads: list[dict] = []
+        self.chat_input_token_count = 3
         self.completion_payloads: list[dict] = []
+        self.embedding_payloads: list[dict] = []
+        self.decision_payloads: list[dict] = []
+        self.tokenized_contents: list[str] = []
+        self.embedding_dimensions = 3
 
     async def health(self) -> bool:
         return self.reachable
@@ -735,6 +835,17 @@ class FakeApi:
         if not self.reachable:
             raise httpx.ConnectError("offline")
         return self.model_ids
+
+    async def chat_stream(self, payload: Mapping[str, object]):
+        self.chat_stream_payloads.append(dict(payload))
+        for chunk in self.chat_stream_chunks:
+            yield dict(chunk)
+        if self.chat_stream_error is not None:
+            raise self.chat_stream_error
+
+    async def chat_input_tokens(self, payload: Mapping[str, object]) -> int:
+        self.chat_token_payloads.append(dict(payload))
+        return self.chat_input_token_count
 
     async def chat(self, payload: Mapping[str, object]):
         self.chat_payloads.append(dict(payload))
@@ -764,8 +875,281 @@ class FakeApi:
             "usage": {"total_tokens": 4},
         }
 
+    async def embeddings(self, payload: Mapping[str, object]):
+        self.embedding_payloads.append(dict(payload))
+        inputs = list(payload["input"])
+        value = 1.0 / math.sqrt(self.embedding_dimensions)
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "object": "embedding",
+                    "embedding": [value] * self.embedding_dimensions,
+                    "index": index,
+                }
+                for index, _ in enumerate(inputs)
+            ],
+            "usage": {
+                "prompt_tokens": sum(len(item.split()) for item in inputs),
+                "total_tokens": sum(len(item.split()) for item in inputs),
+            },
+        }
+
+    async def system_one(self, payload: Mapping[str, object]):
+        self.decision_payloads.append(dict(payload))
+        return {
+            "model": "astrumweaver",
+            "answers": {
+                "decision": {
+                    "type": "choice",
+                    "choice": "0000",
+                    "probabilities": {
+                        "0000": 0.7,
+                        "0001": 0.2,
+                        "0002": 0.1,
+                    },
+                    "confidence": 0.55,
+                }
+            },
+            "usage": {"input_tokens": 12, "output_tokens": 0},
+        }
+
+    async def decision_capable(self, model_id: str) -> bool:
+        return (
+            self.reachable
+            and model_id in self.model_ids
+            and self.decision_capable_value
+        )
+
+    async def tokenize(self, content: str) -> int:
+        self.tokenized_contents.append(content)
+        return len(content.split())
+
     async def close(self) -> None:
         self.closed = True
+
+
+class CollectEventSink:
+    def __init__(self) -> None:
+        self.events = []
+
+    async def emit(self, event) -> None:
+        self.events.append(event)
+
+
+@pytest.mark.asyncio
+async def test_gateway_chat_stream_emits_text_tool_and_usage_chunks():
+    api = FakeApi()
+    api.chat_input_token_count = 12
+    api.chat_stream_chunks = [
+        {
+            "id": "chat-provider",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "astrumweaver",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "hel"},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "chat-provider",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_read",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": "{\"path\":",
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "arguments": "\"README.md\"}",
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        },
+        {
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 4,
+                "total_tokens": 16,
+            },
+        },
+    ]
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=True,
+    )
+    sink = CollectEventSink()
+    result = await executor.execute_stream(
+        JobRequest(
+            job_id="stream-chat",
+            capability="llm.chat",
+            payload={
+                "schema_version": "chat-job-v1",
+                "adapter_id": "llama-cpp-chat-v1",
+                "request": {
+                    "messages": [{"role": "user", "content": "inspect"}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    "tool_choice": "auto",
+                    "max_tokens": 20,
+                    "stream": True,
+                },
+                "limits": {
+                    "input_tokens": 64,
+                    "output_tokens": 32,
+                    "total_tokens": 84,
+                },
+            },
+        ),
+        sink,
+    )
+
+    assert api.chat_stream_payloads[0]["stream"] is True
+    assert api.chat_stream_payloads[0]["stream_options"] == {
+        "include_usage": True
+    }
+    assert len(sink.events) == 4
+    assert all(event.kind == "chat.completion.chunk" for event in sink.events)
+    first_tool = sink.events[1].payload["choices"][0]["delta"]["tool_calls"][0]
+    second_tool = sink.events[2].payload["choices"][0]["delta"]["tool_calls"][0]
+    assert first_tool["id"] == "call_read"
+    assert first_tool["function"]["arguments"] == "{\"path\":"
+    assert second_tool["function"]["arguments"] == "\"README.md\"}"
+    assert sink.events[3].payload["usage"]["total_tokens"] == 16
+    assert result.metrics["total_tokens"] == 16
+    assert result.text == "hel"
+
+
+@pytest.mark.asyncio
+async def test_gateway_chat_stream_rejects_malformed_tool_argument_fragment():
+    api = FakeApi()
+    api.chat_stream_chunks = [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "arguments": {"not": "a string"},
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        }
+    ]
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=True,
+    )
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute_stream(
+            JobRequest(
+                job_id="bad-stream-chat",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "llama-cpp-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "inspect"}],
+                        "max_tokens": 8,
+                        "stream": True,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 16,
+                        "total_tokens": 80,
+                    },
+                },
+            ),
+            CollectEventSink(),
+        )
+    assert error.value.code == "invalid_provider_response"
+    assert error.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_gateway_chat_stream_context_overflow_precedes_provider_stream():
+    api = FakeApi()
+    api.chat_input_token_count = 65
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute_stream(
+            JobRequest(
+                job_id="stream-overflow",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "llama-cpp-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "large"}],
+                        "max_tokens": 8,
+                        "stream": True,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 16,
+                        "total_tokens": 80,
+                    },
+                },
+            ),
+            CollectEventSink(),
+        )
+    assert error.value.code == "context_length_exceeded"
+    assert api.chat_stream_payloads == []
 
 
 class FakeProcess:
@@ -1073,3 +1457,785 @@ def test_main_gpu_must_be_inside_visible_set() -> None:
     assert "main-gpu-outside-visible-set" in {
         reason.code for reason in report.reasons
     }
+
+
+@pytest.mark.asyncio
+async def test_stage_a_gateway_chat_counts_actual_template_before_inference() -> None:
+    api = FakeApi()
+    api.chat_input_token_count = 40
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=True,
+    )
+    arguments = '{"path":"README.md"}'
+    result = await executor.execute(
+        JobRequest(
+            job_id="gateway-chat",
+            capability="llm.chat",
+            payload={
+                "schema_version": "chat-job-v1",
+                "adapter_id": "llama-cpp-chat-v1",
+                "request": {
+                    "messages": [
+                        {"role": "user", "content": "inspect"},
+                    ],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    "tool_choice": "auto",
+                    "max_tokens": 20,
+                    "stream": False,
+                },
+                "limits": {
+                    "input_tokens": 64,
+                    "output_tokens": 32,
+                    "total_tokens": 84,
+                },
+            },
+        )
+    )
+
+    assert result.text == "hello"
+    assert len(api.chat_token_payloads) == 1
+    counted = api.chat_token_payloads[0]
+    assert counted["model"] == "astrumweaver"
+    assert counted["tools"][0]["function"]["name"] == "read_file"
+    assert counted["stream"] is False
+    assert api.chat_payloads == [counted]
+
+
+@pytest.mark.asyncio
+async def test_stage_a_gateway_chat_context_overflow_is_non_retryable() -> None:
+    api = FakeApi()
+    api.chat_input_token_count = 65
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute(
+            JobRequest(
+                job_id="overflow",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "llama-cpp-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "large"}],
+                        "max_tokens": 8,
+                        "stream": False,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 16,
+                        "total_tokens": 80,
+                    },
+                },
+            )
+        )
+
+    assert error.value.code == "context_length_exceeded"
+    assert not error.value.retryable
+    assert api.chat_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_stage_a_gateway_chat_total_context_reserves_output_tokens() -> None:
+    api = FakeApi()
+    api.chat_input_token_count = 60
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute(
+            JobRequest(
+                job_id="reservation-overflow",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "llama-cpp-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "large"}],
+                        "max_tokens": 21,
+                        "stream": False,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 32,
+                        "total_tokens": 80,
+                    },
+                },
+            )
+        )
+
+    assert error.value.code == "context_length_exceeded"
+    assert not error.value.retryable
+    assert api.chat_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_stage_a_gateway_chat_rejects_wrong_adapter_before_provider_call() -> None:
+    api = FakeApi()
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute(
+            JobRequest(
+                job_id="wrong-adapter",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "other-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 8,
+                        "stream": False,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 16,
+                        "total_tokens": 80,
+                    },
+                },
+            )
+        )
+
+    assert error.value.code == "unsupported_chat_adapter"
+    assert not error.value.retryable
+    assert api.chat_token_payloads == []
+    assert api.chat_payloads == []
+
+
+
+def test_llama_cpp_jinja_tool_mode_threads_into_setup_and_command() -> None:
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(
+            jinja=True,
+            chat_template_file="/templates/tool-use.jinja",
+        )
+    )
+    intent = provider.setup_intent(context())
+    assert intent.configuration["jinja"] is True
+    assert (
+        intent.configuration["chat_template_file"]
+        == "/templates/tool-use.jinja"
+    )
+
+    controller = LlamaCppSubprocessController(
+        executable="llama-server",
+        base_url="http://127.0.0.1:8080",
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        gpu_uuids=("GPU-one",),
+        context_size=4096,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers="all",
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=False,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+        offline=True,
+        no_webui=True,
+        jinja=True,
+        chat_template_file="/templates/tool-use.jinja",
+    )
+    command = controller.command()
+    assert "--jinja" in command
+    assert command[command.index("--chat-template-file") + 1] == (
+        "/templates/tool-use.jinja"
+    )
+
+
+def test_llama_cpp_template_file_requires_jinja_mode() -> None:
+    with pytest.raises(ValueError, match="requires jinja"):
+        LlamaCppProviderConfig(
+            jinja=False,
+            chat_template_file="/templates/tool-use.jinja",
+        )
+
+
+@pytest.mark.asyncio
+async def test_stage_a_tool_request_requires_jinja_runtime_evidence() -> None:
+    api = FakeApi()
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=False,
+    )
+
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute(
+            JobRequest(
+                job_id="tool-without-jinja",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "llama-cpp-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "inspect"}],
+                        "tools": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "parameters": {"type": "object"},
+                                },
+                            }
+                        ],
+                        "tool_choice": "auto",
+                        "max_tokens": 8,
+                        "stream": False,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 16,
+                        "total_tokens": 80,
+                    },
+                },
+            )
+        )
+
+    assert error.value.code == "unsupported_feature"
+    assert not error.value.retryable
+    assert api.chat_token_payloads == []
+    assert api.chat_payloads == []
+
+
+def test_llama_cpp_executor_advertises_tools_only_with_jinja() -> None:
+    api = FakeApi()
+    plain = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=False,
+    )
+    tools = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=True,
+    )
+
+    assert plain.serving_features["llm.chat"] == frozenset()
+    assert tools.serving_features["llm.chat"] == frozenset({"tools"})
+
+
+def test_llama_cpp_embedding_mode_is_explicit_and_exclusive() -> None:
+    with pytest.raises(ValueError, match="pooling"):
+        LlamaCppProviderConfig(embeddings=True)
+    with pytest.raises(ValueError, match="cannot enable chat templates"):
+        LlamaCppProviderConfig(
+            embeddings=True,
+            pooling="last",
+            jinja=True,
+        )
+    with pytest.raises(ValueError, match="requires embeddings"):
+        LlamaCppProviderConfig(pooling="last")
+
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(
+            embeddings=True,
+            pooling="last",
+        )
+    )
+    intent = provider.setup_intent(context())
+    assert intent.configuration["embeddings"] is True
+    assert intent.configuration["pooling"] == "last"
+    assert intent.configuration["capabilities"] == ["text.embed"]
+
+
+def test_llama_cpp_embedding_process_uses_dedicated_mode_and_pooling() -> None:
+    controller = LlamaCppSubprocessController(
+        executable="llama-server",
+        base_url="http://127.0.0.1:8080",
+        model_ref="/models/embed.gguf",
+        model_alias="astrumweaver",
+        gpu_uuids=(),
+        context_size=4096,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers=0,
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=False,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+        offline=True,
+        no_webui=True,
+        embeddings=True,
+        pooling="last",
+    )
+    command = controller.command()
+    assert "--embeddings" in command
+    assert command[command.index("--pooling") + 1] == "last"
+    assert "--jinja" not in command
+
+
+@pytest.mark.asyncio
+async def test_embedding_executor_rechecks_space_limits_and_vectors() -> None:
+    api = FakeApi()
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/embed.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        embeddings=True,
+        pooling="last",
+    )
+    space = "sha256:" + "e" * 64
+    result = await executor.execute(
+        JobRequest(
+            job_id="embed-job",
+            capability="text.embed",
+            payload={
+                "schema_version": "embedding-job-v1",
+                "adapter_id": "llama-cpp-embedding-v1",
+                "embedding_space_id": space,
+                "request": {
+                    "input": ["alpha beta", "gamma"],
+                    "encoding_format": "float",
+                },
+                "limits": {
+                    "item_tokens": 4,
+                    "item_bytes": 64,
+                    "batch_items": 4,
+                    "batch_bytes": 128,
+                    "aggregate_tokens": 6,
+                    "dimensions": 3,
+                },
+            },
+            metadata={"serving_semantic_revision": space},
+        )
+    )
+
+    assert executor.capabilities == frozenset({"text.embed"})
+    assert executor.serving_features["text.embed"] == frozenset(
+        {"float", "pooling-last", "normalization-l2"}
+    )
+    assert api.tokenized_contents == ["alpha beta", "gamma"]
+    assert api.embedding_payloads == [
+        {
+            "input": ["alpha beta", "gamma"],
+            "encoding_format": "float",
+            "model": "astrumweaver",
+        }
+    ]
+    assert [item["index"] for item in result.outputs["data"]] == [0, 1]
+    assert len(result.outputs["data"][0]["embedding"]) == 3
+    assert result.metadata["embedding_space_id"] == space
+    assert result.metadata["pooling"] == "last"
+    assert result.metadata["normalization"] == "l2"
+
+
+@pytest.mark.asyncio
+async def test_embedding_executor_fails_closed_on_space_or_token_mismatch() -> None:
+    api = FakeApi()
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/embed.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        embeddings=True,
+        pooling="last",
+    )
+    space = "sha256:" + "e" * 64
+    base_payload = {
+        "schema_version": "embedding-job-v1",
+        "adapter_id": "llama-cpp-embedding-v1",
+        "embedding_space_id": space,
+        "request": {
+            "input": ["one two three"],
+            "encoding_format": "float",
+        },
+        "limits": {
+            "item_tokens": 2,
+            "item_bytes": 64,
+            "batch_items": 4,
+            "batch_bytes": 128,
+            "aggregate_tokens": 4,
+            "dimensions": 3,
+        },
+    }
+
+    with pytest.raises(JobExecutionError) as wrong_space:
+        await executor.execute(
+            JobRequest(
+                job_id="embed-space-mismatch",
+                capability="text.embed",
+                payload=base_payload,
+                metadata={
+                    "serving_semantic_revision": "sha256:" + "f" * 64
+                },
+            )
+        )
+    assert wrong_space.value.code == "embedding_space_mismatch"
+    assert api.embedding_payloads == []
+
+    with pytest.raises(JobExecutionError) as overflow:
+        await executor.execute(
+            JobRequest(
+                job_id="embed-token-overflow",
+                capability="text.embed",
+                payload=base_payload,
+                metadata={"serving_semantic_revision": space},
+            )
+        )
+    assert overflow.value.code == "embedding_input_exceeded"
+    assert api.embedding_payloads == []
+
+
+def test_generation_executor_does_not_advertise_embedding_capability() -> None:
+    executor = LlamaCppExecutor(
+        api=FakeApi(),
+        model_ref="/models/chat.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+    assert executor.capabilities == frozenset({"llm.chat", "text.generate"})
+    assert "text.embed" not in executor.capabilities
+
+
+def test_llama_cpp_decision_mode_is_explicit_and_exclusive() -> None:
+    with pytest.raises(ValueError, match="mix embedding and decision"):
+        LlamaCppProviderConfig(
+            embeddings=True,
+            pooling="last",
+            decision=True,
+        )
+    with pytest.raises(ValueError, match="decision mode cannot enable chat templates"):
+        LlamaCppProviderConfig(
+            decision=True,
+            jinja=True,
+        )
+
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(decision=True)
+    )
+    intent = provider.setup_intent(context())
+    assert intent.configuration["decision"] is True
+    assert intent.configuration["embeddings"] is False
+    assert intent.configuration["capabilities"] == ["decision.system_one"]
+
+
+@pytest.mark.asyncio
+async def test_http_llama_cpp_system_one_and_native_decision_probe() -> None:
+    requests: list[tuple[str, str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            json.loads(request.content)
+            if request.content
+            else None
+        )
+        requests.append((request.method, request.url.path, body))
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "astrumweaver",
+                            "architecture": {
+                                "input_modalities": ["text"],
+                                "output_modalities": ["decisions"],
+                            },
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/v1/systemone":
+            return httpx.Response(
+                200,
+                json={
+                    "model": "astrumweaver",
+                    "answers": {
+                        "decision": {
+                            "type": "choice",
+                            "choice": "0000",
+                            "probabilities": {
+                                "0000": 0.75,
+                                "0001": 0.25,
+                            },
+                        }
+                    },
+                    "usage": {
+                        "input_tokens": 5,
+                        "output_tokens": 0,
+                    },
+                },
+            )
+        raise AssertionError(request.url.path)
+
+    api = HttpLlamaCppApi(
+        "http://127.0.0.1:8080",
+        transport=httpx.MockTransport(handler),
+    )
+    payload = {
+        "state": "state",
+        "questions": {
+            "decision": {
+                "type": "choice",
+                "instructions": "choose",
+                "criteria": {
+                    "0000": "inspect carefully",
+                    "0001": "retry blindly",
+                },
+            }
+        },
+    }
+    try:
+        assert await api.decision_capable("astrumweaver") is True
+        assert await api.decision_capable("other") is False
+        response = await api.system_one(payload)
+    finally:
+        await api.close()
+
+    assert response["answers"]["decision"]["choice"] == "0000"
+    assert ("POST", "/v1/systemone", payload) in requests
+
+
+@pytest.mark.asyncio
+async def test_decision_executor_rechecks_semantics_limits_and_provider_scores() -> None:
+    api = FakeApi(decision_capable=True)
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/openjev.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        decision=True,
+    )
+    semantics = "sha256:" + "d" * 64
+    payload = {
+        "schema_version": "decision-job-v1",
+        "adapter_id": "llama-cpp-system-one-v1",
+        "decision_semantics_id": semantics,
+        "choice_ids": ["inspect", "retry", "human"],
+        "provider_choice_keys": ["0000", "0001", "0002"],
+        "request": {
+            "state": "a dependency update broke the tests",
+            "questions": {
+                "decision": {
+                    "type": "choice",
+                    "instructions": "what should happen next",
+                    "criteria": {
+                        "0000": "inspect the failure carefully",
+                        "0001": "retry without changing anything",
+                        "0002": "ask a human for review",
+                    },
+                }
+            },
+        },
+        "limits": {
+            "state_bytes": 256,
+            "question_bytes": 128,
+            "choice_count": 4,
+            "choice_id_bytes": 64,
+            "choice_label_bytes": 128,
+            "state_tokens": 16,
+            "question_tokens": 16,
+            "choice_label_tokens": 8,
+            "aggregate_tokens": 40,
+        },
+    }
+
+    result = await executor.execute(
+        JobRequest(
+            job_id="decision",
+            capability="decision.system_one",
+            payload=payload,
+            metadata={"serving_semantic_revision": semantics},
+        )
+    )
+
+    assert executor.capabilities == frozenset({"decision.system_one"})
+    assert executor.serving_features["decision.system_one"] == frozenset(
+        {
+            "native-decision-head",
+            "choice-probabilities",
+            "multi-token-choice-labels",
+            "provider-temperature-softmax",
+        }
+    )
+    assert api.tokenized_contents == [
+        "a dependency update broke the tests",
+        "what should happen next",
+        "inspect the failure carefully",
+        "retry without changing anything",
+        "ask a human for review",
+    ]
+    assert api.decision_payloads == [payload["request"]]
+    assert result.metrics == {"input_tokens": 12, "output_tokens": 0}
+    assert result.metadata["decision_semantics_id"] == semantics
+    assert result.metadata["score_kind"] == "choice_set_probability"
+    assert result.metadata["calibration_status"] == "uncalibrated"
+
+
+@pytest.mark.asyncio
+async def test_decision_executor_fails_closed_before_provider_call() -> None:
+    api = FakeApi(decision_capable=True)
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/openjev.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        decision=True,
+    )
+    semantics = "sha256:" + "d" * 64
+    payload = {
+        "schema_version": "decision-job-v1",
+        "adapter_id": "llama-cpp-system-one-v1",
+        "decision_semantics_id": semantics,
+        "choice_ids": ["inspect", "retry", "human"],
+        "provider_choice_keys": ["0000", "0001", "0002"],
+        "request": {
+            "state": "one two three",
+            "questions": {
+                "decision": {
+                    "type": "choice",
+                    "instructions": "choose next action",
+                    "criteria": {
+                        "0000": "inspect carefully",
+                        "0001": "retry now",
+                        "0002": "ask human",
+                    },
+                }
+            },
+        },
+        "limits": {
+            "state_bytes": 256,
+            "question_bytes": 128,
+            "choice_count": 4,
+            "choice_id_bytes": 64,
+            "choice_label_bytes": 128,
+            "state_tokens": 2,
+            "question_tokens": 16,
+            "choice_label_tokens": 8,
+            "aggregate_tokens": 40,
+        },
+    }
+
+    with pytest.raises(JobExecutionError) as wrong_semantics:
+        await executor.execute(
+            JobRequest(
+                job_id="wrong-semantics",
+                capability="decision.system_one",
+                payload=payload,
+                metadata={
+                    "serving_semantic_revision":
+                        "sha256:" + "e" * 64
+                },
+            )
+        )
+    assert wrong_semantics.value.code == "decision_semantics_mismatch"
+    assert api.decision_payloads == []
+
+    with pytest.raises(JobExecutionError) as overflow:
+        await executor.execute(
+            JobRequest(
+                job_id="token-overflow",
+                capability="decision.system_one",
+                payload=payload,
+                metadata={"serving_semantic_revision": semantics},
+            )
+        )
+    assert overflow.value.code == "decision_input_exceeded"
+    assert api.decision_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_managed_decision_runtime_requires_native_decision_model() -> None:
+    incapable_api = FakeApi(
+        reachable=False,
+        decision_capable=False,
+    )
+    incapable_process = FakeProcess(incapable_api)
+    incapable = LlamaCppManagedRuntime(
+        api=incapable_api,
+        process=incapable_process,
+        context=context(),
+        model_ref="/models/plain.gguf",
+        model_alias="astrumweaver",
+        startup_timeout_seconds=1.0,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers=0,
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=False,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+        decision=True,
+    )
+
+    with pytest.raises(RuntimeError, match="native decision"):
+        await incapable.start()
+    assert incapable_process.stops == 1
+
+    api = FakeApi(
+        reachable=False,
+        decision_capable=True,
+    )
+    process = FakeProcess(api)
+    runtime = LlamaCppManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="/models/openjev.gguf",
+        model_alias="astrumweaver",
+        startup_timeout_seconds=1.0,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers=0,
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=False,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+        decision=True,
+    )
+
+    await runtime.start()
+    assert (await runtime.health()).ready
+    assert runtime.executor().capabilities == frozenset(
+        {"decision.system_one"}
+    )
+    await runtime.stop()
