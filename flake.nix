@@ -224,6 +224,10 @@
           inherit pkgs integration;
         };
 
+        control-postgres-cli = import ./nix/tests/control-postgres-cli.nix {
+          inherit pkgs control installer;
+        };
+
         installation-surface = pkgs.runCommand "astrumweaver-installation-surface" { } ''
           test -x ${installer}/bin/astrumweaver-setup-tui
           test -x ${installer}/bin/astrumweaver-control
