@@ -191,8 +191,11 @@ class ChatGatewayService:
         )
         now = utc_now()
         deadline_at = now + timedelta(seconds=profile.request_timeout_seconds)
-        try:
-            record = await asyncio.to_thread(
+        # A cancelled HTTP task does not interrupt synchronous DB admission
+        # already running in asyncio.to_thread. Retain that task so its eventual
+        # durable Job ID can still be cancelled before ownership is lost.
+        submit_task = asyncio.create_task(
+            asyncio.to_thread(
                 self.repository.submit_job,
                 JobSubmission(
                     capability="llm.chat",
@@ -207,6 +210,19 @@ class ChatGatewayService:
                 ),
                 now=now,
             )
+        )
+        try:
+            record = await asyncio.shield(submit_task)
+        except asyncio.CancelledError:
+            with anyio.CancelScope(shield=True):
+                try:
+                    submitted = await asyncio.shield(submit_task)
+                except Exception:
+                    # Failed admission created no durable owner.
+                    pass
+                else:
+                    await self._cancel(submitted.job_id)
+            raise
         except DeadlineExceededError as exc:
             raise ChatGatewayError(
                 "deadline_exceeded",

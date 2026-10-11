@@ -1357,3 +1357,60 @@ async def test_server_cancels_response_task_still_fences_owned_stream_job():
         assert asyncio.get_running_loop().time() < deadline
         await asyncio.sleep(0.001)
     assert repository.get_worker("chat-worker").active_jobs == 0
+
+
+@pytest.mark.asyncio
+async def test_stream_submission_cancelled_while_db_insert_is_running_has_no_orphan():
+    """asyncio.to_thread keeps running after cancellation; its job still needs an owner."""
+    from threading import Event
+
+    begun = Event()
+    release = Event()
+    finished = Event()
+
+    class BlockingSubmitRepository(InMemoryControlRepository):
+        def submit_job(self, submission, *, now=None):
+            begun.set()
+            if not release.wait(timeout=3):
+                raise RuntimeError("synthetic bounded DB submission timeout")
+            try:
+                return super().submit_job(submission, now=now)
+            finally:
+                finished.set()
+
+    repository = BlockingSubmitRepository()
+    gateway, advertisement = serving_values(timeout=10.0)
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository, ChatProfileCatalog((gateway,)), poll_interval_seconds=0.001,
+    )
+
+    task = asyncio.create_task(service.stream_owned(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "cancel mid-submit"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    ))
+    deadline = asyncio.get_running_loop().time() + 1
+    try:
+        while not begun.is_set():
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.001)
+        task.cancel()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    until = asyncio.get_running_loop().time() + 1
+    while not finished.is_set():
+        assert asyncio.get_running_loop().time() < until
+        await asyncio.sleep(0.001)
+    jobs = repository.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].status is JobStatus.CANCELLED
+    assert jobs[0].max_attempts == 1
+    assert repository.get_worker("chat-worker").active_jobs == 0
