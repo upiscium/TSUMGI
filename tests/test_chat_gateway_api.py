@@ -1100,3 +1100,260 @@ async def test_streaming_timeout_emits_error_without_done_and_cancels_job():
     payload = json.loads(frames[-1][len("data: "):].strip())
     assert payload["error"]["code"] == "gateway_timeout"
     assert repository.list_jobs()[0].status is JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asgi_spec", ["2.3", "2.4"])
+async def test_transport_disconnect_cancels_running_owned_stream(asgi_spec):
+    """ASGI, not request.is_disconnected(), owns the actual disconnect signal.
+
+    Older Starlette uses http.disconnect; ASGI 2.4 uses send-side OSError.
+    Both must free the durable Job before the request response exits.
+    """
+    from astrumweaver.gateway.api import _OwnedChatStreamingResponse
+    from starlette.requests import ClientDisconnect
+
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(timeout=10.0)
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository, ChatProfileCatalog((gateway,)), poll_interval_seconds=0.001,
+    )
+    job_id, iterator = await service.stream_owned(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "long running"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    )
+    claimed = repository.claim_next_job(
+        "chat-worker", runtime_instance_epoch=EPOCH,
+    )
+    assert claimed is not None and claimed.job_id == job_id
+    assert repository.get_job(job_id).status is JobStatus.RUNNING
+
+    response = _OwnedChatStreamingResponse(
+        iterator,
+        cancel_owned_job=lambda: service._cancel(job_id),
+        media_type="text/event-stream",
+    )
+    sent = []
+
+    async def receive():
+        # ASGI 2.3 listener consumes this; the generator sees no disconnect.
+        await asyncio.sleep(0.01)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if asgi_spec == "2.4":
+            # No token has been delivered when the client disappears.
+            raise BrokenPipeError("the stream peer has gone away")
+        sent.append(message)
+
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": asgi_spec}}
+    if asgi_spec == "2.4":
+        with pytest.raises(ClientDisconnect):
+            await response(scope, receive, send)
+    else:
+        await asyncio.wait_for(response(scope, receive, send), timeout=2)
+
+    assert repository.get_job(job_id).status is JobStatus.CANCELLED
+    assert claimed.max_attempts == 1
+    assert repository.get_worker("chat-worker").active_jobs == 0
+    assert all(message.get("body") != b"data: [DONE]\\n\\n" for message in sent)
+
+
+@pytest.mark.asyncio
+async def test_stream_normal_durable_success_survives_response_close():
+    """Closing a normally completed HTTP stream must not rewrite success."""
+    from astrumweaver.gateway.api import _OwnedChatStreamingResponse
+
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(timeout=1.0)
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository, ChatProfileCatalog((gateway,)), poll_interval_seconds=0.001,
+    )
+    job_id, iterator = await service.stream_owned(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "finish"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    )
+    claimed = repository.claim_next_job(
+        "chat-worker", runtime_instance_epoch=EPOCH,
+    )
+    assert claimed is not None and claimed.job_id == job_id
+    repository.complete_job(
+        job_id,
+        JobResult(outputs={"response": "ok"}),
+        worker_id="chat-worker",
+        lease_token=claimed.lease_token,
+        runtime_instance_epoch=EPOCH,
+    )
+    assert repository.get_job(job_id).status is JobStatus.SUCCEEDED
+
+    response = _OwnedChatStreamingResponse(
+        iterator,
+        cancel_owned_job=lambda: service._cancel(job_id),
+        media_type="text/event-stream",
+    )
+    sent = []
+
+    async def receive():
+        await asyncio.sleep(3600)
+
+    async def send(message):
+        sent.append(message)
+
+    await asyncio.wait_for(
+        response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send),
+        timeout=2,
+    )
+    assert repository.get_job(job_id).status is JobStatus.SUCCEEDED
+    assert any(b"[DONE]" in msg.get("body", b"") for msg in sent)
+
+
+@pytest.mark.asyncio
+async def test_live_loopback_disconnect_fences_owned_running_chat_job():
+    """Close a real HTTP/1.1 streaming socket before any model token arrives."""
+    import socket
+    import uvicorn
+
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(timeout=10.0)
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+
+    listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listen.bind(("127.0.0.1", 0))
+    listen.listen(16)
+    port = listen.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(app, log_level="error", lifespan="off"),
+    )
+    server_task = asyncio.create_task(server.serve(sockets=[listen]))
+    writer = None
+    try:
+        deadline = asyncio.get_running_loop().time() + 3
+        while not server.started:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.005)
+
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        body = json.dumps({
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "client gone"}],
+            "stream": True,
+        }).encode()
+        headers = (
+            b"POST /v1/chat/completions HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Authorization: Bearer client-secret\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Connection: close\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode()
+        )
+        writer.write(headers + body)
+        await writer.drain()
+        response_head = await asyncio.wait_for(
+            reader.readuntil(b"\r\n\r\n"), timeout=2,
+        )
+        assert b"200 OK" in response_head
+
+        jobs = repository.list_jobs()
+        assert len(jobs) == 1
+        job_id = jobs[0].job_id
+        claimed = repository.claim_next_job(
+            "chat-worker", runtime_instance_epoch=EPOCH,
+        )
+        assert claimed is not None and claimed.job_id == job_id
+        assert repository.get_job(job_id).status is JobStatus.RUNNING
+
+        # Socket loss is observed by Uvicorn's ASGI receive/disconnect path,
+        # rather than the test double's Request.is_disconnected().
+        writer.close()
+        await writer.wait_closed()
+        deadline = asyncio.get_running_loop().time() + 2
+        while repository.get_job(job_id).status is not JobStatus.CANCELLED:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.005)
+
+        assert repository.get_worker("chat-worker").active_jobs == 0
+        followup = repository.submit_job(
+            JobSubmission(
+                capability="llm.chat",
+                serving=gateway.binding,
+                deadline_at=utc_now() + timedelta(seconds=10),
+            ),
+        )
+        assert followup.status is JobStatus.QUEUED
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        server.should_exit = True
+        await asyncio.wait_for(server_task, timeout=3)
+        listen.close()
+
+
+@pytest.mark.asyncio
+async def test_server_cancels_response_task_still_fences_owned_stream_job():
+    """Cancellation of the ASGI response task must not cancel cleanup."""
+    from astrumweaver.gateway.api import _OwnedChatStreamingResponse
+
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(timeout=10.0)
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository, ChatProfileCatalog((gateway,)), poll_interval_seconds=0.001,
+    )
+    job_id, iterator = await service.stream_owned(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "abort response task"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    )
+    claimed = repository.claim_next_job(
+        "chat-worker", runtime_instance_epoch=EPOCH,
+    )
+    assert claimed is not None and claimed.job_id == job_id
+    response = _OwnedChatStreamingResponse(
+        iterator,
+        cancel_owned_job=lambda: service._cancel(job_id),
+        media_type="text/event-stream",
+    )
+    started = asyncio.Event()
+
+    async def receive():
+        await asyncio.sleep(3600)
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            started.set()
+
+    task = asyncio.create_task(
+        response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            receive,
+            send,
+        ),
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    deadline = asyncio.get_running_loop().time() + 1
+    while repository.get_job(job_id).status is not JobStatus.CANCELLED:
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(0.001)
+    assert repository.get_worker("chat-worker").active_jobs == 0

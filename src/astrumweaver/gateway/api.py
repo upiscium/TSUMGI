@@ -6,11 +6,12 @@ import asyncio
 import json
 import math
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -285,6 +286,19 @@ class ChatGatewayService:
         *,
         request_size_bytes: int,
     ) -> AsyncIterator[str]:
+        # Retain the direct service API for callers that manage the iterator.
+        _, iterator = await self.stream_owned(
+            request, body, request_size_bytes=request_size_bytes,
+        )
+        return iterator
+
+    async def stream_owned(
+        self,
+        request: Request,
+        body: dict[str, object],
+        *,
+        request_size_bytes: int,
+    ) -> tuple[str, AsyncIterator[str]]:
         profile, record = await self._submit(
             body,
             request_size_bytes=request_size_bytes,
@@ -400,7 +414,37 @@ class ChatGatewayService:
                 await self._cancel(job_id)
                 raise
 
-        return generate()
+        return job_id, generate()
+
+
+class _OwnedChatStreamingResponse(StreamingResponse):
+    """Cancel the durable owner even when ASGI ends streaming externally.
+
+    Starlette may observe http.disconnect itself and cancel stream_response
+    without resuming the async generator. Its generator's local cancellation
+    handler alone is therefore insufficient for a real client disconnect.
+    """
+
+    def __init__(
+        self,
+        content: AsyncIterator[str],
+        *,
+        cancel_owned_job: Callable[[], Awaitable[None]],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(content, **kwargs)
+        self._cancel_owned_job = cancel_owned_job
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # This is outside Starlette's disconnect-cancelled task group.
+            # Shield the durable cancellation from further ASGI task-group
+            # cancellation. Success/failure terminal jobs are a no-op.
+            cancel_task = asyncio.create_task(self._cancel_owned_job())
+            with anyio.CancelScope(shield=True):
+                await asyncio.shield(cancel_task)
 
 
 def _stream_data(value: dict[str, object]) -> str:
@@ -481,13 +525,14 @@ def create_chat_router(
             )
         try:
             if value.get("stream") is True:
-                iterator = await service.stream(
+                job_id, iterator = await service.stream_owned(
                     request,
                     value,
                     request_size_bytes=len(raw),
                 )
-                return StreamingResponse(
+                return _OwnedChatStreamingResponse(
                     iterator,
+                    cancel_owned_job=lambda: service._cancel(job_id),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
