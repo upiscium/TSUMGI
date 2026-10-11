@@ -297,6 +297,7 @@ class ChatGatewayService:
 
         async def generate() -> AsyncIterator[str]:
             sequence = 0
+            terminal = False
             try:
                 while True:
                     if await request.is_disconnected():
@@ -352,9 +353,11 @@ class ChatGatewayService:
                         if tail:
                             continue
                         if current.status is JobStatus.SUCCEEDED:
+                            terminal = True
                             yield "data: [DONE]\n\n"
                             return
                         if current.status is JobStatus.CANCELLED:
+                            terminal = True
                             yield _stream_error(
                                 "request_cancelled",
                                 "chat request was cancelled",
@@ -379,6 +382,7 @@ class ChatGatewayService:
                                 else "backend_failure"
                             )
                         )
+                        terminal = True
                         yield _stream_error(
                             public_code,
                             "chat stream terminated before durable success",
@@ -397,8 +401,15 @@ class ChatGatewayService:
                         min(self.poll_interval_seconds, remaining)
                     )
             except asyncio.CancelledError:
-                await self._cancel(job_id)
                 raise
+            finally:
+                # ASGI may close the body iterator after a client disconnect
+                # instead of cancelling a task blocked inside anext(). An
+                # abandoned response must never leave its durable Job RUNNING.
+                # Preserve a naturally terminal Job; cancellation remains
+                # best-effort and the Worker lease/deadline is the backstop.
+                if not terminal:
+                    await self._cancel(job_id)
 
         return generate()
 

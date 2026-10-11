@@ -1100,3 +1100,47 @@ async def test_streaming_timeout_emits_error_without_done_and_cancels_job():
     payload = json.loads(frames[-1][len("data: "):].strip())
     assert payload["error"]["code"] == "gateway_timeout"
     assert repository.list_jobs()[0].status is JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_streaming_body_iterator_close_cancels_inflight_job():
+    """ASGI closing an SSE body iterator must release its durable job."""
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository,
+        ChatProfileCatalog((gateway,)),
+        poll_interval_seconds=0.001,
+    )
+    iterator = await service.stream(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "interrupted"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    )
+    job = repository.list_jobs()[0]
+    # The iterator has yielded a legitimate chunk to the client, so its
+    # generator is already active when the ASGI server closes the response.
+    claimed = repository.claim_next_job(
+        "chat-worker", runtime_instance_epoch=EPOCH,
+    )
+    assert claimed is not None and claimed.job_id == job.job_id
+    repository.append_job_event(
+        job.job_id,
+        worker_id="chat-worker",
+        lease_token=claimed.lease_token or "",
+        runtime_instance_epoch=EPOCH,
+        kind="chat.completion.chunk",
+        payload={
+            "id": "partial",
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {"content": "partial"}, "finish_reason": None}],
+        },
+    )
+    await anext(iterator)
+    await iterator.aclose()
+    assert repository.get_job(job.job_id).status is JobStatus.CANCELLED
