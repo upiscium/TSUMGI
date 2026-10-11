@@ -171,6 +171,11 @@ class PostgresControlRepository:
             # readiness. The one SQL boolean query precedes all CRUD/locks.
             try:
                 _require_utf8_database(connection)
+                # With psycopg's default non-autocommit connection, the probe
+                # SELECT opens an implicit transaction. Roll it back so the
+                # caller's transaction can issue SET TRANSACTION first.
+                # This probe performs no application reads/writes.
+                connection.rollback()
             except Exception as exc:
                 raise StorageUnavailable(
                     "PostgreSQL UTF8 database and client encoding are required "

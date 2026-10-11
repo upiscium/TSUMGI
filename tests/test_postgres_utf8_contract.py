@@ -98,3 +98,88 @@ def test_all_control_requests_refuse_unsupported_encoding_not_only_ready(monkeyp
     assert len(connection.statements) == 1
     assert "server_encoding" in connection.statements[0]
     assert closed == [True]
+
+
+
+def test_utf8_probe_finishes_implicit_tx_before_explicit_read_committed(monkeypatch):
+    """A successful preflight must not preempt the ownership isolation SET."""
+    from astrumweaver.control import postgres as postgres_module
+
+    class TxAwareConnection:
+        def __init__(self):
+            self.phase = "idle"
+            self.trace = []
+
+        def execute(self, sql, *_args, **_kwargs):
+            if "server_encoding" in sql and "client_encoding" in sql:
+                assert self.phase == "idle"
+                self.phase = "probe_tx"
+                self.trace.append("probe")
+            elif "SET TRANSACTION ISOLATION LEVEL READ COMMITTED" in sql:
+                assert self.phase == "explicit_tx", (
+                    "SET TRANSACTION must run as first statement of fresh transaction"
+                )
+                self.trace.append("set_transaction")
+            else:
+                pytest.fail("unexpected SQL in transaction-order fixture")
+            return self
+
+        def fetchone(self):
+            return {"supported": True}
+
+        def rollback(self):
+            assert self.phase == "probe_tx"
+            self.trace.append("rollback_probe")
+            self.phase = "idle"
+
+        @contextmanager
+        def transaction(self):
+            assert self.phase == "idle", "probe leaked an implicit transaction"
+            self.phase = "explicit_tx"
+            self.trace.append("begin_tx")
+            try:
+                yield self
+            finally:
+                self.phase = "idle"
+
+        def close(self):
+            assert self.phase == "idle"
+            self.trace.append("close")
+
+    conn = TxAwareConnection()
+    monkeypatch.setattr(
+        postgres_module, "psycopg",
+        SimpleNamespace(connect=lambda _dsn, **_kwargs: conn),
+    )
+    repo = PostgresControlRepository("postgresql://test")
+    with repo._transaction() as entered:
+        assert entered is conn
+    assert conn.trace == [
+        "probe", "rollback_probe", "begin_tx", "set_transaction", "close",
+    ]
+
+
+
+def test_utf8_probe_transaction_cleanup_error_denies_database_access(monkeypatch):
+    from astrumweaver.control import postgres as postgres_module
+
+    class RollbackFails(EncodingConnection):
+        def __init__(self):
+            super().__init__(True, dictionary=True)
+            self.closed = False
+
+        def rollback(self):
+            raise RuntimeError("synthetic rollback unavailable")
+
+        def close(self):
+            self.closed = True
+
+    conn = RollbackFails()
+    monkeypatch.setattr(
+        postgres_module, "psycopg",
+        SimpleNamespace(connect=lambda _dsn, **_kwargs: conn),
+    )
+    with pytest.raises(StorageUnavailable, match="UTF8"):
+        PostgresControlRepository("postgresql://test").get_worker("probe")
+    assert conn.closed
+    assert len(conn.statements) == 1
