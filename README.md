@@ -92,6 +92,7 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 - Existing development machines may later participate as drainable/borrowable workers without reprovisioning.
 
 ## Documentation
+- [Release readiness and deployment decision boundaries](docs/release-readiness.md) — candidate selection, verification and operator gates; not a release authorization.
 - [Naming and compatibility](docs/naming.md)
 
 - [Installation](docs/installation.md)
