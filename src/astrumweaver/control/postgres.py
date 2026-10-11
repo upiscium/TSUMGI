@@ -93,12 +93,6 @@ class PostgresControlRepository:
             ) from exc
 
         with self._connection() as connection:
-            try:
-                _require_utf8_database(connection)
-            except RuntimeError as exc:
-                raise StorageUnavailable(
-                    "PostgreSQL UTF8 database and client encoding are required"
-                ) from exc
             row = connection.execute(
                 """
                 SELECT
@@ -172,6 +166,16 @@ class PostgresControlRepository:
         except Exception as exc:
             raise StorageUnavailable("postgresql is unavailable") from exc
         try:
+            # Check every Control connection, not only the /ready probe.
+            # Otherwise a caller could submit/register despite failed
+            # readiness. The one SQL boolean query precedes all CRUD/locks.
+            try:
+                _require_utf8_database(connection)
+            except Exception as exc:
+                raise StorageUnavailable(
+                    "PostgreSQL UTF8 database and client encoding are required "
+                    "or could not be verified"
+                ) from exc
             yield connection
         finally:
             connection.close()

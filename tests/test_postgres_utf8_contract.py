@@ -60,13 +60,41 @@ def test_migration_preflight_refuses_bad_database_before_any_ddl(monkeypatch):
 
 
 def test_control_readiness_refuses_bad_database_before_schema_queries(monkeypatch):
+    from astrumweaver.control import postgres as postgres_module
+
     connection = EncodingConnection(False, dictionary=True)
-
-    @contextmanager
-    def fake_connection(_repo):
-        yield connection
-
-    monkeypatch.setattr(PostgresControlRepository, "_connection", fake_connection)
+    closed = []
+    connection.close = lambda: closed.append(True)
+    monkeypatch.setattr(
+        postgres_module, "psycopg",
+        SimpleNamespace(connect=lambda _dsn, **_kwargs: connection),
+    )
     with pytest.raises(StorageUnavailable, match="UTF8"):
         PostgresControlRepository("postgresql://test").check_storage()
     assert len(connection.statements) == 1
+    assert closed == [True]
+
+
+
+def test_all_control_requests_refuse_unsupported_encoding_not_only_ready(monkeypatch):
+    from astrumweaver.control import postgres as postgres_module
+
+    connection = EncodingConnection(False, dictionary=True)
+    closed = []
+
+    def connect(_database_url, *, row_factory):
+        assert row_factory is postgres_module.dict_row
+        return connection
+
+    connection.close = lambda: closed.append(True)
+    monkeypatch.setattr(
+        postgres_module, "psycopg", SimpleNamespace(connect=connect),
+    )
+
+    repo = PostgresControlRepository("postgresql://test")
+    with pytest.raises(StorageUnavailable, match="UTF8"):
+        repo.get_worker("probe")
+
+    assert len(connection.statements) == 1
+    assert "server_encoding" in connection.statements[0]
+    assert closed == [True]
