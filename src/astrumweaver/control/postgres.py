@@ -17,7 +17,7 @@ from ..serving import (
     WorkerServingAdvertisement,
     worker_serving_accepts_job,
 )
-from .migrate import required_migration_names
+from .migrate import _require_utf8_database, required_migration_names
 from .models import (
     JobEventRecord,
     JobRecord,
@@ -93,6 +93,12 @@ class PostgresControlRepository:
             ) from exc
 
         with self._connection() as connection:
+            try:
+                _require_utf8_database(connection)
+            except RuntimeError as exc:
+                raise StorageUnavailable(
+                    "PostgreSQL UTF8 database and client encoding are required"
+                ) from exc
             row = connection.execute(
                 """
                 SELECT

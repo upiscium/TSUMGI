@@ -75,6 +75,15 @@ use the latest available PostgreSQL 17 minor release.
 Other PostgreSQL major versions may work, but they are not currently covered by
 TSUMGI CI and should be treated as unvalidated rather than supported.
 
+**Both the target PostgreSQL database encoding and the client connection
+encoding MUST be `UTF8`.** Check `SHOW server_encoding;` and
+`SHOW client_encoding;` on the intended connection before applying migrations.
+The migration entrypoint rejects SQL_ASCII and any other unsupported encoding
+**before executing schema changes**; Control readiness makes the same check.
+A database created with an unsupported encoding must be migrated to a freshly
+provisioned compatible UTF8 database using an operator-reviewed backup/restore
+procedure, not modified blindly in place. See [issue #108](https://github.com/upiscium/TSUMGI/issues/108).
+
 TSUMGI does not provision PostgreSQL. You may use an existing local,
 remote, or managed PostgreSQL 17 instance.
 
