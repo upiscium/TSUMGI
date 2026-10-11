@@ -40,6 +40,10 @@ The infrastructure layer is responsible for creating that node and making the re
 
 TSUMGI must not need credentials for the hypervisor merely to operate a worker.
 
+The distinction between scheduler-visible ownership, Worker-local GPU selection,
+and host-wide physical exclusion is specified in
+[ADR 0001 — GPU ownership and VRAM availability](adr/0001-gpu-ownership-and-vram-availability.md).
+
 ## 3. Core logical roles
 
 ### Control Plane

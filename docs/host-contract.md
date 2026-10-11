@@ -65,6 +65,14 @@ Every Worker MUST provide:
 
 A Worker MUST NOT advertise a resource that is concurrently owned by an unrelated workload unless a future explicit sharing/partitioning contract supports that mode.
 
+This external no-contention condition is an **infrastructure/operator prerequisite**,
+not a claim that TSUMGI can prohibit unrelated host, VM or LXC processes
+from opening an assigned physical GPU. TSUMGI enforces logical ownership among
+its enrolled Workers. For VRAM-resident runtimes, TSUMGI must separately
+fail closed when a fresh selected-GPU memory-availability check cannot satisfy
+the reviewed runtime budget; an availability snapshot is not a memory reservation.
+See [ADR 0001](adr/0001-gpu-ownership-and-vram-availability.md).
+
 ## 5. NVIDIA GPU Worker requirements
 
 An NVIDIA GPU Worker MUST provide, before registration:
