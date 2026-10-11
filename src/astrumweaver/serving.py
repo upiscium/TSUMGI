@@ -78,6 +78,28 @@ def _revision(payload: dict[str, object]) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def dual_model_bundle_sha256(embedding_sha256: str, decision_sha256: str) -> str:
+    """Canonical v1 bundle digest for an embedding/decision GGUF pair.
+
+    Both values are lowercase *raw* 64-character SHA-256 digests, not paths
+    or aliases. Worker and Gateway must use the same role-ordered binding.
+    """
+    for name, digest in (
+        ("embedding_sha256", embedding_sha256),
+        ("decision_sha256", decision_sha256),
+    ):
+        if type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ServingContractError("invalid-digest", name)
+    material = {
+        "schema": "dual-llama-cpp-models-v1",
+        "embedding_sha256": embedding_sha256,
+        "decision_sha256": decision_sha256,
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class DeploymentIdentity:
     """Content identity companion to RuntimeDeploymentSpec, not another owner.
