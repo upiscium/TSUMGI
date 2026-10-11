@@ -17,7 +17,7 @@ from ..serving import (
     WorkerServingAdvertisement,
     worker_serving_accepts_job,
 )
-from .migrate import required_migration_names
+from .migrate import _require_utf8_database, required_migration_names
 from .models import (
     JobEventRecord,
     JobRecord,
@@ -166,6 +166,21 @@ class PostgresControlRepository:
         except Exception as exc:
             raise StorageUnavailable("postgresql is unavailable") from exc
         try:
+            # Check every Control connection, not only the /ready probe.
+            # Otherwise a caller could submit/register despite failed
+            # readiness. The one SQL boolean query precedes all CRUD/locks.
+            try:
+                _require_utf8_database(connection)
+                # With psycopg's default non-autocommit connection, the probe
+                # SELECT opens an implicit transaction. Roll it back so the
+                # caller's transaction can issue SET TRANSACTION first.
+                # This probe performs no application reads/writes.
+                connection.rollback()
+            except Exception as exc:
+                raise StorageUnavailable(
+                    "PostgreSQL UTF8 database and client encoding are required "
+                    "or could not be verified"
+                ) from exc
             yield connection
         finally:
             connection.close()

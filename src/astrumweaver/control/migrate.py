@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from collections.abc import Mapping
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,33 @@ except ImportError:  # pragma: no cover
 
 
 SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
+
+
+def _require_utf8_database(connection: Any) -> None:
+    """Fail before any schema/data read or mutation on unsupported encoding.
+
+    Compare server and client encodings inside PostgreSQL. A boolean result
+    is safely decoded even if text values would be returned as bytes by
+    psycopg on a SQL_ASCII database.
+    """
+    row = connection.execute(
+        """
+        SELECT (
+            current_setting('server_encoding') = 'UTF8'
+            AND current_setting('client_encoding') = 'UTF8'
+        ) AS supported
+        """
+    ).fetchone()
+    supported = (
+        row.get("supported")
+        if isinstance(row, Mapping)
+        else row[0] if row else None
+    )
+    if supported is not True:
+        raise RuntimeError(
+            "PostgreSQL UTF8 database and client encoding are required; "
+            "refusing operation before schema access"
+        )
 
 
 def _migration_files() -> tuple[Any, ...]:
@@ -73,6 +101,7 @@ def apply_migrations(database_url: str) -> list[str]:
     migrations = _migration_files()
 
     with psycopg.connect(database_url, autocommit=True) as connection:
+        _require_utf8_database(connection)
         recorded = _recorded_migrations(connection)
 
         for migration in migrations:
