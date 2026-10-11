@@ -12,11 +12,12 @@ import hashlib
 import os
 import secrets
 import stat
+import subprocess
 import tempfile
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from ...execution import JobExecutionError, JobExecutor, JobRequest, JobResult, ResidencyReport
 from ...serving import dual_model_bundle_sha256
@@ -36,6 +37,51 @@ DUAL_LLAMA_CPP_PROVIDER_ID = "llama-cpp-dual"
 _DUAL_CAPABILITIES = frozenset({"text.embed", "decision.system_one"})
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
 _NIX_STORE_OUTPUT = re.compile(r"^/nix/store/[a-z0-9]{32}-[A-Za-z0-9+._-]+$")
+_GPU_MEMORY_MB = re.compile(r"^[0-9]+$")
+
+
+def _read_selected_gpu_free_vram_mb(gpu_uuid: str) -> int:
+    """Fresh free-VRAM snapshot for the exactly selected physical GPU.
+
+    This is an admission observation, not an atomic allocation or a guarantee
+    that an external process will not allocate after the snapshot.
+    """
+    if not isinstance(gpu_uuid, str) or not gpu_uuid.startswith("GPU-"):
+        raise RuntimeError("dual-gpu-vram-unknown")
+    command = os.environ.get("ASTRUMWEAVER_NVIDIA_SMI", "nvidia-smi").strip()
+    if not command:
+        raise RuntimeError("dual-gpu-vram-unknown")
+    try:
+        result = subprocess.run(
+            [command, "--query-gpu=uuid,memory.total,memory.free",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        raise RuntimeError("dual-gpu-vram-unknown") from exc
+    if result.returncode != 0 or len(result.stdout) > 65536:
+        raise RuntimeError("dual-gpu-vram-unknown")
+
+    observed: set[str] = set()
+    selected_free_mb: int | None = None
+    for line in result.stdout.splitlines():
+        values = [part.strip() for part in line.split(",")]
+        if len(values) != 3:
+            raise RuntimeError("dual-gpu-vram-unknown")
+        identity, total_raw, free_raw = values
+        if (not identity.startswith("GPU-") or identity in observed
+            or _GPU_MEMORY_MB.fullmatch(total_raw) is None
+            or _GPU_MEMORY_MB.fullmatch(free_raw) is None):
+            raise RuntimeError("dual-gpu-vram-unknown")
+        observed.add(identity)
+        total, free = int(total_raw), int(free_raw)
+        if total <= 0 or not 0 <= free <= total:
+            raise RuntimeError("dual-gpu-vram-unknown")
+        if identity == gpu_uuid:
+            selected_free_mb = free
+    if selected_free_mb is None:
+        raise RuntimeError("dual-gpu-vram-unknown")
+    return selected_free_mb
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,7 +247,21 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
         embedding_pin: DualModelPin, decision_pin: DualModelPin,
         trusted_model_owner_uid: int = 0,
         private_auth_files: tempfile.TemporaryDirectory[str] | None = None,
+        *,
+        gpu_uuid: str,
+        required_total_vram_mb: int,
+        gpu_memory_probe: Callable[[str], int] | None = None,
     ) -> None:
+        if not isinstance(gpu_uuid, str) or not gpu_uuid.startswith("GPU-"):
+            raise ValueError("dual runtime requires an exact selected GPU UUID")
+        if (type(required_total_vram_mb) is not int
+                or required_total_vram_mb <= 0):
+            raise ValueError("dual runtime requires a positive combined VRAM budget")
+        self._gpu_uuid = gpu_uuid
+        self._required_total_vram_mb = required_total_vram_mb
+        # Only tests inject probes; the live provider always uses NVIDIA
+        # telemetry and no callable comes from any runtime manifest.
+        self._gpu_memory_probe = gpu_memory_probe or _read_selected_gpu_free_vram_mb
         self._private_auth_files = private_auth_files
         self._embedding = embedding
         self._decision = decision
@@ -305,6 +365,19 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
         if self._released:
             raise RuntimeError("released dual runtime cannot be restarted")
         try:
+            # A declared GPU capacity is not a live VRAM allocation. Refuse
+            # before either native child starts when the target physical GPU
+            # cannot currently satisfy the reviewed combined resident budget.
+            try:
+                free_mb = await asyncio.to_thread(
+                    self._gpu_memory_probe, self._gpu_uuid,
+                )
+            except Exception as exc:
+                raise RuntimeError("dual-gpu-vram-unknown") from exc
+            if type(free_mb) is not int or free_mb < 0:
+                raise RuntimeError("dual-gpu-vram-unknown")
+            if free_mb < self._required_total_vram_mb:
+                raise RuntimeError("dual-gpu-vram-insufficient")
             for pin in self._pins:
                 await asyncio.to_thread(
                     self._check_pinned_model, pin,
@@ -565,6 +638,8 @@ class DualLlamaCppProvider:
                 self.config.embedding_model, self.config.decision_model,
                 trusted_model_owner_uid=self.config.trusted_model_owner_uid,
                 private_auth_files=owned_auth,
+                gpu_uuid=context.worker.gpu_uuids[0],
+                required_total_vram_mb=self.config.required_total_vram_mb,
             )
         except BaseException:
             owned_auth.cleanup()

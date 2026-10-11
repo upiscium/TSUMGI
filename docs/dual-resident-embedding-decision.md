@@ -151,6 +151,38 @@ No model hot-swap, background eviction, concurrent jobs or extra GPU owners.
 This is currently a **candidate implementation**; do not reuse a production
 embedding index, reassign GPUs or perform an operator-irreversible cutover.
 
+## Resident VRAM availability admission (#125)
+
+The `required_total_vram_mb` combined budget is a conservative reviewed
+**VRAM-only** demand, including model weights, context/KV, scratch, CUDA
+runtime overhead and headroom. Static `WorkerSpec` total GPU capacity is
+**not** a reservation and cannot establish current allocatable memory if
+an external process is already using the GPU.
+
+Immediately before either owned native child starts, the dual ManagedRuntime
+queries NVIDIA telemetry (`uuid,memory.total,memory.free`) with a bounded
+timeout. It finds the *exact* Worker-selected GPU UUID, not the first row,
+and rejects missing/duplicate/malformed/failed device telemetry
+(`dual-gpu-vram-unknown`). If this GPU's reported free MiB is less than
+`required_total_vram_mb`, it rejects the start before either child is
+started (`dual-gpu-vram-insufficient`). Unknown is **not** treated as zero
+or successful admission. Runtime manifests cannot inject a telemetry
+function. The normal Worker preflight and Control logical ownership
+contracts remain in force.
+
+This probe is **not** a memory reservation or host-wide isolation mechanism:
+another workload may allocate after the measurement. Real CUDA allocation,
+joint readiness and runtime supervision must still fail closed if the model
+cannot load, loses a child, becomes unhealthy, or lacks the entire declared
+serving contract. TSUMGI does not evict or kill unrelated GPU processes,
+substitute models or silently enable CPU offload to make the demand fit.
+
+The initial check is limited to the opt-in fully-resident two-model runtime.
+Other providers and hybrid offload modes require separately reviewed capacity
+policies. Host-wide physical exclusion remains infrastructure/operator scope
+(see ADR 0001 on main and issue #125). A passing snapshot is not proof of
+future available memory or QoS.
+
 ## Stage 1: real GPU feasibility
 
 An isolated compute capability 6.1 GPU (11 GiB) ran both exact pinned GGUFs
