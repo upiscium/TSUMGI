@@ -364,6 +364,15 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
     async def _start_serial(self) -> None:
         if self._released:
             raise RuntimeError("released dual runtime cannot be restarted")
+        if not self._owned_stopped:
+            # Idempotent repeated start must not compare free VRAM against the
+            # original budget: our already-resident children own those bytes.
+            if (await self.health()).ready:
+                return
+            # An owned but unhealthy composite may not resurrect just one
+            # child through a new start(); require an explicit safe restart.
+            await self._stop_both()
+            raise RuntimeError("dual runtime no longer ready; explicit restart required")
         try:
             # A declared GPU capacity is not a live VRAM allocation. Refuse
             # before either native child starts when the target physical GPU

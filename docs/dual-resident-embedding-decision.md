@@ -168,7 +168,10 @@ and rejects missing/duplicate/malformed/failed device telemetry
 started (`dual-gpu-vram-insufficient`). Unknown is **not** treated as zero
 or successful admission. Runtime manifests cannot inject a telemetry
 function. The normal Worker preflight and Control logical ownership
-contracts remain in force.
+contracts remain in force. An already-READY resident composite treats a repeated
+`start()` as idempotent: it does not mistake its own allocated VRAM for a
+fresh competing consumer. An owned but unhealthy composite stops both children
+and requires an explicit retry rather than partially restarting one model.
 
 This probe is **not** a memory reservation or host-wide isolation mechanism:
 another workload may allocate after the measurement. Real CUDA allocation,
@@ -180,7 +183,7 @@ substitute models or silently enable CPU offload to make the demand fit.
 The initial check is limited to the opt-in fully-resident two-model runtime.
 Other providers and hybrid offload modes require separately reviewed capacity
 policies. Host-wide physical exclusion remains infrastructure/operator scope
-(see ADR 0001 on main and issue #125). A passing snapshot is not proof of
+(see proposed ADR 0001 in PR #126 and issue #125). A passing snapshot is not proof of
 future available memory or QoS.
 
 ## Stage 1: real GPU feasibility

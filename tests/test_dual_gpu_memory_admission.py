@@ -126,3 +126,37 @@ async def test_competing_start_is_fenced_even_with_capacity_probe(tmp_path):
     assert probes == ["GPU-dual-example"]
     await managed.stop()
     await managed.release()
+
+
+
+@pytest.mark.asyncio
+async def test_already_resident_start_is_idempotent_without_rechecking_own_vram(tmp_path):
+    managed, embedding, decision = managed_pair(tmp_path)
+    available = [4096, 0]
+    managed._gpu_memory_probe = lambda _uuid: available.pop(0)
+
+    await managed.start()
+    assert (await managed.health()).ready
+    # The two resident models may leave less free memory than the original
+    # pre-start budget. That is not an external contention signal.
+    await managed.start()
+    assert (await managed.health()).ready
+    assert available == [0], "second start must not re-probe occupied GPU"
+    assert embedding.stops == decision.stops == 0
+    await managed.stop()
+    await managed.release()
+
+
+@pytest.mark.asyncio
+async def test_nonready_owned_children_fail_closed_before_attempting_restart(tmp_path):
+    managed, embedding, decision = managed_pair(tmp_path)
+    await managed.start()
+    decision.health_state = RuntimeHealthState.FAILED
+    async def unsafe_restart():
+        pytest.fail("unhealthy owned child must not restart implicitly")
+    embedding.start = decision.start = unsafe_restart
+
+    with pytest.raises(RuntimeError, match="dual runtime no longer ready"):
+        await managed.start()
+    assert embedding.stops == decision.stops == 1
+    assert not (await managed.health()).ready
