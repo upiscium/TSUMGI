@@ -7,7 +7,14 @@ import threading
 
 import pytest
 
-from astrumweaver.control import JobStatus
+from astrumweaver.control import (
+    DeadlineExceededError,
+    JobStatus,
+    JobSubmission,
+    StorageUnavailable,
+    utc_now,
+)
+from datetime import timedelta
 from astrumweaver.gateway.api import ChatGatewayService
 from astrumweaver.gateway.chat import ChatGatewayError, ChatProfileCatalog
 from test_chat_gateway_admission_cancellation import BlockedAdmissionRepository, _wait_for
@@ -195,3 +202,62 @@ def test_admission_budget_must_be_explicit_positive_integer(budget):
             ChatProfileCatalog((profile,)),
             max_pending_admissions=budget,
         )
+
+@pytest.mark.asyncio
+async def test_in_memory_late_admission_rechecks_real_deadline_after_thread_wait():
+    repo = CountingBlockedAdmissionRepository()
+    profile, serving = serving_values(timeout=0.15)
+    register_worker(repo, serving)
+    service = ChatGatewayService(
+        repo, ChatProfileCatalog((profile,)), max_pending_admissions=1
+    )
+    request = asyncio.create_task(
+        service.stream(_ConnectedRequest(), _BODY, request_size_bytes=80)
+    )
+    try:
+        assert await asyncio.to_thread(repo.entered.wait, 2)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        await asyncio.sleep(0.3)  # Synthetic DB wait exceeds request deadline.
+        repo.release.set()
+        await _wait_for(lambda: service._admissions_in_flight == 0)
+        assert repo.list_jobs() == []
+        assert not service._pending_admission_cleanup
+        assert service._unexpected_cleanup_failures == 0
+    finally:
+        repo.release.set()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_storage_failure_does_not_expose_database_diagnostics_to_chat_client():
+    class StorageFailureRepository(CountingBlockedAdmissionRepository):
+        def submit_job(self, *args, **kwargs):
+            raise StorageUnavailable("synthetic private PostgreSQL diagnostic")
+
+    repo = StorageFailureRepository()
+    service = _service(repo, budget=1)
+    with pytest.raises(ChatGatewayError) as exc:
+        await service.stream(
+            _ConnectedRequest(), _BODY, request_size_bytes=80
+        )
+    assert exc.value.status_code == 503
+    assert exc.value.code == "admission_unavailable"
+    assert "private" not in str(exc.value)
+    assert service._admissions_in_flight == 0
+
+
+def test_inmemory_direct_bounded_submission_rejects_stale_injected_now():
+    repo = CountingBlockedAdmissionRepository()
+    repo.release.set()
+    deadline = utc_now() - timedelta(seconds=1)
+    with pytest.raises(DeadlineExceededError, match="admission deadline expired"):
+        repo.submit_job(
+            JobSubmission(capability="code.review"),
+            now=deadline - timedelta(days=1),
+            admission_deadline_at=deadline,
+        )
+    assert repo.list_jobs() == []

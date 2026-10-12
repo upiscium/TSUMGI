@@ -79,7 +79,8 @@ class ControlRepository(Protocol):
     ) -> WorkerRecord: ...
 
     def submit_job(
-        self, submission: JobSubmission, *, now: datetime | None = None
+        self, submission: JobSubmission, *, now: datetime | None = None,
+        admission_deadline_at: datetime | None = None,
     ) -> JobRecord: ...
 
     def get_worker(self, worker_id: str) -> WorkerRecord: ...
@@ -465,10 +466,29 @@ class InMemoryControlRepository:
         return expired
 
     def submit_job(
-        self, submission: JobSubmission, *, now: datetime | None = None
+        self, submission: JobSubmission, *, now: datetime | None = None,
+        admission_deadline_at: datetime | None = None,
     ) -> JobRecord:
         timestamp = _aware(now)
+        if admission_deadline_at is not None and (
+            not isinstance(admission_deadline_at, datetime)
+            or admission_deadline_at.tzinfo is None
+        ):
+            raise ValueError("admission deadline must be timezone-aware")
+        if (
+            admission_deadline_at is not None
+            and submission.deadline_at is not None
+            and admission_deadline_at > submission.deadline_at
+        ):
+            raise ValueError("admission deadline cannot exceed serving Job deadline")
         with self._lock:
+            # Check a fresh wall clock under the lock. An injected request
+            # creation timestamp must not make a late submission admissible.
+            if (
+                admission_deadline_at is not None
+                and utc_now() >= admission_deadline_at
+            ):
+                raise DeadlineExceededError("admission deadline expired")
             # Resolve durable idempotency before transient admission state.
             if submission.idempotency_key:
                 existing_id = self._idempotency.get(submission.idempotency_key)

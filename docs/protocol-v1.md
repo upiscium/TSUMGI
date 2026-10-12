@@ -398,6 +398,15 @@ a permanently blocked database can exhaust all available permits and require
 operator recovery. See [#137](https://github.com/upiscium/TSUMGI/issues/137)
 and the proposed [ADR 0002 PR](https://github.com/upiscium/TSUMGI/pull/139).
 
+In proposed Stage 2 for [#137](https://github.com/upiscium/TSUMGI/issues/137),
+chat admission also propagates the request's absolute deadline into the
+synchronous repository call and, for real PostgreSQL, enforces bounded
+connection/statement/lock/transaction work (PostgreSQL 17+ required).
+This **does not** prove durable cancellation after an unknown COMMIT result
+or an abrupt process crash. See
+[experimental admission deadline details](design/chat-gateway-admission-deadlines.md)
+and [proposed ADR #139](https://github.com/upiscium/TSUMGI/pull/139).
+
 The Stage A routes reuse the configured Client authentication policy:
 
 ```text

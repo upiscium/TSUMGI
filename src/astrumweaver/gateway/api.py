@@ -22,6 +22,7 @@ from ..control.repository import (
     DeadlineExceededError,
     NoCompatibleDeployment,
     OverloadedError,
+    StorageUnavailable,
 )
 from .chat import (
     ChatGatewayError,
@@ -279,7 +280,10 @@ class ChatGatewayService:
         # Shield the synchronous admission task from HTTP task cancellation:
         # asyncio.to_thread cannot abort an already-running DB operation.
         operation = asyncio.to_thread(
-            self.repository.submit_job, submission, now=now
+            self.repository.submit_job,
+            submission,
+            now=now,
+            admission_deadline_at=deadline_at,
         )
         try:
             submit_task = asyncio.create_task(operation)
@@ -323,6 +327,14 @@ class ChatGatewayService:
                     "admission_conflict",
                     "chat request conflicts with durable admission state",
                     status_code=409,
+                ) from exc
+            except StorageUnavailable as exc:
+                # A lost COMMIT acknowledgement is not proof of no Job.
+                # A later identity-based reconciliation is required.
+                raise ChatGatewayError(
+                    "admission_unavailable",
+                    "durable chat admission unavailable or unconfirmed",
+                    status_code=503,
                 ) from exc
             return profile, record
         finally:

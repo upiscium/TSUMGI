@@ -6,6 +6,7 @@ from collections.abc import Iterator, Mapping
 from hashlib import sha256
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from math import ceil
 from typing import Any
 from uuid import uuid4
 
@@ -79,6 +80,31 @@ _GPU_OWNERSHIP_LOCK = 0x41535702
 
 def _ownership_lock_key(identity: str) -> int:
     return int.from_bytes(sha256(identity.encode("utf-8")).digest()[:4], "big", signed=True)
+
+
+# Only the explicitly bounded Gateway submission uses these limits. Existing
+# non-chat Control operations retain their reviewed transaction semantics.
+_ADMISSION_CONNECT_CAP_SECONDS = 5
+_ADMISSION_LOCK_CAP_MS = 2_000
+_ADMISSION_STATEMENT_CAP_MS = 5_000
+_ADMISSION_TRANSACTION_CAP_MS = 10_000
+_ADMISSION_CLOCK_SKEW_SECONDS = 2.0
+_ADMISSION_MIN_POSTGRES_VERSION = 170000
+
+
+def _bounded_admission_deadline(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError("admission deadline must be timezone-aware")
+    return _aware(value)
+
+
+def _admission_remaining_ms(deadline: datetime) -> int:
+    remaining = (deadline - utc_now()).total_seconds()
+    if remaining <= 0:
+        raise DeadlineExceededError("chat admission deadline expired")
+    return max(1, ceil(remaining * 1000))
 
 
 class PostgresControlRepository:
@@ -156,14 +182,49 @@ class PostgresControlRepository:
         self.event_max_read = event_max_read
 
     @contextmanager
-    def _connection(self) -> Iterator[Any]:
+    def _connection(
+        self, *, admission_deadline_at: datetime | None = None
+    ) -> Iterator[Any]:
         if psycopg is None:
             raise StorageUnavailable(
                 "PostgreSQL support requires the astrumweaver postgres dependency"
             )
+        deadline = _bounded_admission_deadline(admission_deadline_at)
+        conninfo = self.database_url
+        if deadline is not None:
+            # Connect timeout is the libpq per-host bound. Session-level
+            # statement/lock timeouts also cover the *encoding probe* before
+            # we enter the bounded submission transaction.
+            remaining = _admission_remaining_ms(deadline)
+            try:
+                options = psycopg.conninfo.conninfo_to_dict(conninfo)
+                existing_timeout = options.get("connect_timeout")
+                connect_timeout = min(
+                    _ADMISSION_CONNECT_CAP_SECONDS,
+                    max(1, ceil(remaining / 1000)),
+                )
+                if existing_timeout and int(existing_timeout) > 0:
+                    connect_timeout = min(connect_timeout, int(existing_timeout))
+                statement_ms = min(remaining, _ADMISSION_STATEMENT_CAP_MS)
+                lock_ms = min(statement_ms, _ADMISSION_LOCK_CAP_MS)
+                conninfo = psycopg.conninfo.make_conninfo(
+                    conninfo,
+                    connect_timeout=connect_timeout,
+                    options=(
+                        str(options.get("options") or "")
+                        + f" -c statement_timeout={statement_ms}"
+                        + f" -c lock_timeout={lock_ms}"
+                    ).strip(),
+                )
+            except (TypeError, ValueError) as exc:
+                raise StorageUnavailable(
+                    "bounded PostgreSQL admission configuration is invalid"
+                ) from exc
         try:
-            connection = psycopg.connect(self.database_url, row_factory=dict_row)
+            connection = psycopg.connect(conninfo, row_factory=dict_row)
         except Exception as exc:
+            if deadline is not None and utc_now() >= deadline:
+                raise DeadlineExceededError("chat admission connection deadline expired") from exc
             raise StorageUnavailable("postgresql is unavailable") from exc
         try:
             # Check every Control connection, not only the /ready probe.
@@ -181,23 +242,86 @@ class PostgresControlRepository:
                     "PostgreSQL UTF8 database and client encoding are required "
                     "or could not be verified"
                 ) from exc
+
+            if deadline is not None:
+                # PostgreSQL 17 has transaction_timeout: older versions cannot
+                # establish the required transaction-wide server bound.
+                if connection.info.server_version < _ADMISSION_MIN_POSTGRES_VERSION:
+                    raise StorageUnavailable(
+                        "bounded chat admission requires PostgreSQL 17 or newer"
+                    )
+                before = utc_now()
+                try:
+                    row = connection.execute(
+                        "SELECT clock_timestamp() AS db_clock"
+                    ).fetchone()
+                except Exception as exc:
+                    if utc_now() >= deadline:
+                        raise DeadlineExceededError(
+                            "chat admission clock-check deadline expired"
+                        ) from exc
+                    raise StorageUnavailable(
+                        "PostgreSQL admission clock check unavailable"
+                    ) from exc
+                after = utc_now()
+                db_clock = row["db_clock"]
+                skew = timedelta(seconds=_ADMISSION_CLOCK_SKEW_SECONDS)
+                if not before - skew <= db_clock <= after + skew:
+                    raise StorageUnavailable(
+                        "PostgreSQL clock skew exceeds admission safety budget"
+                    )
+                if after >= deadline or db_clock >= deadline:
+                    raise DeadlineExceededError("chat admission deadline expired")
+                connection.rollback()
             yield connection
         finally:
             connection.close()
 
     @contextmanager
-    def _transaction(self) -> Iterator[Any]:
-        with self._connection() as connection:
+    def _transaction(
+        self, *, admission_deadline_at: datetime | None = None
+    ) -> Iterator[Any]:
+        deadline = _bounded_admission_deadline(admission_deadline_at)
+        with self._connection(admission_deadline_at=deadline) as connection:
             try:
                 with connection.transaction():
                     # Ownership predicates must see a fresh snapshot after an
                     # advisory-lock wait, independent of the database default.
                     connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+                    if deadline is not None:
+                        remaining = _admission_remaining_ms(deadline)
+                        connection.execute(
+                            """SELECT
+                                set_config('lock_timeout', %s, true),
+                                set_config('statement_timeout', %s, true),
+                                set_config('transaction_timeout', %s, true)
+                            """,
+                            (
+                                f"{min(remaining, _ADMISSION_LOCK_CAP_MS)}ms",
+                                f"{min(remaining, _ADMISSION_STATEMENT_CAP_MS)}ms",
+                                f"{min(remaining, _ADMISSION_TRANSACTION_CAP_MS)}ms",
+                            ),
+                        )
                     yield connection
+                    if deadline is not None:
+                        # Fresh DB clock is essential: request-start time and
+                        # now()/transaction_timestamp() are stale after waits.
+                        # This must run *inside* the transaction before COMMIT.
+                        if utc_now() >= deadline:
+                            raise DeadlineExceededError("chat admission deadline expired")
+                        db_clock = connection.execute(
+                            "SELECT clock_timestamp() AS db_clock"
+                        ).fetchone()["db_clock"]
+                        if db_clock >= deadline or utc_now() >= deadline:
+                            raise DeadlineExceededError("chat admission deadline expired")
             except RepositoryError:
                 raise
             except Exception as exc:
-                raise StorageUnavailable("postgresql transaction failed") from exc
+                # Loss of COMMIT acknowledgement is *not* proof that no Job
+                # exists. An idempotent durable reconciliation is a later gate.
+                raise StorageUnavailable(
+                    "postgresql transaction failed or outcome is unconfirmed"
+                ) from exc
 
     @staticmethod
     def _worker(row: dict[str, Any]) -> WorkerRecord:
@@ -671,8 +795,16 @@ class PostgresControlRepository:
                 expired.append(self._job(updated))
 
     def submit_job(
-        self, submission: JobSubmission, *, now: datetime | None = None
+        self, submission: JobSubmission, *, now: datetime | None = None,
+        admission_deadline_at: datetime | None = None,
     ) -> JobRecord:
+        deadline = _bounded_admission_deadline(admission_deadline_at)
+        if (
+            deadline is not None
+            and submission.deadline_at is not None
+            and deadline > _aware(submission.deadline_at)
+        ):
+            raise ValueError("admission deadline cannot exceed serving Job deadline")
         timestamp = _aware(now)
         available_at = (
             _aware(submission.available_at)
@@ -682,7 +814,7 @@ class PostgresControlRepository:
         job_id = str(uuid4())
         requirements = requirements_to_dict(submission.requirements)
 
-        with self._transaction() as connection:
+        with self._transaction(admission_deadline_at=deadline) as connection:
             # Resolve durable idempotency before transient admission state.
             if submission.idempotency_key:
                 existing = connection.execute(
