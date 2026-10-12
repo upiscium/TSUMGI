@@ -6,7 +6,8 @@ import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from threading import Event, Lock
 from time import monotonic, sleep
 
@@ -23,6 +24,7 @@ from astrumweaver.control import (
     utc_now,
 )
 from astrumweaver.control.migrate import apply_migrations
+from astrumweaver.control import postgres as postgres_module
 from astrumweaver.gateway.api import ChatGatewayService
 from astrumweaver.gateway.chat import ChatProfileCatalog
 from test_chat_gateway_admission_cancellation import _wait_for
@@ -237,4 +239,76 @@ def test_postgres_actual_statement_timeout_limits_blocking_server_query():
         ) as conn:
             conn.execute("SELECT pg_sleep(5)")
     assert monotonic() - before < 4
+    assert _count_jobs() == 0
+
+
+
+def test_postgres_does_not_relax_tighter_operator_timeout_options():
+    operator_dsn = psycopg.conninfo.make_conninfo(
+        DATABASE_URL,
+        options=(
+            "-c statement_timeout=200 -c lock_timeout=150 "
+            "-c transaction_timeout=400"
+        ),
+    )
+    repo = PostgresControlRepository(operator_dsn)
+    with repo._transaction(
+        admission_deadline_at=utc_now() + timedelta(seconds=8)
+    ) as conn:
+        settings = {
+            str(row["name"]): int(row["value_ms"])
+            for row in conn.execute(
+                """SELECT name, setting::bigint AS value_ms FROM pg_settings
+                WHERE name IN ('statement_timeout', 'lock_timeout',
+                               'transaction_timeout')"""
+            ).fetchall()
+        }
+        assert settings == {
+            "statement_timeout": 200,
+            "lock_timeout": 150,
+            "transaction_timeout": 400,
+        }
+    # Even after a successful transaction, the operator session cap stays strict.
+    record = repo.submit_job(
+        JobSubmission(capability="code.review"),
+        admission_deadline_at=utc_now() + timedelta(seconds=8),
+    )
+    assert record.status is JobStatus.QUEUED
+
+
+def test_postgres_bounded_admission_rejects_mock_pg16_before_any_sql(monkeypatch):
+    class OldConnection:
+        info = SimpleNamespace(server_version=160000)
+        closed = False
+        def execute(self, *args, **kwargs):
+            raise AssertionError("unsupported old PostgreSQL must not execute SQL")
+        def close(self):
+            self.closed = True
+
+    conn = OldConnection()
+    monkeypatch.setattr(
+        postgres_module.psycopg, "connect", lambda *args, **kwargs: conn
+    )
+    with pytest.raises(StorageUnavailable, match="PostgreSQL 17"):
+        PostgresControlRepository(DATABASE_URL).submit_job(
+            JobSubmission(capability="code.review"),
+            admission_deadline_at=utc_now() + timedelta(seconds=10),
+        )
+    assert conn.closed
+
+
+def test_postgres_bounded_admission_rejects_clock_skew_before_job_write(monkeypatch):
+    # Deliberately skew only application time used in this repository.
+    # PostgreSQL clock_timestamp remains actual DB wall clock.
+    actual_now = datetime.now(UTC)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            postgres_module, "utc_now",
+            lambda: datetime.now(UTC) + timedelta(seconds=6),
+        )
+        with pytest.raises(StorageUnavailable, match="clock skew"):
+            PostgresControlRepository(DATABASE_URL).submit_job(
+                JobSubmission(capability="code.review"),
+                admission_deadline_at=actual_now + timedelta(seconds=15),
+            )
     assert _count_jobs() == 0

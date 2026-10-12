@@ -107,6 +107,28 @@ def _admission_remaining_ms(deadline: datetime) -> int:
     return max(1, ceil(remaining * 1000))
 
 
+def _pg_timeout_settings(connection: Any, names: tuple[str, ...]) -> dict[str, int]:
+    """Read effective operator timeouts in milliseconds, without changing them."""
+    rows = connection.execute(
+        """SELECT name, setting::bigint AS value_ms, unit
+        FROM pg_settings WHERE name = ANY(%s)""",
+        (list(names),),
+    ).fetchall()
+    values: dict[str, int] = {}
+    for row in rows:
+        if row["unit"] != "ms" or int(row["value_ms"]) < 0:
+            raise StorageUnavailable("unsupported PostgreSQL timeout setting")
+        values[row["name"]] = int(row["value_ms"])
+    if set(values) != set(names):
+        raise StorageUnavailable("PostgreSQL timeout settings are incomplete")
+    return values
+
+
+def _stricter_timeout_ms(operator_ms: int, requested_ms: int) -> int:
+    """Zero means unlimited. Never lengthen a positive operator setting."""
+    return requested_ms if operator_ms == 0 else min(operator_ms, requested_ms)
+
+
 class PostgresControlRepository:
     """Transactional PostgreSQL control-plane repository."""
 
@@ -192,9 +214,8 @@ class PostgresControlRepository:
         deadline = _bounded_admission_deadline(admission_deadline_at)
         conninfo = self.database_url
         if deadline is not None:
-            # Connect timeout is the libpq per-host bound. Session-level
-            # statement/lock timeouts also cover the *encoding probe* before
-            # we enter the bounded submission transaction.
+            # Preserve existing libpq options. Do not append -c GUC flags
+            # that could loosen a stricter operator statement/lock timeout.
             remaining = _admission_remaining_ms(deadline)
             try:
                 options = psycopg.conninfo.conninfo_to_dict(conninfo)
@@ -205,16 +226,8 @@ class PostgresControlRepository:
                 )
                 if existing_timeout and int(existing_timeout) > 0:
                     connect_timeout = min(connect_timeout, int(existing_timeout))
-                statement_ms = min(remaining, _ADMISSION_STATEMENT_CAP_MS)
-                lock_ms = min(statement_ms, _ADMISSION_LOCK_CAP_MS)
                 conninfo = psycopg.conninfo.make_conninfo(
-                    conninfo,
-                    connect_timeout=connect_timeout,
-                    options=(
-                        str(options.get("options") or "")
-                        + f" -c statement_timeout={statement_ms}"
-                        + f" -c lock_timeout={lock_ms}"
-                    ).strip(),
+                    conninfo, connect_timeout=connect_timeout,
                 )
             except (TypeError, ValueError) as exc:
                 raise StorageUnavailable(
@@ -227,9 +240,45 @@ class PostgresControlRepository:
                 raise DeadlineExceededError("chat admission connection deadline expired") from exc
             raise StorageUnavailable("postgresql is unavailable") from exc
         try:
+            if deadline is not None:
+                # PostgreSQL 17 is needed for the transaction-wide timeout.
+                # Bootstrap on read-only pg_settings metadata before the UTF8
+                # probe, then tighten the effective role/DSN/session settings
+                # without ever relaxing a positive operator timeout. A
+                # network blackhole on this bootstrap query remains outside
+                # the hard server-side bound, as documented in the ADR.
+                if connection.info.server_version < _ADMISSION_MIN_POSTGRES_VERSION:
+                    raise StorageUnavailable(
+                        "bounded chat admission requires PostgreSQL 17 or newer"
+                    )
+                try:
+                    remaining = _admission_remaining_ms(deadline)
+                    settings = _pg_timeout_settings(
+                        connection, ("statement_timeout", "lock_timeout")
+                    )
+                    connection.execute(
+                        """SELECT
+                            set_config('statement_timeout', %s, false),
+                            set_config('lock_timeout', %s, false)
+                        """,
+                        (
+                            f"{_stricter_timeout_ms(settings['statement_timeout'], min(remaining, _ADMISSION_STATEMENT_CAP_MS))}ms",
+                            f"{_stricter_timeout_ms(settings['lock_timeout'], min(remaining, _ADMISSION_LOCK_CAP_MS))}ms",
+                        ),
+                    )
+                    # SET with session scope inside a transaction is undone
+                    # by ROLLBACK: COMMIT this session-only GUC setup first.
+                    connection.commit()
+                except RepositoryError:
+                    raise
+                except Exception as exc:
+                    raise StorageUnavailable(
+                        "cannot establish bounded PostgreSQL admission settings"
+                    ) from exc
+
             # Check every Control connection, not only the /ready probe.
             # Otherwise a caller could submit/register despite failed
-            # readiness. The one SQL boolean query precedes all CRUD/locks.
+            # readiness. No application table is touched before this check.
             try:
                 _require_utf8_database(connection)
                 # With psycopg's default non-autocommit connection, the probe
@@ -244,12 +293,6 @@ class PostgresControlRepository:
                 ) from exc
 
             if deadline is not None:
-                # PostgreSQL 17 has transaction_timeout: older versions cannot
-                # establish the required transaction-wide server bound.
-                if connection.info.server_version < _ADMISSION_MIN_POSTGRES_VERSION:
-                    raise StorageUnavailable(
-                        "bounded chat admission requires PostgreSQL 17 or newer"
-                    )
                 before = utc_now()
                 try:
                     row = connection.execute(
@@ -290,6 +333,10 @@ class PostgresControlRepository:
                     connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
                     if deadline is not None:
                         remaining = _admission_remaining_ms(deadline)
+                        settings = _pg_timeout_settings(
+                            connection,
+                            ("lock_timeout", "statement_timeout", "transaction_timeout"),
+                        )
                         connection.execute(
                             """SELECT
                                 set_config('lock_timeout', %s, true),
@@ -297,9 +344,9 @@ class PostgresControlRepository:
                                 set_config('transaction_timeout', %s, true)
                             """,
                             (
-                                f"{min(remaining, _ADMISSION_LOCK_CAP_MS)}ms",
-                                f"{min(remaining, _ADMISSION_STATEMENT_CAP_MS)}ms",
-                                f"{min(remaining, _ADMISSION_TRANSACTION_CAP_MS)}ms",
+                                f"{_stricter_timeout_ms(settings['lock_timeout'], min(remaining, _ADMISSION_LOCK_CAP_MS))}ms",
+                                f"{_stricter_timeout_ms(settings['statement_timeout'], min(remaining, _ADMISSION_STATEMENT_CAP_MS))}ms",
+                                f"{_stricter_timeout_ms(settings['transaction_timeout'], min(remaining, _ADMISSION_TRANSACTION_CAP_MS))}ms",
                             ),
                         )
                     yield connection

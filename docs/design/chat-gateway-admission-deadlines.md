@@ -35,9 +35,14 @@ Limits are clamped to the remaining absolute deadline:
 | Statement | 5,000 ms | PostgreSQL statement_timeout |
 | Transaction | 10,000 ms | PostgreSQL 17 transaction_timeout |
 
-Existing operator libpq options are retained with bounded statement and lock
-settings appended for the connection's initial probes. Transaction-local
-settings constrain SQL, locks and the transaction itself. The code also checks
+Existing operator libpq options, database/role timeout settings and session
+timeouts are not relaxed: the implementation reads the effective server
+pg_settings and selects the smaller positive timeout before running the
+encoding probe and again inside the submission transaction. The initial
+read-only settings query itself is not covered by a newly established
+server-side timeout; a connected network blackhole may still stall it.
+Transaction-local settings constrain SQL, locks and the transaction itself.
+The code also checks
 both a fresh application clock and a PostgreSQL clock_timestamp after all
 admission/idempotency SQL and **inside the transaction immediately before
 COMMIT**. An elapsed deadline rolls back instead of admitting a late Job.
