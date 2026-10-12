@@ -125,6 +125,67 @@ async def test_failed_delayed_admission_releases_permit_without_phantom_job():
         await asyncio.gather(task, return_exceptions=True)
 
 
+
+
+class BlockedCancelRepository(CountingBlockedAdmissionRepository):
+    def __init__(self):
+        super().__init__()
+        self.cancel_entered = threading.Event()
+        self.cancel_release = threading.Event()
+
+    def cancel_job(self, *args, **kwargs):
+        self.cancel_entered.set()
+        if not self.cancel_release.wait(timeout=4):
+            raise RuntimeError("test cancellation was not unblocked")
+        return super().cancel_job(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_permit_remains_held_while_late_cancel_acknowledgement_is_blocked():
+    repo = BlockedCancelRepository()
+    service = _service(repo, budget=1)
+    request = asyncio.create_task(
+        service.stream(_ConnectedRequest(), _BODY, request_size_bytes=80)
+    )
+    try:
+        await _wait_for(lambda: repo.calls == 1)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+
+        # Admission is now permitted to finish, but cancellation itself stalls.
+        repo.release.set()
+        assert await asyncio.to_thread(repo.cancel_entered.wait, 2)
+        assert service._admissions_in_flight == 1
+        assert len(service._pending_admission_cleanup) == 1
+        assert len(repo.list_jobs()) == 1
+        assert repo.list_jobs()[0].status is JobStatus.QUEUED
+
+        with pytest.raises(ChatGatewayError) as exc:
+            await service.stream(
+                _ConnectedRequest(), _BODY, request_size_bytes=80
+            )
+        assert exc.value.code == "admission_overloaded"
+        assert repo.calls == 1
+
+        repo.cancel_release.set()
+        await _wait_for(
+            lambda: repo.list_jobs()[0].status is JobStatus.CANCELLED
+        )
+        await _wait_for(lambda: service._admissions_in_flight == 0)
+        assert not service._pending_admission_cleanup
+        assert service._unexpected_cleanup_failures == 0
+        assert repo.get_worker("chat-worker").active_jobs == 0
+    finally:
+        repo.release.set()
+        repo.cancel_release.set()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        for job in repo.list_jobs():
+            repo.cancel_job(job.job_id)
+
+
 @pytest.mark.parametrize("budget", [0, -1, True, False, 1.5, "8", None])
 def test_admission_budget_must_be_explicit_positive_integer(budget):
     profile, _ = serving_values()

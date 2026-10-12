@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
+import httpx
 import pytest
 
 from astrumweaver.control.daemon import build_app
@@ -153,6 +155,73 @@ def test_control_daemon_requires_valid_catalog_when_chat_gateway_enabled(
     )
     with pytest.raises(RuntimeError, match="profile catalog is invalid"):
         build_app(str(invalid))
+
+
+
+
+@pytest.mark.asyncio
+async def test_control_daemon_applies_chat_admission_budget_from_toml(
+    tmp_path, monkeypatch
+):
+    from astrumweaver.control import daemon
+    from astrumweaver.control import JobStatus
+    from test_chat_gateway_admission_budget import (
+        CountingBlockedAdmissionRepository,
+        _BODY,
+    )
+    from test_chat_gateway_admission_cancellation import _wait_for
+    from test_chat_gateway_api import register_worker, serving_values
+
+    base_environment(monkeypatch)
+    repo = CountingBlockedAdmissionRepository()
+    _, advertisement = serving_values()
+    register_worker(repo, advertisement)
+    monkeypatch.setattr(
+        daemon, "PostgresControlRepository", lambda _database_url, **_kw: repo
+    )
+
+    catalog = tmp_path / "chat-catalog.json"
+    catalog.write_text(json.dumps(catalog_document()), encoding="utf-8")
+    config = tmp_path / "control.toml"
+    config.write_text(
+        '[control]\nclient_auth = "none"\n'
+        '[chat_gateway]\nenabled = true\n'
+        f'catalog = "{catalog}"\n'
+        'max_pending_admissions = 1\n',
+        encoding="utf-8",
+    )
+    app = daemon.build_app(str(config))
+    assert "/v1/chat/completions" in set(app.openapi()["paths"])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test.local",
+    ) as client:
+        first = asyncio.create_task(
+            client.post("/v1/chat/completions", json=_BODY)
+        )
+        try:
+            await _wait_for(lambda: repo.calls == 1)
+            second = await client.post("/v1/chat/completions", json=_BODY)
+            assert second.status_code == 429
+            assert second.json()["error"]["code"] == "admission_overloaded"
+            assert repo.calls == 1  # TOML setting prevented second thread.
+
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            repo.release.set()
+            await _wait_for(lambda: len(repo.list_jobs()) == 1)
+            await _wait_for(
+                lambda: repo.list_jobs()[0].status is JobStatus.CANCELLED
+            )
+        finally:
+            repo.release.set()
+            if not first.done():
+                first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+            for job in repo.list_jobs():
+                repo.cancel_job(job.job_id)
 
 
 def test_control_daemon_threads_job_event_buffer_limits(tmp_path, monkeypatch):
