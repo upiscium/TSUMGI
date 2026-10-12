@@ -87,6 +87,42 @@ def _require_client(
         )
 
 
+class _OwnedChatStream:
+    """Durable Job owner that also works before the first SSE iteration."""
+
+    def __init__(
+        self,
+        iterator: AsyncIterator[str],
+        job_id: str,
+        cancel,
+    ) -> None:
+        self._iterator = iterator
+        self.job_id = job_id
+        self._cancel = cancel
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> str:
+        return await anext(self._iterator)
+
+    async def aclose(self) -> None:
+        try:
+            await self._iterator.aclose()
+        finally:
+            # Async generators do not run finally when aclose() precedes
+            # their first anext(). Response lifecycle owns this extra gate.
+            await self._cancel(self.job_id)
+
+
+class _OwnedChatStreamingResponse(StreamingResponse):
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self.body_iterator.aclose()
+
+
 class ChatGatewayService:
     def __init__(
         self,
@@ -297,6 +333,7 @@ class ChatGatewayService:
 
         async def generate() -> AsyncIterator[str]:
             sequence = 0
+            terminal = False
             try:
                 while True:
                     if await request.is_disconnected():
@@ -352,9 +389,11 @@ class ChatGatewayService:
                         if tail:
                             continue
                         if current.status is JobStatus.SUCCEEDED:
+                            terminal = True
                             yield "data: [DONE]\n\n"
                             return
                         if current.status is JobStatus.CANCELLED:
+                            terminal = True
                             yield _stream_error(
                                 "request_cancelled",
                                 "chat request was cancelled",
@@ -379,6 +418,7 @@ class ChatGatewayService:
                                 else "backend_failure"
                             )
                         )
+                        terminal = True
                         yield _stream_error(
                             public_code,
                             "chat stream terminated before durable success",
@@ -397,10 +437,17 @@ class ChatGatewayService:
                         min(self.poll_interval_seconds, remaining)
                     )
             except asyncio.CancelledError:
-                await self._cancel(job_id)
                 raise
+            finally:
+                # ASGI may close the body iterator after a client disconnect
+                # instead of cancelling a task blocked inside anext(). An
+                # abandoned response must never leave its durable Job RUNNING.
+                # Preserve a naturally terminal Job; cancellation remains
+                # best-effort and the Worker lease/deadline is the backstop.
+                if not terminal:
+                    await self._cancel(job_id)
 
-        return generate()
+        return _OwnedChatStream(generate(), job_id, self._cancel)
 
 
 def _stream_data(value: dict[str, object]) -> str:
@@ -486,7 +533,7 @@ def create_chat_router(
                     value,
                     request_size_bytes=len(raw),
                 )
-                return StreamingResponse(
+                return _OwnedChatStreamingResponse(
                     iterator,
                     media_type="text/event-stream",
                     headers={
