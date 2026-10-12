@@ -141,6 +141,23 @@ class ChatGatewayService:
         self.repository = repository
         self.catalog = catalog
         self.poll_interval_seconds = float(poll_interval_seconds)
+        # A cancelled request must not lose a Job created by a synchronous
+        # submission thread that completes after the request task has exited.
+        self._pending_admission_cleanup: set[asyncio.Task[None]] = set()
+
+    async def _cancel_after_admission(
+        self, submit_task: asyncio.Task[Any]
+    ) -> None:
+        try:
+            submitted = await submit_task
+        except asyncio.CancelledError:
+            # Never misreport a cancelled cleanup task as a successful
+            # durable cancellation during service shutdown.
+            raise
+        except Exception:
+            # A failed admission did not produce a durable Job to cancel.
+            return
+        await self._cancel(submitted.job_id)
 
     async def _cancel(self, job_id: str) -> None:
         try:
@@ -226,8 +243,10 @@ class ChatGatewayService:
         )
         now = utc_now()
         deadline_at = now + timedelta(seconds=profile.request_timeout_seconds)
-        try:
-            record = await asyncio.to_thread(
+        # Shield the synchronous admission task from HTTP task cancellation:
+        # asyncio.to_thread cannot abort an already-running DB operation.
+        submit_task = asyncio.create_task(
+            asyncio.to_thread(
                 self.repository.submit_job,
                 JobSubmission(
                     capability="llm.chat",
@@ -242,6 +261,19 @@ class ChatGatewayService:
                 ),
                 now=now,
             )
+        )
+        try:
+            record = await asyncio.shield(submit_task)
+        except asyncio.CancelledError:
+            # Admission may still commit a durable Job after this caller has
+            # gone away. Keep an independent owner until its actual ID is
+            # known, then cancel precisely that Job. No request task wait.
+            cleanup = asyncio.create_task(
+                self._cancel_after_admission(submit_task)
+            )
+            self._pending_admission_cleanup.add(cleanup)
+            cleanup.add_done_callback(self._pending_admission_cleanup.discard)
+            raise
         except DeadlineExceededError as exc:
             raise ChatGatewayError(
                 "deadline_exceeded",
