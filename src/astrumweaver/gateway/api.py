@@ -130,7 +130,10 @@ class ChatGatewayService:
         catalog: ChatProfileCatalog,
         *,
         poll_interval_seconds: float = 0.05,
+        max_pending_admissions: int = 8,
     ) -> None:
+        if type(max_pending_admissions) is not int or max_pending_admissions < 1:
+            raise ValueError("max_pending_admissions must be a positive integer")
         if (
             isinstance(poll_interval_seconds, bool)
             or not isinstance(poll_interval_seconds, (int, float))
@@ -141,9 +144,23 @@ class ChatGatewayService:
         self.repository = repository
         self.catalog = catalog
         self.poll_interval_seconds = float(poll_interval_seconds)
+        # A nonblocking per-service gate: reserve before starting a thread.
+        # Cancellation transfers its permit to late cleanup until completion.
+        self.max_pending_admissions = max_pending_admissions
+        self._admissions_in_flight = 0
+        self._unexpected_cleanup_failures = 0
         # A cancelled request must not lose a Job created by a synchronous
         # submission thread that completes after the request task has exited.
         self._pending_admission_cleanup: set[asyncio.Task[None]] = set()
+
+    def _cleanup_finished(self, cleanup: asyncio.Task[None]) -> None:
+        self._pending_admission_cleanup.discard(cleanup)
+        self._admissions_in_flight -= 1
+        try:
+            cleanup.result()
+        except (asyncio.CancelledError, Exception):
+            # Task failure, not proof of durable cancellation outcome.
+            self._unexpected_cleanup_failures += 1
 
     async def _cancel_after_admission(
         self, submit_task: asyncio.Task[Any]
@@ -243,62 +260,74 @@ class ChatGatewayService:
         )
         now = utc_now()
         deadline_at = now + timedelta(seconds=profile.request_timeout_seconds)
+        submission = JobSubmission(
+            capability="llm.chat",
+            payload=compiled.payload,
+            max_attempts=profile.max_attempts if max_attempts is None else max_attempts,
+            deadline_at=deadline_at,
+            serving=profile.binding,
+        )
+        # Check and reserve synchronously before spawning asyncio.to_thread.
+        # An exhausted service must not queue unlimited waiting Tasks.
+        if self._admissions_in_flight >= self.max_pending_admissions:
+            raise ChatGatewayError(
+                "admission_overloaded",
+                "chat admission concurrency limit reached",
+                status_code=429,
+            )
+        self._admissions_in_flight += 1
         # Shield the synchronous admission task from HTTP task cancellation:
         # asyncio.to_thread cannot abort an already-running DB operation.
-        submit_task = asyncio.create_task(
-            asyncio.to_thread(
-                self.repository.submit_job,
-                JobSubmission(
-                    capability="llm.chat",
-                    payload=compiled.payload,
-                    max_attempts=(
-                        profile.max_attempts
-                        if max_attempts is None
-                        else max_attempts
-                    ),
-                    deadline_at=deadline_at,
-                    serving=profile.binding,
-                ),
-                now=now,
-            )
+        operation = asyncio.to_thread(
+            self.repository.submit_job, submission, now=now
         )
         try:
-            record = await asyncio.shield(submit_task)
-        except asyncio.CancelledError:
-            # Admission may still commit a durable Job after this caller has
-            # gone away. Keep an independent owner until its actual ID is
-            # known, then cancel precisely that Job. No request task wait.
-            cleanup = asyncio.create_task(
-                self._cancel_after_admission(submit_task)
-            )
-            self._pending_admission_cleanup.add(cleanup)
-            cleanup.add_done_callback(self._pending_admission_cleanup.discard)
+            submit_task = asyncio.create_task(operation)
+        except BaseException:
+            operation.close()
+            self._admissions_in_flight -= 1
             raise
-        except DeadlineExceededError as exc:
-            raise ChatGatewayError(
-                "deadline_exceeded",
-                "chat request deadline expired before admission",
-                status_code=408,
-            ) from exc
-        except OverloadedError as exc:
-            raise ChatGatewayError(
-                "overloaded",
-                "all compatible chat replicas are busy",
-                status_code=429,
-            ) from exc
-        except NoCompatibleDeployment as exc:
-            raise ChatGatewayError(
-                "no_compatible_deployment",
-                "no compatible chat deployment is available",
-                status_code=503,
-            ) from exc
-        except ConflictError as exc:
-            raise ChatGatewayError(
-                "admission_conflict",
-                "chat request conflicts with durable admission state",
-                status_code=409,
-            ) from exc
-        return profile, record
+        delegated_slot = False
+        try:
+            try:
+                record = await asyncio.shield(submit_task)
+            except asyncio.CancelledError:
+                # Cleanup takes over the permit; client propagation stays prompt.
+                cleanup = asyncio.create_task(
+                    self._cancel_after_admission(submit_task)
+                )
+                self._pending_admission_cleanup.add(cleanup)
+                cleanup.add_done_callback(self._cleanup_finished)
+                delegated_slot = True
+                raise
+            except DeadlineExceededError as exc:
+                raise ChatGatewayError(
+                    "deadline_exceeded",
+                    "chat request deadline expired before admission",
+                    status_code=408,
+                ) from exc
+            except OverloadedError as exc:
+                raise ChatGatewayError(
+                    "overloaded",
+                    "all compatible chat replicas are busy",
+                    status_code=429,
+                ) from exc
+            except NoCompatibleDeployment as exc:
+                raise ChatGatewayError(
+                    "no_compatible_deployment",
+                    "no compatible chat deployment is available",
+                    status_code=503,
+                ) from exc
+            except ConflictError as exc:
+                raise ChatGatewayError(
+                    "admission_conflict",
+                    "chat request conflicts with durable admission state",
+                    status_code=409,
+                ) from exc
+            return profile, record
+        finally:
+            if not delegated_slot:
+                self._admissions_in_flight -= 1
 
     async def complete(
         self,
@@ -509,6 +538,7 @@ def create_chat_router(
     client_auth: ClientAuthMode | str,
     client_token: str | None,
     poll_interval_seconds: float = 0.05,
+    max_pending_admissions: int = 8,
 ) -> APIRouter:
     mode = ClientAuthMode(client_auth)
     if mode is ClientAuthMode.BEARER and not client_token:
@@ -518,6 +548,7 @@ def create_chat_router(
         repository,
         catalog,
         poll_interval_seconds=poll_interval_seconds,
+        max_pending_admissions=max_pending_admissions,
     )
     router = APIRouter()
 
