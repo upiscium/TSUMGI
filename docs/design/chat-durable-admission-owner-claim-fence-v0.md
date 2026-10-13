@@ -192,8 +192,11 @@ atomic CAS/row locking for cancellation versus claim:
 - **Cancel-first:** locks owner then Job, commits `CANCEL_REQUESTED`. Claim
   later sees non-`ACTIVE` under owner lock; no new RUNNING transition.
 - **Claim-first:** holds owner then Job then Worker, commits RUNNING. Cancel
-  then locks owner then Job/Worker, marks exact Job CANCELLED and fences its
-  lease/epoch. It is possible native execution began before cancellation.
+  then locks owner then Job/Worker. If the Job is still RUNNING, it marks
+  that exact Job CANCELLED and fences its lease/epoch; a native operation
+  may already have begun. If completion acquired the owner/Job fence first,
+  the Job is already SUCCEEDED/FAILED and is classified terminal-not-cancelled,
+  never retroactively rewritten to CANCELLED. Both interleavings are legal.
 - **Crash before activation:** Job may exist but remains PENDING; Worker
   must never claim it; reconciler later cancels.
 - **Crash after activation:** owner lease permits a bounded claim window
