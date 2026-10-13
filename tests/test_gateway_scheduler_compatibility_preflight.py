@@ -300,7 +300,7 @@ def test_old_control_can_claim_despite_durable_owner_contract(
         assert repo.get_worker(worker).active_jobs == 0
     finally:
         # Ensure no production table remains modified after the opt-in probe.
-        with psycopg.connect(DSN, autocommit=True) as conn:
+        with psycopg.connect(DSN) as conn:
             conn.execute(
                 "ALTER TABLE jobs DROP COLUMN IF EXISTS gateway_admission_id"
             )
@@ -512,3 +512,46 @@ def test_disposable_role_setup_failure_rolls_back_global_role(
             "SELECT count(*) FROM pg_roles WHERE rolname=%s", (role,),
         ).fetchone()[0]
     assert count == 0
+
+
+def test_disposable_teardown_failure_rolls_back_partial_ddl(verified_scheduler):
+    """A failed second teardown statement must restore the first DROP."""
+    with psycopg.connect(DSN) as conn:
+        conn.execute(
+            "CREATE TABLE gateway_admissions_teardown_probe "
+            "(id integer PRIMARY KEY)"
+        )
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN scheduler_teardown_probe integer"
+        )
+    try:
+        with pytest.raises(psycopg.errors.UndefinedColumn):
+            with psycopg.connect(DSN) as conn:
+                conn.execute(
+                    "ALTER TABLE jobs DROP COLUMN scheduler_teardown_probe"
+                )
+                # This deliberate failure must roll back the previous DROP.
+                conn.execute(
+                    "ALTER TABLE jobs DROP COLUMN scheduler_missing_probe"
+                )
+                conn.execute(
+                    "DROP TABLE gateway_admissions_teardown_probe"
+                )
+        with psycopg.connect(DSN) as conn:
+            table = conn.execute(
+                "SELECT to_regclass('public.gateway_admissions_teardown_probe')"
+            ).fetchone()[0]
+            count = conn.execute(
+                "SELECT count(*) FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='jobs' "
+                "AND column_name='scheduler_teardown_probe'"
+            ).fetchone()[0]
+        assert table is not None and count == 1
+    finally:
+        with psycopg.connect(DSN) as conn:
+            conn.execute(
+                "ALTER TABLE jobs DROP COLUMN IF EXISTS scheduler_teardown_probe"
+            )
+            conn.execute(
+                "DROP TABLE IF EXISTS gateway_admissions_teardown_probe"
+            )
