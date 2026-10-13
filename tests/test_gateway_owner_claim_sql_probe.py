@@ -465,17 +465,19 @@ def test_probe_rejects_wrong_server_nonce_before_creating_schema(monkeypatch):
 def test_expiry_while_waiting_for_worker_lock_rechecks_fresh_clock(sandbox_schema):
     """A valid early Owner read MUST NOT authorize RUNNING after lock delay."""
     schema = sandbox_schema
-    _prepare(schema, lease_seconds=0.45)
+    owner_id, _ = _prepare(schema, lease_seconds=1.2)
     worker_locked, release_worker, owner_locked = Event(), Event(), Event()
+    blocker_pid: list[int] = []
 
     def holding_worker():
         with _connect(schema) as conn:
+            blocker_pid.append(conn.info.backend_pid)
             with conn.transaction():
                 conn.execute(
                     "SELECT * FROM workers WHERE id='worker' FOR UPDATE"
                 )
                 worker_locked.set()
-                assert release_worker.wait(timeout=3)
+                assert release_worker.wait(timeout=5)
 
     claim_application = "ownerprobe_workerwait_" + uuid4().hex[:9]
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -488,30 +490,45 @@ def test_expiry_while_waiting_for_worker_lock_rechecks_fresh_clock(sandbox_schem
                 application_name=claim_application,
             )
             assert owner_locked.wait(timeout=2)
-            # Inspect the *actual* PostgreSQL wait, not just a Task/event that
-            # ran before the eventual Worker FOR UPDATE statement.
+            # Prove that THIS claimant is blocked by the backend which holds
+            # the Worker row, not merely by an unrelated PostgreSQL Lock.
+            # Also establish that the Owner was still live at observation.
             end = monotonic() + 2
-            seen_worker_wait = False
+            remaining = None
             with _connect(schema) as observer:
                 while monotonic() < end:
                     row = observer.execute(
-                        "SELECT wait_event_type FROM pg_stat_activity "
-                        "WHERE application_name=%s",
+                        "SELECT wait_event_type, pg_blocking_pids(pid) AS blockers "
+                        "FROM pg_stat_activity WHERE application_name=%s",
                         (claim_application,),
                     ).fetchone()
-                    if row and row["wait_event_type"] == "Lock":
-                        seen_worker_wait = True
+                    if (
+                        row
+                        and row["wait_event_type"] == "Lock"
+                        and blocker_pid
+                        and blocker_pid[0] in row["blockers"]
+                    ):
+                        lease = observer.execute(
+                            "SELECT lease_expires_at,"
+                            " clock_timestamp() AS db_clock FROM owners"
+                            " WHERE id=%s",
+                            (owner_id,),
+                        ).fetchone()
+                        remaining = (
+                            lease["lease_expires_at"] - lease["db_clock"]
+                        ).total_seconds()
                         break
                     if claimant.done():
                         break
                     sleep(0.01)
-            assert seen_worker_wait, "claimant never blocked on Worker row"
+            assert remaining is not None, "Worker-row blocker was not observed"
+            assert remaining > 0.05, "Owner expired before observed wait"
             assert not claimant.done()
-            sleep(0.55)  # Lease expires during observed Worker lock wait.
+            sleep(remaining + 0.08)  # Owner expires DURING proven lock wait.
         finally:
             release_worker.set()
-        holder.result(timeout=4)
-        assert claimant.result(timeout=4) is False
+        holder.result(timeout=5)
+        assert claimant.result(timeout=5) is False
 
     assert _inspect(schema) == (["ACTIVE"], ["queued"], 0)
 
