@@ -107,16 +107,9 @@ where app-derived deadlines are involved.
 ## 3. Exact state machine and operations
 
 ```text
-                   cancel or owner expiry
-                   ┌──────────────────────────────┐
-                   ▼                              │
-NEW --atomic admit--> PENDING --activate--> ACTIVE│
- │                    │                   │       │
- └--cancel(upsert)-----┴-------------------┴----> CANCEL_REQUESTED
-                                                  │
-                      no Job / CANCELLED / TERMINAL readback
-                                                  ▼
-                                                CLOSED
+NEW → PREPARE_COMMITTED(PENDING) → ADMIT_LINKED(PENDING) → ACTIVATE(ACTIVE)
+PENDING/ACTIVE → CANCEL_REQUESTED → CLOSED (only after verified outcome)
+An unconfirmed ADMIT never transitions directly to ACTIVE.
 ```
 
 **Admission / COMMIT ambiguity:**
@@ -283,8 +276,7 @@ PREPARE must atomically reserve a globally counted slot before accepting A;
 full quota returns a bounded, public-safe 429/503 **without** another thread
 or owner. A serializable quota-row or reservation-slot design is acceptable
 only after reviewing its lock order, maximum contention and exactly-once
-release on terminal reconciliation. Any participant locking both quota and
-Owner must follow a single **Quota → Owner → Job → Worker** order; if release
+release on terminal reconciliation. Any participant locking quota, identity reservation, Owner, and Job must follow the single **Quota → Reservation → Owner → Job → Worker** order (skipping unneeded rows); if release
 is post-commit, a delayed release may temporarily reject valid requests but
 must never admit more than capacity. No quota lock may be taken after a held
 Owner/Job/Worker lock. Test simultaneous PREPARE from multiple Gateways,
