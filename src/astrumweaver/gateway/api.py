@@ -35,6 +35,8 @@ from .chat import (
 
 
 _log = logging.getLogger(__name__)
+# Post-admission cancellation gets a separate bounded resource budget.
+_POSTADMIT_CANCEL_TIMEOUT_SECONDS = 5
 
 
 def load_chat_catalog(path: str) -> ChatProfileCatalog:
@@ -136,9 +138,12 @@ class ChatGatewayService:
         *,
         poll_interval_seconds: float = 0.05,
         max_pending_admissions: int = 8,
+        max_postadmit_cancellations: int = 8,
     ) -> None:
         if type(max_pending_admissions) is not int or max_pending_admissions < 1:
             raise ValueError("max_pending_admissions must be a positive integer")
+        if type(max_postadmit_cancellations) is not int or max_postadmit_cancellations < 1:
+            raise ValueError("max_postadmit_cancellations must be a positive integer")
         if (
             isinstance(poll_interval_seconds, bool)
             or not isinstance(poll_interval_seconds, (int, float))
@@ -160,6 +165,9 @@ class ChatGatewayService:
         # A cancelled request must not lose a Job created by a synchronous
         # submission thread that completes after the request task has exited.
         self._pending_admission_cleanup: set[asyncio.Task[None]] = set()
+        self.max_postadmit_cancellations = max_postadmit_cancellations
+        self._postadmit_cancellations: dict[str, asyncio.Task[Any]] = {}
+        self._unresolved_cancellations = 0
 
     def _cleanup_finished(self, cleanup: asyncio.Task[None]) -> None:
         self._pending_admission_cleanup.discard(cleanup)
@@ -256,11 +264,37 @@ class ChatGatewayService:
         _log.error("chat admission cancel acknowledgement unconfirmed; outcome UNKNOWN")
 
     async def _cancel(self, job_id: str) -> None:
+        # Reserve before spawning a DB thread. Duplicate calls share one task.
+        operation = self._postadmit_cancellations.get(job_id)
+        if operation is None:
+            if len(self._postadmit_cancellations) >= self.max_postadmit_cancellations:
+                self._unresolved_cancellations += 1
+                _log.warning("chat cancellation budget exhausted; durable outcome unresolved")
+                return
+            operation = asyncio.create_task(
+                asyncio.to_thread(
+                    self.repository.cancel_job,
+                    job_id,
+                    admission_deadline_at=utc_now() + timedelta(seconds=_POSTADMIT_CANCEL_TIMEOUT_SECONDS),
+                )
+            )
+            self._postadmit_cancellations[job_id] = operation
+
+            def finished(task: asyncio.Task[Any]) -> None:
+                self._postadmit_cancellations.pop(job_id, None)
+                try:
+                    task.result()
+                except (Exception, asyncio.CancelledError):
+                    # Do not expose a private DB exception or claim CANCELLED.
+                    self._unresolved_cancellations += 1
+                    _log.warning("chat cancellation outcome unresolved")
+
+            operation.add_done_callback(finished)
         try:
-            await asyncio.to_thread(self.repository.cancel_job, job_id)
+            # Caller cancellation must not cancel the synchronous DB thread.
+            await asyncio.shield(operation)
         except Exception:
-            # Cancellation is best-effort at this edge. Durable Worker fencing
-            # remains authoritative even if the acknowledgement is lost.
+            # Callback is responsible for final disposition accounting.
             return
 
     @staticmethod
@@ -523,7 +557,10 @@ class ChatGatewayService:
                     )
                 await asyncio.sleep(min(self.poll_interval_seconds, remaining))
         except asyncio.CancelledError:
-            await self._cancel(job_id)
+            # An already-started cancellation is owned by the service, not
+            # by the just-cancelled HTTP caller.
+            if job_id not in self._postadmit_cancellations:
+                await self._cancel(job_id)
             raise
 
 
@@ -692,6 +729,7 @@ def create_chat_router(
     client_token: str | None,
     poll_interval_seconds: float = 0.05,
     max_pending_admissions: int = 8,
+    max_postadmit_cancellations: int = 8,
 ) -> APIRouter:
     mode = ClientAuthMode(client_auth)
     if mode is ClientAuthMode.BEARER and not client_token:
@@ -702,6 +740,7 @@ def create_chat_router(
         catalog,
         poll_interval_seconds=poll_interval_seconds,
         max_pending_admissions=max_pending_admissions,
+        max_postadmit_cancellations=max_postadmit_cancellations,
     )
     router = APIRouter()
 

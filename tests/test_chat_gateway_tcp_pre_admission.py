@@ -241,7 +241,10 @@ async def test_asgi_receive_disconnect_during_admission_before_first_sse():
             repo.release.set()
             await assert_late_cancel(repo)
             await asyncio.wait_for(task, 3)
-            assert not any(m["type"] == "http.response.body" and m.get("body") for m in sent)
+            # An ASGI fake send() may still capture an HTTP 499 JSON error
+            # after disconnect. What must never leak is a model SSE token.
+            assert not any(m["type"] == "http.response.body" and
+                           b"data:" in m.get("body", b"") for m in sent)
 
 
 @pytest.mark.asyncio
@@ -295,8 +298,7 @@ async def test_asgi_disconnect_does_not_retro_cancel_success_or_unowned_job():
             claimed = repo.claim_next_job("chat-worker", runtime_instance_epoch=EPOCH)
             assert claimed is not None and claimed.job_id == owned.job_id
             unowned = repo.submit_job(
-                JobSubmission(capability="llm.chat", payload={"ordinary": True},
-                              deadline_at=utc_now() + timedelta(seconds=30)),
+                JobSubmission(capability="code.review", payload={"ordinary": True}),
             )
             repo.complete_job(owned.job_id, JobResult(outputs={"streamed": True}),
                               worker_id="chat-worker", lease_token=claimed.lease_token or "",

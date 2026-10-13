@@ -840,8 +840,15 @@ class InMemoryControlRepository:
         self, job_id: str, *, now: datetime | None = None,
         admission_deadline_at: datetime | None = None,
     ) -> JobRecord:
+        if admission_deadline_at is not None:
+            if not isinstance(admission_deadline_at, datetime) or admission_deadline_at.tzinfo is None:
+                raise ValueError("admission_deadline_at must be timezone-aware")
+            if utc_now() >= admission_deadline_at:
+                raise DeadlineExceededError("chat cancellation deadline expired")
         timestamp = _aware(now)
         with self._lock:
+            if admission_deadline_at is not None and utc_now() >= admission_deadline_at:
+                raise DeadlineExceededError("chat cancellation deadline expired")
             job = self.get_job(job_id)
             if job.status in {
                 JobStatus.SUCCEEDED,
