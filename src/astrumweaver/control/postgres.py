@@ -979,6 +979,22 @@ class PostgresControlRepository:
             raise NotFoundError(f"job not found: {job_id}")
         return self._job(row)
 
+    def get_job_by_idempotency_key(
+        self, key: str, *, admission_deadline_at: datetime | None = None
+    ) -> JobRecord | None:
+        # Fresh primary snapshot after the original submission thread has
+        # stopped. A missing row is not inferred from a failed connection.
+        try:
+            with self._connection(admission_deadline_at=admission_deadline_at) as connection:
+                row = connection.execute(
+                    "SELECT * FROM jobs WHERE idempotency_key = %s", (key,)
+                ).fetchone()
+        except RepositoryError:
+            raise
+        except Exception as exc:
+            raise StorageUnavailable("idempotent job readback unavailable") from exc
+        return None if row is None else self._job(row)
+
     def append_job_event(
         self,
         job_id: str,
@@ -1469,10 +1485,11 @@ class PostgresControlRepository:
             return self._job(updated)
 
     def cancel_job(
-        self, job_id: str, *, now: datetime | None = None
+        self, job_id: str, *, now: datetime | None = None,
+        admission_deadline_at: datetime | None = None,
     ) -> JobRecord:
         timestamp = _aware(now)
-        with self._transaction() as connection:
+        with self._transaction(admission_deadline_at=admission_deadline_at) as connection:
             row = connection.execute(
                 "SELECT * FROM jobs WHERE id::text = %s FOR UPDATE", (job_id,)
             ).fetchone()

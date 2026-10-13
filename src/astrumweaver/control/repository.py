@@ -104,6 +104,10 @@ class ControlRepository(Protocol):
 
     def get_job(self, job_id: str) -> JobRecord: ...
 
+    def get_job_by_idempotency_key(
+        self, key: str, *, admission_deadline_at: datetime | None = None
+    ) -> JobRecord | None: ...
+
     def append_job_event(
         self,
         job_id: str,
@@ -156,7 +160,8 @@ class ControlRepository(Protocol):
     ) -> JobRecord: ...
 
     def cancel_job(
-        self, job_id: str, *, now: datetime | None = None
+        self, job_id: str, *, now: datetime | None = None,
+        admission_deadline_at: datetime | None = None,
     ) -> JobRecord: ...
 
     def recover_expired_jobs(
@@ -567,6 +572,13 @@ class InMemoryControlRepository:
             except KeyError as exc:
                 raise NotFoundError(f"job not found: {job_id}") from exc
 
+    def get_job_by_idempotency_key(
+        self, key: str, *, admission_deadline_at: datetime | None = None
+    ) -> JobRecord | None:
+        with self._lock:
+            job_id = self._idempotency.get(key)
+            return None if job_id is None else self._jobs[job_id]
+
     def list_jobs(self) -> list[JobRecord]:
         with self._lock:
             return sorted(self._jobs.values(), key=lambda item: item.sequence)
@@ -825,7 +837,8 @@ class InMemoryControlRepository:
             return failed
 
     def cancel_job(
-        self, job_id: str, *, now: datetime | None = None
+        self, job_id: str, *, now: datetime | None = None,
+        admission_deadline_at: datetime | None = None,
     ) -> JobRecord:
         timestamp = _aware(now)
         with self._lock:

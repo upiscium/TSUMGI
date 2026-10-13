@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import secrets
 from collections.abc import AsyncIterator
@@ -31,6 +32,9 @@ from .chat import (
     normalize_chat_completion,
     normalize_chat_stream_chunk,
 )
+
+
+_log = logging.getLogger(__name__)
 
 
 def load_chat_catalog(path: str) -> ChatProfileCatalog:
@@ -150,6 +154,9 @@ class ChatGatewayService:
         self.max_pending_admissions = max_pending_admissions
         self._admissions_in_flight = 0
         self._unexpected_cleanup_failures = 0
+        # Exhausted readback/cancel acknowledgement: explicitly unresolved,
+        # never counted as a confirmed cancellation.
+        self._unresolved_admissions = 0
         # A cancelled request must not lose a Job created by a synchronous
         # submission thread that completes after the request task has exited.
         self._pending_admission_cleanup: set[asyncio.Task[None]] = set()
@@ -162,9 +169,33 @@ class ChatGatewayService:
         except (asyncio.CancelledError, Exception):
             # Task failure, not proof of durable cancellation outcome.
             self._unexpected_cleanup_failures += 1
+            self._unresolved_admissions += 1
+            _log.error("chat admission cleanup failed; durable outcome UNKNOWN")
+
+    def _delegate_cleanup(self, cleanup: asyncio.Task[None]) -> None:
+        self._pending_admission_cleanup.add(cleanup)
+        cleanup.add_done_callback(self._cleanup_finished)
+
+    @staticmethod
+    async def _watch_admission_disconnect(request: Request) -> None:
+        # Only start after request.body() has consumed the complete upload.
+        # Do not use is_disconnected() here: its nonblocking receive probe can
+        # miss a disconnect while a synchronous admission is in progress.
+        while True:
+            message = await request.receive()
+            if message["type"] == "http.disconnect":
+                return
+            # Some ASGI adapters repeat an empty http.request after EOF.
+            # Never busy-loop on one of those adapters.
+            await asyncio.sleep(0.01)
+
+    @staticmethod
+    def _watch_finished(watcher: asyncio.Task[None]) -> None:
+        if not watcher.cancelled() and watcher.exception() is not None:
+            _log.warning("chat admission disconnect watcher failed")
 
     async def _cancel_after_admission(
-        self, submit_task: asyncio.Task[Any]
+        self, submit_task: asyncio.Task[Any], key: str
     ) -> None:
         try:
             submitted = await submit_task
@@ -173,9 +204,56 @@ class ChatGatewayService:
             # durable cancellation during service shutdown.
             raise
         except Exception:
-            # A failed admission did not produce a durable Job to cancel.
+            # Even an exception at COMMIT can leave a durable Job.
+            await self._reconcile_admission(key)
             return
-        await self._cancel(submitted.job_id)
+        if submitted.idempotency_key != key:
+            self._unresolved_admissions += 1
+            _log.error("chat admission submission identity mismatch; outcome UNKNOWN")
+            return
+        await self._cancel_admission_job(submitted.job_id)
+
+    async def _reconcile_admission(self, key: str) -> None:
+        for _ in range(3):
+            try:
+                record = await asyncio.to_thread(
+                    self.repository.get_job_by_idempotency_key,
+                    key,
+                    admission_deadline_at=utc_now() + timedelta(seconds=2),
+                )
+            except Exception:
+                continue
+            if record is None:
+                # A lost COMMIT acknowledgement can precede the server's
+                # actual COMMIT. Even a primary read after the client thread
+                # finished proves only absence *at read time*, not that a
+                # transaction cannot commit later. Fail closed as UNKNOWN.
+                continue
+            if record.idempotency_key != key:
+                self._unresolved_admissions += 1
+                _log.error("chat admission readback identity mismatch; outcome UNKNOWN")
+                return
+            await self._cancel_admission_job(record.job_id)
+            return
+        self._unresolved_admissions += 1
+        _log.error("chat admission readback absent or exhausted; outcome UNKNOWN")
+
+    async def _cancel_admission_job(self, job_id: str) -> None:
+        for _ in range(3):
+            try:
+                result = await asyncio.to_thread(
+                    self.repository.cancel_job,
+                    job_id,
+                    admission_deadline_at=utc_now() + timedelta(seconds=2),
+                )
+            except Exception:
+                continue
+            if result.job_id == job_id and result.status is JobStatus.CANCELLED:
+                return
+            # Other terminal statuses cannot become CANCELLED by retrying.
+            break
+        self._unresolved_admissions += 1
+        _log.error("chat admission cancel acknowledgement unconfirmed; outcome UNKNOWN")
 
     async def _cancel(self, job_id: str) -> None:
         try:
@@ -242,6 +320,7 @@ class ChatGatewayService:
 
     async def _submit(
         self,
+        request: Request,
         body: dict[str, object],
         *,
         request_size_bytes: int,
@@ -267,6 +346,7 @@ class ChatGatewayService:
             max_attempts=profile.max_attempts if max_attempts is None else max_attempts,
             deadline_at=deadline_at,
             serving=profile.binding,
+            idempotency_key="chat-gateway:" + secrets.token_hex(32),
         )
         # Check and reserve synchronously before spawning asyncio.to_thread.
         # An exhausted service must not queue unlimited waiting Tasks.
@@ -292,17 +372,51 @@ class ChatGatewayService:
             self._admissions_in_flight -= 1
             raise
         delegated_slot = False
+        # Unit-level service callers may use lightweight request stubs. Real
+        # HTTP callers arrive here only after request.body() is fully parsed.
+        disconnect: asyncio.Task[None] | None = None
         try:
+            if isinstance(request, Request) and hasattr(request, "_body"):
+                watch_operation = self._watch_admission_disconnect(request)
+                try:
+                    disconnect = asyncio.create_task(watch_operation)
+                except BaseException:
+                    watch_operation.close()
+                    # The submit task already exists: retain its permit and
+                    # reconcile it even if watcher setup fails unexpectedly.
+                    cleanup = asyncio.create_task(
+                        self._cancel_after_admission(submit_task, submission.idempotency_key)
+                    )
+                    self._delegate_cleanup(cleanup)
+                    delegated_slot = True
+                    raise
+                disconnect.add_done_callback(self._watch_finished)
             try:
+                if disconnect is not None:
+                    done, _ = await asyncio.wait(
+                        (submit_task, disconnect), return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if disconnect in done and not disconnect.cancelled() and disconnect.exception() is None:
+                        # The disconnect wins even when a COMMIT raced it. The
+                        # cleanup owns the thread and permit from this point.
+                        disconnect.result()
+                        cleanup = asyncio.create_task(
+                            self._cancel_after_admission(submit_task, submission.idempotency_key)
+                        )
+                        self._delegate_cleanup(cleanup)
+                        delegated_slot = True
+                        raise ChatGatewayError(
+                            "client_disconnected", "chat client disconnected", status_code=499
+                        )
                 record = await asyncio.shield(submit_task)
             except asyncio.CancelledError:
                 # Cleanup takes over the permit; client propagation stays prompt.
-                cleanup = asyncio.create_task(
-                    self._cancel_after_admission(submit_task)
-                )
-                self._pending_admission_cleanup.add(cleanup)
-                cleanup.add_done_callback(self._cleanup_finished)
-                delegated_slot = True
+                if not delegated_slot:
+                    cleanup = asyncio.create_task(
+                        self._cancel_after_admission(submit_task, submission.idempotency_key)
+                    )
+                    self._delegate_cleanup(cleanup)
+                    delegated_slot = True
                 raise
             except DeadlineExceededError as exc:
                 raise ChatGatewayError(
@@ -328,9 +442,20 @@ class ChatGatewayService:
                     "chat request conflicts with durable admission state",
                     status_code=409,
                 ) from exc
-            except StorageUnavailable as exc:
-                # A lost COMMIT acknowledgement is not proof of no Job.
-                # A later identity-based reconciliation is required.
+            except ChatGatewayError:
+                raise
+            except Exception as exc:
+                # Any exception from submit_job can be a lost COMMIT ack;
+                # never treat it as proof that no durable Job was inserted.
+                reconciliation = asyncio.create_task(
+                    self._reconcile_admission(submission.idempotency_key)
+                )
+                try:
+                    await asyncio.shield(reconciliation)
+                except asyncio.CancelledError:
+                    self._delegate_cleanup(reconciliation)
+                    delegated_slot = True
+                    raise
                 raise ChatGatewayError(
                     "admission_unavailable",
                     "durable chat admission unavailable or unconfirmed",
@@ -338,6 +463,20 @@ class ChatGatewayService:
                 ) from exc
             return profile, record
         finally:
+            if disconnect is not None:
+                disconnect.cancel()
+                try:
+                    # Do not hand receive() to StreamingResponse until the
+                    # admission watcher has actually stopped reading it.
+                    await asyncio.gather(disconnect, return_exceptions=True)
+                except asyncio.CancelledError:
+                    if not delegated_slot:
+                        cleanup = asyncio.create_task(
+                            self._cancel_after_admission(submit_task, submission.idempotency_key)
+                        )
+                        self._delegate_cleanup(cleanup)
+                        delegated_slot = True
+                    raise
             if not delegated_slot:
                 self._admissions_in_flight -= 1
 
@@ -349,6 +488,7 @@ class ChatGatewayService:
         request_size_bytes: int,
     ) -> dict[str, object]:
         profile, record = await self._submit(
+            request,
             body,
             request_size_bytes=request_size_bytes,
         )
@@ -395,6 +535,7 @@ class ChatGatewayService:
         request_size_bytes: int,
     ) -> AsyncIterator[str]:
         profile, record = await self._submit(
+            request,
             body,
             request_size_bytes=request_size_bytes,
             max_attempts=1,
