@@ -43,13 +43,12 @@ Worker runtime checks the durable Job status and fences stale completions. To ma
 
 ## Proposed storage shape (illustrative, not executable migration)
 
-Prefer one new table with an initially nullable but later immutable Job link; avoid duplicating the Job ID on both sides unless necessary:
+The first feasibility draft placed a nullable job_id on gateway_admissions. Independent Correctness review found that this alone **cannot enforce ownership of Gateway-created Jobs**, since a Job can be inserted directly into jobs without ever being linked. Prefer a **Job-side, insert-time foreign key and explicit origin discriminator** in the next reviewed additive migration:
 
     gateway_admissions(
       id UUID PRIMARY KEY,                -- generated inside trusted Control/Gateway
       owner_instance_epoch UUID NOT NULL, -- changes on process restart
       state TEXT NOT NULL,                -- ACTIVE | CANCEL_REQUESTED | UNRESOLVED | TERMINAL
-      job_id UUID UNIQUE NULL REFERENCES jobs(id) ON DELETE RESTRICT,
       request_deadline_at TIMESTAMPTZ NOT NULL,
       lease_expires_at TIMESTAMPTZ NOT NULL,
       created_at TIMESTAMPTZ NOT NULL,
@@ -58,9 +57,20 @@ Prefer one new table with an initially nullable but later immutable Job link; av
       terminal_kind TEXT NULL             -- CANCELLED | SUCCEEDED | FAILED | REJECTED
     )
 
-Add a bounded recovery index on nonterminal state plus lease_expires_at, a unique job_id index, CHECKs for valid state, finite UTC deadline, positive lease and terminal/state compatibility, and an immutable-once-bound job_id rule. Keep owner rows until every linked Job is durably terminal and the approved audit/retention period passes; **never silently delete a live owner tombstone**. Fix exact table constraints, foreign-key behavior, retention and ownership permissions at a separate migration review.
+    jobs.admission_kind TEXT NOT NULL DEFAULT 'direct'
+      CHECK (admission_kind IN ('direct', 'gateway'));
+    jobs.gateway_admission_id UUID UNIQUE NULL
+      REFERENCES gateway_admissions(id) ON DELETE RESTRICT;
+    CHECK (
+      (admission_kind = 'gateway' AND gateway_admission_id IS NOT NULL)
+      OR (admission_kind = 'direct' AND gateway_admission_id IS NULL)
+    );
 
-This one-directional link is consistent with ADR 0002's optional exact Job ID on the owner. It permits a durable owner **before** any Job and one transaction that INSERTs Job and binds owner.job_id. That transaction commits both together. A queued Job must never become visible without its owner link, and no later unrelated Job may be attached to an owner. New Gateway submit paths must require this contract; legacy/direct non-Gateway Jobs intentionally remain unowned and follow existing semantics.
+The Gateway-specific Job INSERT must explicitly use admission_kind=gateway and the *pre-committed* owner UUID in the same row, under an Owner row lock. Both fields must be immutable after insertion (trigger or reviewed write permissions); the UNIQUE FK permits **at most one Job per owner**. This eliminates the two-write visibility concern and ensures a *correctly marked* Gateway Job cannot commit without a persisted owner row. Owner-to-Job recovery is a unique indexed lookup on jobs.gateway_admission_id.
+
+**This check is necessary but not sufficient:** an older or buggy Gateway path can omit the new discriminator and be accepted as a legacy direct Job under the proposed default. All gateways/Control instances must therefore be cut over or fenced before activation; an explicit versioned submission API and database-verifiable protocol authority (for example, role-limited insert contract) still require separate design. Never represent the default discriminator as preventing a legacy process from bypassing ownership. The original ADR #139 sketches an owner-side Job ID; the alternative Job-side FK here is an architectural proposal requiring review, **not an amendment already accepted into ADR #139**.
+
+Add an index on nonterminal owner state plus lease_expires_at, CHECKs for valid states, positive finite leases, terminal compatibility, and immutable owner identity. Keep owner rows until every linked Job is durably terminal and the approved audit/retention period passes; **never silently delete a live owner tombstone**. Fix exact DDL, origin authority, permissions, retention and backward compatibility in a separate migration review.
 
 A prepared owner must be durable **before** asynchronous admission begins. A cancelled request can therefore persist CANCEL_REQUESTED even when admission is blocked and no Job yet exists. Use server-generated UUIDs and owner_instance_epoch; never trust a request-supplied Job ID or owner UUID. Repeated prepare and reconciliation must not result in a second Job.
 
@@ -71,19 +81,19 @@ A new API method should encapsulate prepare / admit / cancel-intent / reconcile 
 States are monotonic: ACTIVE -> CANCEL_REQUESTED or UNRESOLVED -> TERMINAL after a verified durable outcome. A reader cannot promote a transient error or a missing row to CANCELLED; an already-SUCCEEDED or FAILED Job is terminal, **not successfully cancelled**. A durable CANCELLED Job may be acknowledged idempotently.
 
 1. **PREPARE:** transaction INSERTs owner ACTIVE with a bounded lease and immutable identity; if this fails, do not spawn submission.
-2. **ADMIT:** lock Owner FOR UPDATE; if cancelled, unresolved, terminal or expired, reject without a Job; otherwise INSERT one Job and set Owner.job_id in the *same* transaction. DB COMMIT is the visibility point. An unknown acknowledgement is reconciled using the prepared Owner identity, never a new admission key.
-3. **CANCEL:** lock Owner FOR UPDATE and commit CANCEL_REQUESTED even if job_id is NULL. If Job already linked, lock Job next and Worker last (if running), durably cancel/fence the Job; only after confirmed cancellation mark terminal CANCELLED.
-4. **CLAIM:** a read-only ordered candidate enumeration may nominate a Job. For a Gateway-linked candidate, lock its Owner **first** (prefer SKIP LOCKED with reviewed fairness), check ACTIVE and fresh PostgreSQL clock_timestamp < min(owner lease, request/Job deadline), then lock/re-read that exact Job, and finally lock/recheck Worker capacity. The RUNNING transition commits with these locks still held.
+2. **ADMIT:** lock Owner FOR UPDATE; if cancelled, unresolved, terminal or expired, reject without a Job; otherwise INSERT one Job with admission_kind=gateway and gateway_admission_id=the locked Owner ID *in one SQL row*. DB COMMIT is the atomic Job/owner-link visibility point. An unknown acknowledgement is reconciled through that prepared Owner identity, never a new admission key.
+3. **CANCEL:** lock Owner FOR UPDATE and commit CANCEL_REQUESTED even if no Job is linked. Look up Job by its immutable gateway_admission_id under that lock; if linked, lock Job next and Worker last (if running), durably cancel/fence the exact Job; only after confirmed cancellation mark terminal CANCELLED.
+4. **CLAIM:** a read-only ordered candidate enumeration may nominate a Job. For a Gateway-linked candidate, lock its Owner **first** (prefer SKIP LOCKED with reviewed fairness), check ACTIVE, then lock/re-read that exact Job and finally lock/recheck Worker capacity. **After the last potentially blocking Job/Worker lock, check fresh PostgreSQL clock_timestamp again**, compare against Owner lease, request deadline and Job deadline, and only then attempt the RUNNING UPDATE. State/revision, worker capacity, serving match and lease/epoch must still be valid under those locks. The RUNNING transition commits with these locks held. Never rely solely on a clock checked before blocking on a later lock.
 5. **CLAIM-FIRST:** a legitimate RUNNING transition may win; subsequent CANCEL must fence the exact lease/epoch, release its Worker capacity and cause eventual native interruption. Do not promise the executor never started.
 6. **CANCEL-FIRST:** CANCEL_REQUESTED commits before claim acquires Owner; claim skips it. If no Job exists yet, later admission refuses or creates only a safely terminal artifact.
-7. **EXPIRY/CRASH:** after Owner lease expiry, claim must reject immediately on fresh DB time **without needing the maintenance loop to run first**. Recovery may reconcile a committed Job and durably cancel it; an absent Job is not proof of failed COMMIT while an in-flight transaction might still commit. Until reconciliation establishes an outcome, UNRESOLVED never authorizes a claim.
+7. **EXPIRY/CRASH:** once an Owner lease is expired *at the final locked claim eligibility check*, the claim path must reject without needing maintenance. An Owner can expire while waiting for a Job or Worker lock; that path must recheck rather than committing a RUNNING transition based on a stale early clock. A transaction that passes its last eligibility check might still have an ambiguous/delayed COMMIT; **this proposal does not guarantee that COMMIT finishes before expiry**, and that stronger real-time property requires separate protocol proof. Recovery may reconcile a committed Job and durably cancel it; an absent Job is not proof of failed COMMIT while an in-flight transaction might still commit. Until reconciliation establishes an outcome, UNRESOLVED never authorizes a claim.
 8. **RENEWAL:** only a matching owner instance epoch with an ACTIVE request may renew; never extend lease beyond approved request deadline. A crashed instance cannot silently regain its old lease. Renewal rate and lease duration require a measured positive bound, not a guessed default.
 
 ### Why the current claim query cannot simply add an owner WHERE clause
 
 READ COMMITTED predicates evaluated **before** FOR UPDATE may use a stale candidate snapshot. With the current Job-first SKIP LOCKED query, appending an owner lock afterward violates the Owner -> Job order; cancellation could hold Owner then wait on Job while claim holds Job then waits on Owner. An unprotected JOIN or NOT EXISTS checking owner status cannot establish linearization against a concurrent CANCEL.
 
-A compatible candidate algorithm needs a **non-locking** ordered read, then Owner lock/re-read, then Job lock/re-read, then Worker lock/re-read. It also needs an efficient bypass for legacy ownerless jobs. Candidate enumeration must be bounded and cursor/pagination-aware so many locked, expired or cancelled owners cannot starve lower-priority eligible jobs. Preserve resource filters, serving revision checks, priority/FIFO policy and retry/lease semantics. Prove the SQL optimizer and row locks respect the order using real PostgreSQL traces; do not infer it merely from textual JOIN ordering.
+A compatible candidate algorithm needs a **non-locking** ordered read, then Owner lock/re-read, then Job lock/re-read, then Worker lock/re-read, followed by a **second fresh DB-time eligibility check after the final lock**. It also needs an efficient bypass for legacy ownerless jobs. Candidate enumeration must be bounded and cursor/pagination-aware so many locked, expired or cancelled owners cannot starve lower-priority eligible jobs. Preserve resource filters, serving revision checks, priority/FIFO policy and retry/lease semantics. Prove the SQL optimizer and row locks respect the order using real PostgreSQL traces; do not infer it merely from textual JOIN ordering.
 
 ### Unknown COMMIT and identity limits
 
@@ -94,7 +104,7 @@ If COMMIT acknowledgement is lost: never create a replacement Job to test reacha
 ## Migration, activation and rollback gates
 
 1. **Preflight:** identify all Control processes connected to the *same* database, verify which expose claim endpoints, current PostgreSQL version and migration baseline (six files 000..005), and ensure backups/rollback instructions are operator-reviewed. Do not assume one Control instance just because one is configured locally.
-2. **Additive schema only:** create owner table/indexes with no automatic feature activation, no rewrite of existing Job rows, no Worker scheduling behavior change. Test dry-run forward migration and rollback on an isolated PG17 database. Existing ownerless Jobs remain compatible.
+2. **Additive schema only:** add the Owner table, jobs.admission_kind discriminator, nullable unique jobs.gateway_admission_id FK, required origin/FK CHECKs, immutable-binding enforcement and indexes with no automatic feature activation or Worker scheduling change. Qualify DDL lock duration and avoidance of a bulk rewrite of existing Job rows; test forward migration and rollback on disposable PG17. Existing ownerless/direct Jobs remain compatible, but origin-default bypass by an old Gateway remains an activation blocker.
 3. **Upgrade Claim and every Job mutator:** deploy owner-aware repository code and configuration with owner admission **OFF**, including claim, cancel, heartbeat, event write, complete/fail, maintenance and retry paths. Every Control instance must be upgraded or fenced before owner-enabled Jobs exist. Worker binaries use the Control HTTP claim endpoint; physical Worker updates are needed only if heartbeat/inspection/native-cancel protocol truly changes.
 4. **Compatibility gate:** refuse activation if any Control instance or direct SQL writer can claim owner-linked Jobs using legacy Job-first code. Merely announcing a version in one process is not a database-enforced global fence. If mixed Control versions cannot be excluded, **BLOCK activation** pending a safer DB-level transition protocol.
 5. **Opt-in activation:** enable durable owners for only Chat Gateway requests; keep bounded local permits and Stage 2 PostgreSQL timeouts; exercise canaries with crash, cancellation, claim races, competing Workers, restarted Control, and queue fairness. Do not widen client authentication or external network access.
@@ -108,12 +118,12 @@ A source-compatible migration does not imply safe deployment compatibility: an o
 | Case | Must prove |
 | --- | --- |
 | Cancel before Job INSERT | CANCEL_REQUESTED commits, Job not claimable, no duplicate insert |
-| Cancel-first vs claim | after owner lock and fresh recheck, Job never RUNNING |
+| Cancel-first vs claim | recorded CANCEL_REQUESTED excludes claim; a newly expired Owner fails final post-lock DB-clock check |
 | Claim-first vs cancel | legal RUNNING then CANCELLED, lease/epoch fenced and slot reused |
 | Cancel concurrently with late COMMIT | one owner/Job identity, never orphan claimable |
 | COMMIT reply lost / Gateway killed | owner recovery identifies same Job and does not create second Job |
 | Gateway crash before/after PREPARE | no unowned queued Job; stale owner ineligible without maintenance |
-| Lease expiry while queue is busy | immediate claim rejection on current DB clock, not stale Python now |
+| Lease expiry while queue is busy | reject when lease expires during Job/Worker lock wait; fresh final DB-clock check, not stale Python now |
 | Owner expiry after RUNNING | prompt bounded Worker stop path or explicitly separate fallback deadline |
 | Concurrent claim/cancel/heartbeat/retry | lock ordering has no deadlock, retries/fairness bounded |
 | Queue with many ineligible owners | ordinary ownerless work still progresses; no starvation or unbounded scan |
@@ -138,8 +148,11 @@ The deliberately isolated [SQL prototype test](../../tests/test_gateway_owner_cl
 - CANCEL-FIRST while the owner row is locked: a competing claim skips the locked Owner, and no subsequent claim succeeds;
 - CLAIM-FIRST: after a legitimate RUNNING transition, cancellation obtains the Owner fence, cancels the Job and returns Worker active capacity;
 - CANCEL before Job insertion: admission is not allowed and no Job is invented;
-- expired owner at highest priority: it cannot be claimed, while a lower-priority legacy ownerless Job still progresses.
+- expired owner at highest priority: it cannot be claimed, while a lower-priority legacy ownerless Job still progresses;
+- owner lease expiring while the claim is waiting for a locked Worker: the final fresh database clock must reject the claim;
+- database CHECK rejects a Gateway-origin Job without an Owner foreign key;
+- database UNIQUE rejects a second Gateway Job attached to the same Owner.
 
-It requires an explicit environment variable ASTRUMWEAVER_OWNER_PROBE_DSN, checks the database name is tsumgi137ownerprobe, a private /tmp/tsumgi137-owner-pg- Unix-socket path and port 55472, and drops every scratch schema after use. Normal CI has no such DSN and therefore skips this probe.
+The probe requires both an explicit ASTRUMWEAVER_OWNER_PROBE_DSN and a separately generated, random 256-bit ASTRUMWEAVER_OWNER_PROBE_NONCE stored in a sentinel row by the **disposable database setup**. **Before any DDL**, it rejects additional DSN routing parameters such as hostaddr/service, checks the connected server reports Unix-socket transport rather than TCP, verifies the real server data-directory and socket paths, and checks the independent nonce via a read-only query. A wrong nonce or alternate hostaddr must be rejected without creating a schema. It then creates and drops uniquely named scratch schemas. No nonce, socket, DSN, or credentials are committed to the repository; normal CI has no such probe DSN and skips the test.
 
 **Passing this stand-in SQL experiment is feasibility evidence only**. It does not exercise the real claim_next_job query, real Control migration, Worker lease fencing, abrupt process crash, real model process interruption, unknown COMMIT recovery, or any production deployment. Those remain explicit future acceptance gates.
