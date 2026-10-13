@@ -32,17 +32,8 @@ DSN = os.environ.get("ASTRUMWEAVER_OWNER_PROBE_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="owner lock probe DSN not set")
 
 
-def _authorize_disposable_database(dsn: str | None = None) -> None:
-    """Read-only, out-of-band cluster identity check BEFORE any DDL.
-
-    A matching DSN string is insufficient: hostaddr/service could route to a
-    different server, and a socket path alone is not a disposable identity.
-    The random nonce is provisioned in a new database by the separate test
-    setup, not generated inside this test and not stored in this repository.
-    """
-    checked_dsn = dsn if dsn is not None else DSN
-    if not checked_dsn:
-        raise RuntimeError("owner-probe DSN missing")
+def _identity_requirements(checked_dsn: str) -> tuple[str, str, str]:
+    """Reject alternate libpq routing and load the independently seeded nonce."""
     options = psycopg.conninfo.conninfo_to_dict(checked_dsn)
     if set(options) != {"dbname", "host", "port"}:
         raise RuntimeError("owner-probe DSN contains disallowed routing options")
@@ -57,42 +48,72 @@ def _authorize_disposable_database(dsn: str | None = None) -> None:
         or socket.name != "socket"
     ):
         raise RuntimeError("owner-probe DSN does not target ephemeral socket")
-    expected_data = str(root / "data")
     nonce = os.environ.get("ASTRUMWEAVER_OWNER_PROBE_NONCE", "")
     if len(nonce) != 64 or not all(c in "0123456789abcdef" for c in nonce):
         raise RuntimeError("owner-probe out-of-band nonce missing or invalid")
+    return host, str(root / "data"), nonce
 
+
+def _verify_disposable_connection(conn, checked_dsn: str) -> None:
+    """Read-only verify the SAME connection that will later perform DDL/DML.
+
+    This cannot be split into a test connection and an unverified later
+    writer: even a valid-looking Unix-socket DSN could resolve elsewhere
+    under an unexpected libpq environment or race.
+    """
+    host, expected_data, nonce = _identity_requirements(checked_dsn)
+    identity = conn.execute(
+        "SELECT current_database() AS db, inet_server_addr() AS tcp_addr, "
+        "current_setting('data_directory') AS data_dir, "
+        "current_setting('unix_socket_directories') AS socket_dirs"
+    ).fetchone()
+    if (
+        identity["db"] != "tsumgi137ownerprobe"
+        or identity["tcp_addr"] is not None
+        or os.path.realpath(identity["data_dir"]) != os.path.realpath(expected_data)
+        or host not in identity["socket_dirs"].split(",")
+    ):
+        raise RuntimeError("owner-probe server does not match ephemeral cluster")
+    try:
+        record = conn.execute(
+            "SELECT nonce FROM public.owner_probe_sentinel WHERE id = 1"
+        ).fetchone()
+    except psycopg.Error as exc:
+        raise RuntimeError("owner-probe sentinel missing") from exc
+    if record is None or not compare_digest(record["nonce"], nonce):
+        raise RuntimeError("owner-probe cluster identity mismatch")
+
+
+def _authorize_disposable_database(dsn: str | None = None) -> None:
+    """Fail closed by verifying server identity before issuing ANY DDL."""
+    checked_dsn = dsn if dsn is not None else DSN
+    if not checked_dsn:
+        raise RuntimeError("owner-probe DSN missing")
+    _identity_requirements(checked_dsn)
     with psycopg.connect(
         checked_dsn, autocommit=True, row_factory=dict_row, connect_timeout=3
     ) as conn:
-        identity = conn.execute(
-            "SELECT current_database() AS db, inet_server_addr() AS tcp_addr, "
-            "current_setting('data_directory') AS data_dir, "
-            "current_setting('unix_socket_directories') AS socket_dirs"
-        ).fetchone()
-        if (
-            identity["db"] != "tsumgi137ownerprobe"
-            or identity["tcp_addr"] is not None
-            or os.path.realpath(identity["data_dir"]) != os.path.realpath(expected_data)
-            or host not in identity["socket_dirs"].split(",")
-        ):
-            raise RuntimeError("owner-probe server does not match ephemeral cluster")
-        try:
-            record = conn.execute(
-                "SELECT nonce FROM public.owner_probe_sentinel WHERE id = 1"
-            ).fetchone()
-        except psycopg.Error as exc:
-            raise RuntimeError("owner-probe sentinel missing") from exc
-        if record is None or not compare_digest(record["nonce"], nonce):
-            raise RuntimeError("owner-probe cluster identity mismatch")
+        _verify_disposable_connection(conn, checked_dsn)
 
 
 def _connect(schema: str, *, application_name: str | None = None):
-    assert DSN is not None
-    return psycopg.connect(
+    """Open and independently authenticate every prospective mutating socket."""
+    if DSN is None:
+        raise RuntimeError("owner-probe DSN missing")
+    _identity_requirements(DSN)  # fail before libpq is called
+    connection = psycopg.connect(
         DSN, options=f"-c search_path={schema}", row_factory=dict_row,
         connect_timeout=3, application_name=application_name or "ownerprobe",
     )
+    try:
+        _verify_disposable_connection(connection, DSN)
+        # Read-only identity SELECTs opened a transaction. Clear it so later
+        # explicit transaction() retains its expected top-level behavior.
+        connection.rollback()
+    except BaseException:
+        connection.close()
+        raise
+    return connection
 
 
 @pytest.fixture
@@ -100,7 +121,7 @@ def sandbox_schema():
     _authorize_disposable_database()
     assert DSN is not None
     schema = "ownerprobe_" + uuid4().hex
-    with psycopg.connect(DSN, autocommit=True) as conn:
+    with _connect(schema) as conn:
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
         conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
         conn.execute(
@@ -131,10 +152,38 @@ def sandbox_schema():
     try:
         yield schema
     finally:
-        with psycopg.connect(DSN, autocommit=True) as conn:
+        # Do not trust the creation connection's earlier verification.
+        # Authenticate this exact teardown connection BEFORE DROP ... CASCADE.
+        with _connect(schema) as conn:
             conn.execute(
                 sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
             )
+
+
+def _admit(schema: str, owner_id, job_id, *,
+           priority: int = 10,
+           application_name: str | None = None) -> bool:
+    """Owner row MUST be previously committed, then locked before Job INSERT."""
+    with _connect(schema, application_name=application_name) as conn:
+        with conn.transaction():
+            owner = conn.execute(
+                "SELECT state, lease_expires_at,"
+                " clock_timestamp() AS db_clock"
+                " FROM owners WHERE id=%s FOR UPDATE",
+                (owner_id,),
+            ).fetchone()
+            if (
+                owner is None
+                or owner["state"] != "ACTIVE"
+                or owner["lease_expires_at"] <= owner["db_clock"]
+            ):
+                return False
+            conn.execute(
+                "INSERT INTO jobs(id,status,priority,admission_kind,"
+                "gateway_admission_id) VALUES (%s,'queued',%s,'gateway',%s)",
+                (job_id, priority, owner_id),
+            )
+            return True
 
 
 def _prepare(schema: str, *, with_job: bool = True,
@@ -144,27 +193,40 @@ def _prepare(schema: str, *, with_job: bool = True,
     lease = datetime.now(UTC) + timedelta(
         seconds=(-5 if lease_expired else lease_seconds)
     )
+    # PREPARE commits durable Owner identity in a SEPARATE transaction before
+    # ADMIT may start. A crash between the two leaves an Owner but no Job.
     with _connect(schema) as conn:
-        # The Owner exists first. A Gateway Job includes its non-null owner FK
-        # and origin discriminator in the SAME INSERT and transaction.
         conn.execute(
             "INSERT INTO owners(id,state,lease_expires_at)"
             " VALUES (%s,'ACTIVE',%s)",
             (owner_id, lease),
         )
-        if with_job:
+    if with_job and not lease_expired:
+        assert _admit(schema, owner_id, job_id, priority=priority)
+    elif with_job and lease_expired:
+        # Expired owners must not admit a new Job. To model a previously
+        # committed Job whose owner later expires, insert while ACTIVE first.
+        with _connect(schema) as conn:
             conn.execute(
-                "INSERT INTO jobs(id,status,priority,admission_kind,"
-                "gateway_admission_id) VALUES (%s,'queued',%s,'gateway',%s)",
-                (job_id, priority, owner_id),
+                "UPDATE owners SET lease_expires_at="
+                "clock_timestamp()+interval '10 seconds' WHERE id=%s",
+                (owner_id,),
+            )
+        assert _admit(schema, owner_id, job_id, priority=priority)
+        with _connect(schema) as conn:
+            conn.execute(
+                "UPDATE owners SET lease_expires_at="
+                "clock_timestamp()-interval '5 seconds' WHERE id=%s",
+                (owner_id,),
             )
     return owner_id, job_id
 
 
 def _try_claim(schema: str, *, block_before_commit=None,
-               after_owner_locked=None) -> bool:
+               after_owner_locked=None,
+               application_name: str | None = None) -> bool:
     """Prototype: read-only selection, lock/recheck Owner, Job, Worker."""
-    with _connect(schema) as conn:
+    with _connect(schema, application_name=application_name) as conn:
         with conn.transaction():
             candidates = conn.execute(
                 """SELECT j.id AS job_id, j.gateway_admission_id AS owner_id
@@ -344,8 +406,10 @@ def test_claim_first_then_cancel_releases_worker_capacity(sandbox_schema):
 
 def test_cancel_before_admit_rejects_late_job(sandbox_schema):
     schema = sandbox_schema
-    owner_id, _ = _prepare(schema, with_job=False)
+    owner_id, job_id = _prepare(schema, with_job=False)
     _cancel(schema, owner_id)
+    # The durable owner was committed before ADMIT and cancellation won.
+    assert _admit(schema, owner_id, job_id) is False
     with _connect(schema) as conn:
         with conn.transaction():
             owner = conn.execute(
@@ -383,17 +447,18 @@ def test_probe_rejects_alternate_hostaddr_routing_without_database_mutation():
 def test_probe_rejects_wrong_server_nonce_before_creating_schema(monkeypatch):
     assert DSN is not None
     _authorize_disposable_database()
-    with psycopg.connect(DSN) as conn:
+    with _connect("public") as conn:
         before = conn.execute(
-            "SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'ownerprobe_%'"
-        ).fetchone()[0]
-    monkeypatch.setenv("ASTRUMWEAVER_OWNER_PROBE_NONCE", "0" * 64)
-    with pytest.raises(RuntimeError, match="identity mismatch"):
-        _authorize_disposable_database()
-    with psycopg.connect(DSN) as conn:
+            "SELECT count(*) AS count FROM pg_namespace WHERE nspname LIKE 'ownerprobe_%'"
+        ).fetchone()["count"]
+    with monkeypatch.context() as patch:
+        patch.setenv("ASTRUMWEAVER_OWNER_PROBE_NONCE", "0" * 64)
+        with pytest.raises(RuntimeError, match="identity mismatch"):
+            _authorize_disposable_database()
+    with _connect("public") as conn:
         after = conn.execute(
-            "SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'ownerprobe_%'"
-        ).fetchone()[0]
+            "SELECT count(*) AS count FROM pg_namespace WHERE nspname LIKE 'ownerprobe_%'"
+        ).fetchone()["count"]
     assert after == before
 
 
@@ -412,15 +477,37 @@ def test_expiry_while_waiting_for_worker_lock_rechecks_fresh_clock(sandbox_schem
                 worker_locked.set()
                 assert release_worker.wait(timeout=3)
 
+    claim_application = "ownerprobe_workerwait_" + uuid4().hex[:9]
     with ThreadPoolExecutor(max_workers=2) as pool:
         holder = pool.submit(holding_worker)
         try:
             assert worker_locked.wait(timeout=2)
             claimant = pool.submit(
-                _try_claim, schema, after_owner_locked=owner_locked.set
+                _try_claim, schema,
+                after_owner_locked=owner_locked.set,
+                application_name=claim_application,
             )
             assert owner_locked.wait(timeout=2)
-            sleep(0.55)  # Lease expired while claim held Owner + Job.
+            # Inspect the *actual* PostgreSQL wait, not just a Task/event that
+            # ran before the eventual Worker FOR UPDATE statement.
+            end = monotonic() + 2
+            seen_worker_wait = False
+            with _connect(schema) as observer:
+                while monotonic() < end:
+                    row = observer.execute(
+                        "SELECT wait_event_type FROM pg_stat_activity "
+                        "WHERE application_name=%s",
+                        (claim_application,),
+                    ).fetchone()
+                    if row and row["wait_event_type"] == "Lock":
+                        seen_worker_wait = True
+                        break
+                    if claimant.done():
+                        break
+                    sleep(0.01)
+            assert seen_worker_wait, "claimant never blocked on Worker row"
+            assert not claimant.done()
+            sleep(0.55)  # Lease expires during observed Worker lock wait.
         finally:
             release_worker.set()
         holder.result(timeout=4)
@@ -454,3 +541,74 @@ def test_one_owner_cannot_bind_two_gateway_jobs(sandbox_schema):
                 (uuid4(), owner_id),
             )
     assert _inspect(schema) == (["ACTIVE"], ["queued"], 0)
+
+
+def test_prepared_owner_commits_before_separate_job_admission(sandbox_schema):
+    schema = sandbox_schema
+    owner_id, job_id = _prepare(schema, with_job=False)
+    # A different connection can see the committed Owner before Job exists.
+    with _connect(schema) as conn:
+        owner = conn.execute(
+            "SELECT state FROM owners WHERE id=%s", (owner_id,)
+        ).fetchone()
+        count = conn.execute(
+            "SELECT count(*) AS n FROM jobs"
+        ).fetchone()["n"]
+    assert owner["state"] == "ACTIVE" and count == 0
+    assert _admit(schema, owner_id, job_id)
+    assert _inspect(schema) == (["ACTIVE"], ["queued"], 0)
+
+
+def test_cancel_competes_with_separately_committed_owner_admission(sandbox_schema):
+    """CANCEL's Owner lock must linearize against a later ADMIT transaction."""
+    schema = sandbox_schema
+    owner_id, job_id = _prepare(schema, with_job=False)
+    cancelling, release_cancel = Event(), Event()
+    application = "ownerprobe_admitwait_" + uuid4().hex[:9]
+
+    def cancel_holding_owner():
+        def block():
+            cancelling.set()
+            assert release_cancel.wait(timeout=3)
+        _cancel(schema, owner_id, before_commit=block)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cancelled = pool.submit(cancel_holding_owner)
+        try:
+            assert cancelling.wait(timeout=2)
+            admitted = pool.submit(
+                _admit, schema, owner_id, job_id, application_name=application
+            )
+            end = monotonic() + 2
+            saw_wait = False
+            with _connect(schema) as observer:
+                while monotonic() < end:
+                    row = observer.execute(
+                        "SELECT wait_event_type FROM pg_stat_activity "
+                        "WHERE application_name=%s",
+                        (application,),
+                    ).fetchone()
+                    if row and row["wait_event_type"] == "Lock":
+                        saw_wait = True
+                        break
+                    if admitted.done():
+                        break
+                    sleep(0.01)
+            assert saw_wait, "ADMIT did not wait for cancelling Owner row"
+            assert not admitted.done()
+        finally:
+            release_cancel.set()
+        cancelled.result(timeout=4)
+        assert admitted.result(timeout=4) is False
+    assert _inspect(schema) == (["CANCEL_REQUESTED"], [], 0)
+
+
+def test_every_mutating_connection_rechecks_disposable_nonce(monkeypatch):
+    assert DSN is not None
+    _authorize_disposable_database()
+    with monkeypatch.context() as patch:
+        patch.setenv("ASTRUMWEAVER_OWNER_PROBE_NONCE", "0" * 64)
+        with pytest.raises(RuntimeError, match="identity mismatch"):
+            # Even a valid-looking schema name cannot cause a write when its
+            # actual prospective connection fails independent verification.
+            _connect("ownerprobe_untrusted")
