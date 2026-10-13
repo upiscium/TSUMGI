@@ -7,6 +7,7 @@ from hashlib import sha256
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from math import ceil
+import os
 from typing import Any
 from uuid import uuid4
 
@@ -220,12 +221,26 @@ class PostgresControlRepository:
             try:
                 options = psycopg.conninfo.conninfo_to_dict(conninfo)
                 existing_timeout = options.get("connect_timeout")
+                if existing_timeout is None:
+                    # libpq precedence is explicit conninfo > service > env.
+                    # conninfo_to_dict() does not resolve service files. Never
+                    # promote an application cap above an unknown service cap:
+                    # require an explicit timeout instead of guessing (service
+                    # can also be selected by PGSERVICE).
+                    if options.get("service") or os.environ.get("PGSERVICE"):
+                        raise StorageUnavailable(
+                            "bounded PostgreSQL admission requires an explicit "
+                            "connect_timeout when a service is selected"
+                        )
+                    existing_timeout = os.environ.get("PGCONNECT_TIMEOUT")
                 connect_timeout = min(
                     _ADMISSION_CONNECT_CAP_SECONDS,
                     max(1, ceil(remaining / 1000)),
                 )
-                if existing_timeout and int(existing_timeout) > 0:
-                    connect_timeout = min(connect_timeout, int(existing_timeout))
+                if existing_timeout is not None:
+                    operator_timeout = int(existing_timeout)
+                    if operator_timeout > 0:
+                        connect_timeout = min(connect_timeout, operator_timeout)
                 conninfo = psycopg.conninfo.make_conninfo(
                     conninfo, connect_timeout=connect_timeout,
                 )

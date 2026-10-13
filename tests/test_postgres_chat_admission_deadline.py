@@ -276,6 +276,99 @@ def test_postgres_does_not_relax_tighter_operator_timeout_options():
     assert record.status is JobStatus.QUEUED
 
 
+def _dsn_without_timeout_or_service():
+    options = psycopg.conninfo.conninfo_to_dict(DATABASE_URL)
+    options.pop("connect_timeout", None)
+    options.pop("service", None)
+    return psycopg.conninfo.make_conninfo("", **options)
+
+
+@pytest.mark.parametrize(
+    ("operator_timeout", "expected_timeout"),
+    [("1", 1), ("9", 5)],
+)
+def test_postgres_bounded_connect_preserves_env_timeout(
+    monkeypatch, operator_timeout, expected_timeout
+):
+    monkeypatch.delenv("PGSERVICE", raising=False)
+    monkeypatch.setenv("PGCONNECT_TIMEOUT", operator_timeout)
+    captured = []
+    connect = psycopg.connect
+
+    def recording_connect(conninfo, **kwargs):
+        captured.append(psycopg.conninfo.conninfo_to_dict(conninfo)["connect_timeout"])
+        return connect(conninfo, **kwargs)
+
+    monkeypatch.setattr(postgres_module.psycopg, "connect", recording_connect)
+    repo = PostgresControlRepository(_dsn_without_timeout_or_service())
+    with repo._connection(admission_deadline_at=utc_now() + timedelta(seconds=8)):
+        pass
+    assert captured == [str(expected_timeout)]
+
+
+def test_postgres_explicit_timeout_takes_precedence_over_env(monkeypatch):
+    monkeypatch.delenv("PGSERVICE", raising=False)
+    monkeypatch.setenv("PGCONNECT_TIMEOUT", "1")
+    captured = []
+    connect = psycopg.connect
+
+    def recording_connect(conninfo, **kwargs):
+        captured.append(psycopg.conninfo.conninfo_to_dict(conninfo)["connect_timeout"])
+        return connect(conninfo, **kwargs)
+
+    monkeypatch.setattr(postgres_module.psycopg, "connect", recording_connect)
+    dsn = psycopg.conninfo.make_conninfo(
+        _dsn_without_timeout_or_service(), connect_timeout=3
+    )
+    with PostgresControlRepository(dsn)._connection(
+        admission_deadline_at=utc_now() + timedelta(seconds=8)
+    ):
+        pass
+    assert captured == ["3"]
+
+
+@pytest.mark.parametrize("selection", ["dsn", "environment"])
+def test_postgres_service_timeout_unresolved_fails_closed(
+    monkeypatch, tmp_path, selection
+):
+    service_file = tmp_path / "pg_service.conf"
+    service_file.write_text("[bounded_test]\nconnect_timeout=1\n", encoding="utf-8")
+    monkeypatch.setenv("PGSERVICEFILE", str(service_file))
+    monkeypatch.setenv("PGCONNECT_TIMEOUT", "9")
+    dsn = _dsn_without_timeout_or_service()
+    if selection == "dsn":
+        monkeypatch.delenv("PGSERVICE", raising=False)
+        dsn = psycopg.conninfo.make_conninfo(dsn, service="bounded_test")
+    else:
+        monkeypatch.setenv("PGSERVICE", "bounded_test")
+
+    def no_connect(*args, **kwargs):
+        raise AssertionError("unknown service timeout must not be overridden")
+
+    monkeypatch.setattr(postgres_module.psycopg, "connect", no_connect)
+    repo = PostgresControlRepository(dsn)
+    with pytest.raises(StorageUnavailable, match="explicit connect_timeout"):
+        with repo._connection(admission_deadline_at=utc_now() + timedelta(seconds=8)):
+            pass
+
+
+def test_postgres_explicit_timeout_overrides_service_timeout(monkeypatch, tmp_path):
+    service_file = tmp_path / "pg_service.conf"
+    service_file.write_text("[bounded_test]\nconnect_timeout=1\n", encoding="utf-8")
+    monkeypatch.setenv("PGSERVICEFILE", str(service_file))
+    monkeypatch.setenv("PGSERVICE", "bounded_test")
+    monkeypatch.setenv("PGCONNECT_TIMEOUT", "4")
+    dsn = psycopg.conninfo.make_conninfo(
+        _dsn_without_timeout_or_service(), connect_timeout=2
+    )
+    with PostgresControlRepository(dsn)._connection(
+        admission_deadline_at=utc_now() + timedelta(seconds=8)
+    ) as conn:
+        # Explicit DSN takes priority over the service and env; the bounded
+        # rewrite must not replace it with the longer five-second cap.
+        assert conn.info.get_parameters()["connect_timeout"] == "2"
+
+
 def test_postgres_bounded_admission_rejects_mock_pg16_before_any_sql(monkeypatch):
     class OldConnection:
         info = SimpleNamespace(server_version=160000)
