@@ -1,4 +1,4 @@
-# #137 — Durable chat admission ownership and Worker claim fence (design v0.2)
+# #137 — Durable chat admission ownership and Worker claim fence (design v0.3)
 
 Status: **PROPOSED / DESIGN-ONLY / NOT ACCEPTED** (2026-10-13 JST)
 Tracking: [Issue #137](https://github.com/upiscium/TSUMGI/issues/137);
@@ -76,10 +76,21 @@ Add an additive owner table and a nullable, unique owned-job reference:
 | `created_at`, `updated_at`, `closed_at` | Durable operational evidence; no bearer tokens/prompt payloads |
 | `jobs.gateway_admission_id UUID NULL UNIQUE REFERENCES gateway_admissions` | Existing non-Gateway Jobs remain NULL; non-null binding immutable once set |
 | `jobs.admission_kind TEXT` | Explicit `direct`/`gateway` discriminator, with `gateway` requiring a nonnull owner FK and `direct` requiring NULL; a legacy direct default is **not** an authority fence |
-| `gateway_admission_reservations` or equivalent immutable identity ledger | Stores never-reusable admission IDs and terminal generation/fence, independent of bounded hot owner-row retention |
+| `gateway_admission_reservations` or equivalent immutable identity ledger | Stores never-reusable admission IDs and terminal generation/fence, independent of hot owner-row retention; an FK-referenced owner row still cannot be deleted while its Job exists |
 
 A forward migration would require reviewed foreign keys, checks/indexes,
-collision handling and an immutable owned-Job binding. The owner-to-Job
+collision handling and an immutable owned-Job binding. **FK retention rule:**
+`jobs.gateway_admission_id` references `gateway_admissions.admission_id`
+with `ON DELETE RESTRICT` (or equivalent explicit restrict behavior). An
+owner row must remain present while any linked Job row exists, including
+terminal Jobs and retained audit history. A separate immutable identity
+reservation is *not* a substitute for the referenced owner row. The owner
+may be compacted **in place** by removing optional bulky diagnostic fields,
+never by deleting its primary key or immutable identity/terminal fence.
+Only after every linked Job is safely pruned under a separately accepted Job
+retention/archival contract may an owner row be deleted, and its non-reusable
+identity reservation must still remain. If indefinite Job retention is
+chosen, retain these Owner rows indefinitely and size/index accordingly. The owner-to-Job
 relationship is derived from `jobs.gateway_admission_id` under a unique
 constraint: **do not also create a circular owner.job_id foreign key**.
 Use the existing `jobs.idempotency_key` UNIQUE facility with a namespaced key
@@ -249,8 +260,11 @@ by indexed state/deadline/lease expiration using bounded batches and
 resume `CANCEL_REQUESTED` cleanup after a crash. In each transaction lock
 owner then exact Job then Worker; preserve `CANCEL_REQUESTED` on DB/ack
 failure, retry with bounded backoff and observable unresolved counters.
-Use durable timestamps; separate short-lived hot owner metadata from a
-**never-reusable identity reservation**. Do not delete the last durable
+Use durable timestamps; retain **the exact owner row while any Job FK still
+references it**. Compact optional hot metadata in place without changing the
+referenced owner primary key or terminal state; retain a separate
+**never-reusable identity reservation** after any later approved Job/owner
+pruning. Do not delete the last durable
 cancellation/tombstone fence on a timer while a stale submit could still
 COMMIT. Reconciliation and retention must preserve the same admission ID,
 epoch and terminal fence after compaction, including if the old Gateway later
@@ -368,8 +382,13 @@ be renewed), **Correctness P2** (deleted tombstones permit old identity reuse),
 and **Security P2** (no enforced cross-Gateway durable owner cap). v0.2 adds
 normative constraints and negative qualification cases for each; this is a
 **document change**, not proof that a future implementation is correct.
-Independent re-review of v0.2, DB lock/statement traces and implementation
-acceptance are all mandatory before marking this design accepted.
+A read-only Correctness re-review of v0.2 (attested source `3d6b351`)
+confirmed the previous P1/P2 were addressed **in the proposal**, but found
+one new P2: FK-linked Job rows prevent deletion of their referenced Owner
+rows. v0.3 now explicitly retains the Owner row for the linked Job lifetime;
+only optional fields may be compacted in place. This v0.3 correction still
+needs independent exact-head re-review. No software or production acceptance
+is implied by these reviews.
 
 The preflight evidence in stacked Drafts [#141](https://github.com/upiscium/TSUMGI/pull/141),
 [#142](https://github.com/upiscium/TSUMGI/pull/142), and
