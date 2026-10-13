@@ -1,4 +1,4 @@
-# #137 — Durable chat admission ownership and Worker claim fence (design v0.1)
+# #137 — Durable chat admission ownership and Worker claim fence (design v0.2)
 
 Status: **PROPOSED / DESIGN-ONLY / NOT ACCEPTED** (2026-10-13 JST)
 Tracking: [Issue #137](https://github.com/upiscium/TSUMGI/issues/137);
@@ -31,10 +31,18 @@ For a newly owned chat admission with generated identity `A`, require:
   Job lease and native cancellation path.
 - **I4 / Active lease:** a claim is permitted only under a locked `ACTIVE`
   owner with an unexpired database-clock owner lease and unexpired Job
-  deadline, in addition to all existing Worker/serving predicates. The owner
-  must be revalidated on lease renewal, event append, completion, failure and
-  recovery paths; no old completion may be accepted after cancellation or
-  owner expiry.
+  deadline, in addition to all existing Worker/serving predicates. A fresh
+  PostgreSQL `clock_timestamp()` check **after the last potentially blocking
+  Owner/Job/Worker lock** is mandatory before the RUNNING UPDATE. Lease expiry
+  for the old epoch is irreversible: a renewal must check the previous lease
+  is **still unexpired** under the Owner row lock; an expired owner can only
+  enter cancellation/reconciliation, never become ACTIVE again. The same
+  post-lock fresh-time and irreversible-expiry conditions govern heartbeat,
+  event append, completion, failure and recovery. No old completion may be
+  accepted after cancellation or owner expiry. The last pre-commit check
+  cannot prove COMMIT happened before expiry: the claim response/native start
+  path must independently validate a fresh live Owner/Job lease after the
+  claim has committed before beginning native work.
 - **I5 / Durability:** a Gateway crash cannot erase durable cancellation
   intent. A restarting Control/reconciler must be able to identify and
   complete unresolved owned Jobs without relying on a Python Task.
@@ -67,6 +75,8 @@ Add an additive owner table and a nullable, unique owned-job reference:
 | `close_outcome` | Nullable terminal classification: `CANCELLED`, `SUCCEEDED`, `FAILED`, `NO_JOB`, `UNKNOWN`; success is **not** cancellation |
 | `created_at`, `updated_at`, `closed_at` | Durable operational evidence; no bearer tokens/prompt payloads |
 | `jobs.gateway_admission_id UUID NULL UNIQUE REFERENCES gateway_admissions` | Existing non-Gateway Jobs remain NULL; non-null binding immutable once set |
+| `jobs.admission_kind TEXT` | Explicit `direct`/`gateway` discriminator, with `gateway` requiring a nonnull owner FK and `direct` requiring NULL; a legacy direct default is **not** an authority fence |
+| `gateway_admission_reservations` or equivalent immutable identity ledger | Stores never-reusable admission IDs and terminal generation/fence, independent of bounded hot owner-row retention |
 
 A forward migration would require reviewed foreign keys, checks/indexes,
 collision handling and an immutable owned-Job binding. The owner-to-Job
@@ -76,7 +86,16 @@ Use the existing `jobs.idempotency_key` UNIQUE facility with a namespaced key
 derived from `A`, validated against the exact request content and serving
 binding. No caller-supplied idempotency identity may impersonate `A`.
 A `CANCEL_REQUESTED` record with no Job is a **durable tombstone**, not proof
-the original submission thread has stopped.
+the original submission thread has stopped. A terminal tombstone cannot simply
+be deleted after an arbitrary TTL: a late server transaction may still COMMIT
+or a delayed caller may reuse the exact identity. Require either (a) durable
+non-reuse reservations/high-water generation fencing kept after compacting
+hot owner rows, with immutable ID validity checks on every new admission, or
+(b) an independently proven upper bound on *all* possible stale submitters
+before any deletion. Until that proof, default to **never deleting the
+identity reservation**. The ledger requires a separately reviewed storage
+capacity and archival/retention policy; accepting storage exhaustion as an
+explicit 503 is safer than silently reopening an old identity.
 
 Schema validation must reject inconsistent states (e.g. `ACTIVE` with no Job,
 lease after request deadline, mismatched owner epoch), including on repeated
@@ -103,23 +122,27 @@ NEW --atomic admit--> PENDING --activate--> ACTIVE│
 **Admission / COMMIT ambiguity:**
 
 1. Gateway generates `A`, private owner epoch `E`, a bounded deadline and
-   takes a finite admission permit **before** creating the synchronous thread.
-   Persisting `A` is not necessarily possible before network failure; its
-   possible late Job must nevertheless be `PENDING`.
-2. The PostgreSQL transaction inserts/locks owner `A` **first** (idempotent
-   `INSERT ... ON CONFLICT` plus `SELECT ... FOR UPDATE`). If
-   `CANCEL_REQUESTED` or `CLOSED`, it refuses submission. If a valid
-   `PENDING` owner already exists, it reuses `A` without resetting any
-   cancellation state or lease.
-3. Only under this owner lock, insert/select the same unique owned Job
-   `J`, verifying the complete submission identity. Commit **both** owner and
-   Job while owner remains `PENDING`. Apply Stage 2 PG17 deadline checks,
-   preserving stricter operator settings.
-4. A lost COMMIT acknowledgement stays `UNKNOWN`. A primary read under `A`
-   may find a Job, but **a miss cannot prove it will never commit later**.
-   Do not retry with a newly generated identity; do not mark `NO_JOB` without
-   a separate durable fence proving the admission attempt cannot still
-   commit. Even if the Gateway disappears, `PENDING` prevents Worker claim.
+   takes a finite *per-Gateway* permit before the asynchronous admission
+   thread. It first calls a **separate committed PREPARE** operation that
+   transactionally reserves global capacity and immutably registers `A`
+   as `PENDING`. If PREPARE cannot commit or cannot be reconciled, do **not**
+   spawn an ADMIT thread. No Job is created before durable PREPARE.
+2. The later ADMIT transaction locks the **already committed** Owner row `A`
+   first, confirms its identity reservation, immutable epoch and fresh
+   request/lease deadlines, then checks cancellation/closed state. A matching
+   `CANCEL_REQUESTED` or `CLOSED` record rejects the submission. Never reset
+   a retained tombstone, recreate a released ID or revive an expired epoch.
+3. Only under this Owner lock, insert/select the same uniquely linked Job
+   `J` with `admission_kind=gateway`, verifying complete request identity
+   and serving binding. Job INSERT and owner link are atomic in one SQL row,
+   while the already committed Owner stays `PENDING`. Apply Stage 2 PG17
+   transaction/deadline checks preserving stricter operator settings.
+4. A lost ADMIT COMMIT acknowledgement stays `UNKNOWN`. A primary read under
+   `A` may find a Job, but **a miss cannot prove it will never COMMIT**.
+   Never retry with a newly generated identity or promote to ACTIVE without
+   a confirmed linked Job. A missing Job remains unclaimable behind its
+   prepared `PENDING` Owner, including after Gateway death. An uncertain
+   PREPARE outcome also uses the same `A` to reconcile, not a new ID.
 
 **Activation:** Gateway must explicitly confirm the request remains owned
 (including ASGI pre-response disconnect observation where available), then
@@ -147,8 +170,12 @@ sends cancellation intent, drains tasks for a finite grace, then reports
 outstanding owner IDs/counts safely. A successful normal stream closes the
 owner with `SUCCEEDED` only if the linked Job really succeeded; no blanket
 `_cancel` may retroactively relabel a successful terminal Job. Renewals require
-matching private epoch and real response/request lifecycle ownership. Do not
-log private owner tokens, payloads or credentials.
+matching private epoch, **currently unexpired** Owner lease checked against
+fresh database `clock_timestamp()` under the Owner lock, and real
+response/request lifecycle ownership. No old epoch may renew after expiry,
+not even before the reconciler visits the row. Instead persist or retain
+`CANCEL_REQUESTED`/unresolved disposition; do not log private owner tokens,
+payloads or credentials.
 
 ## 4. Worker claim transaction and lock-order proof obligation
 
@@ -180,8 +207,18 @@ starvation of ordinary Jobs), but must **revalidate under locks**:
    owner binding, `QUEUED`, deadline, available time, attempts, serving,
    requirements and owner `ACTIVE`/fresh lease under the locked rows.
 4. Lock the Worker row **last**, recheck online heartbeat, runtime epoch,
-   capacity and all GPU/serving capability predicates. Only then assign a
-   lease, increment attempts and Worker active count in the same COMMIT.
+   capacity and all GPU/serving capability predicates. **After the last
+   potentially blocking lock and immediately before the RUNNING UPDATE**,
+   call fresh PostgreSQL `clock_timestamp()` and recheck Owner ACTIVE/epoch,
+   original unexpired lease, request and Job deadlines and all mutable
+   eligibility. Only then assign a lease, increment attempts and Worker
+   active count in the same transaction. This check establishes eligibility
+   at the locked transition point, **not a hard real-time guarantee that
+   COMMIT completes before lease expiry**. Following COMMIT, Control/Worker
+   must re-check the live committed Owner and Job attempt before handing
+   native execution to the RuntimeProvider; reject and cancel/fence if the
+   lease became invalid during COMMIT or response delivery. Do not launch
+   native execution on a stale cached Claim response.
 
 Candidate scanning requires a tested bounded batch/cursor policy that
 preserves priority without starving ready Jobs behind blocked owners. Snapshot
@@ -219,11 +256,17 @@ by indexed state/deadline/lease expiration using bounded batches and
 resume `CANCEL_REQUESTED` cleanup after a crash. In each transaction lock
 owner then exact Job then Worker; preserve `CANCEL_REQUESTED` on DB/ack
 failure, retry with bounded backoff and observable unresolved counters.
-Use durable timestamps and a finite maintenance retention policy; do not
-delete owner tombstones while a stale request could be confused for an
-activated owner. Even after retention, a late fresh registration for the same
-ID must start PENDING and require the original live epoch to activate,
-which a dead Gateway cannot do.
+Use durable timestamps; separate short-lived hot owner metadata from a
+**never-reusable identity reservation**. Do not delete the last durable
+cancellation/tombstone fence on a timer while a stale submit could still
+COMMIT. Reconciliation and retention must preserve the same admission ID,
+epoch and terminal fence after compaction, including if the old Gateway later
+resumes. A genuinely expired lease is irreversible regardless of whether
+that Gateway is alive. Any bounded-retention alternative requires a formal
+maximum stale-submitter lifetime and proof that all remote transaction
+outcomes are settled before releasing the identity. Ledger exhaustion must
+fail closed with bounded capacity and operator visibility, not overwrite or
+reuse a tombstoned ID.
 
 Worker heartbeat/lease renewal and result/event APIs must reject stale
 owner epoch, cancelled/expired owner or stale Job attempt, and native work
@@ -232,10 +275,23 @@ transaction boundary, **not only by scheduled sweeping**. An unavailable
 PostgreSQL or network blackhole may delay notification/cleanup; document a
 finite retry/disposition policy without claiming to interrupt hung OS threads.
 
-Keep two separately scoped limits: the per-Gateway in-flight admission
-budget from Stage 1 and durable pending/active owner counts in Control
-(admission/lease/reconciler load). Neither is a global GPU physical isolation
-feature. Avoid unbounded `asyncio.shield()` cleanup chains and unbounded
+Enforce **two** limits, not just observe counters: (1) Stage 1's per-Gateway
+in-flight thread permit, and (2) an **atomic Control/database-wide quota**
+for all nonterminal PENDING, ACTIVE and CANCEL_REQUESTED/UNRESOLVED owners
+across every Gateway, plus a separately budgeted tombstone/identity ledger.
+PREPARE must atomically reserve a globally counted slot before accepting A;
+full quota returns a bounded, public-safe 429/503 **without** another thread
+or owner. A serializable quota-row or reservation-slot design is acceptable
+only after reviewing its lock order, maximum contention and exactly-once
+release on terminal reconciliation. Any participant locking both quota and
+Owner must follow a single **Quota → Owner → Job → Worker** order; if release
+is post-commit, a delayed release may temporarily reject valid requests but
+must never admit more than capacity. No quota lock may be taken after a held
+Owner/Job/Worker lock. Test simultaneous PREPARE from multiple Gateways,
+quota crash recovery, retry, owner expiry and large blocked-owner backlogs;
+reconciler batch size and a fair bounded claim cursor must not create an
+unbounded DB-scan/maintenance loop. These limits do not claim host-wide GPU
+physical isolation. Avoid unbounded `asyncio.shield()` cleanup chains and
 PostgreSQL cancellation/retry loops.
 
 ## 6. Deployment compatibility and rollback are hard gates
@@ -276,12 +332,13 @@ fail-closed path.
 | Deterministic admission/cancel order | Cancel-before-insert, insert-before-cancel, cancelled task before response, idempotent duplicate same identity |
 | UNKNOWN_COMMIT | Real PG17 commit-ack loss, lookup miss followed by late COMMIT, recovery without executable PENDING job |
 | Owner state | PENDING never claimable; activation needs live epoch; expired/closed/cancelled cannot reactivate |
-| Claim race | Two independent PG17 sessions, cancel-first and claim-first with row locks; no deadlock, no duplicate/phantom capacity |
+| Claim race | Two independent PG17 sessions, cancel-first and claim-first with row locks; post-Worker-lock DB clock recheck; no deadlock, no duplicate/phantom capacity; stale claim response cannot start native work |
 | Multiple Workers | Priority/cursor fairness, SKIP LOCKED contention and retries; valid lower-priority Jobs not starved |
 | Existing APIs | Heartbeat, append, success, failure, retry, expiration, ownerless Job and stale runtime epoch all obey lock/fence |
 | Client lifecycle | ASGI pre-admission disconnect while handler stays alive, abort before first SSE token, abrupt Gateway SIGKILL |
 | Unavailable DB | Connection blackhole/timeout, bounded permit and reconciliation disposition, fail closed without CPU/thread amplification |
-| Recovery | Control restart, expired owner lease, idempotent sweeper, pending tombstone, no phantom slot occupancy |
+| Recovery | Control restart, expired owner lease that cannot be renewed by its old epoch, idempotent sweeper, non-reusable tombstone ID, no phantom slot occupancy |
+| Capacity | Atomic cross-Gateway PREPARE quota under concurrent load, exact release/retry, ledger saturation returns bounded fail-closed 429/503, fair progress of ownerless eligible Jobs |
 | Migration | 005→006 path, old live data unchanged, constraints, new and old executable compatibility and required quiesce-to-downgrade |
 | Source reviews | Independent Correctness/Security exact-HEAD reviews and full Python/Nix regression |
 | Real system | Existing #134 OpenCode 1.18.35 → real PostgreSQL Control → CUDA llama.cpp Worker SIGKILL test remains PASS |
@@ -297,7 +354,8 @@ allocation, systemd services and releases are outside this design PR.
 - Minimum PostgreSQL version and HA/failover/read-after-write semantics:
   Stage 2 currently requires 17+ for bounded chat admission; primary read
   and safe promotion must be qualified under topology actually deployed.
-- Complete Job-owner FK/check/immutability rules, index sizes, owner/tombstone
+- Complete Job-owner FK/check/immutability rules, index sizes, global quota
+  ordering, permanent identity reservation or proved late-writer cutoff,
   retention and migration/rollback SQL need schema review.
 - Candidate claim fairness under high backlog, retryable result edge cases
   and relationship with existing Worker/Job lock order require real PG tests.
@@ -309,3 +367,24 @@ allocation, systemd services and releases are outside this design PR.
 claim-fence scope as the intended #137 architecture, or explicitly choose
 bounded best-effort instead and state which safety guarantees are waived.
 Neither choice is silently accepted by writing this proposal.
+
+## 9. Independent design-review disposition (not an approval)
+
+The original v0.1 read-only OpenCode reviews completed with **Correctness P1**
+(final Worker lock can outlive the lease), **Security P1** (expired owner could
+be renewed), **Correctness P2** (deleted tombstones permit old identity reuse),
+and **Security P2** (no enforced cross-Gateway durable owner cap). v0.2 adds
+normative constraints and negative qualification cases for each; this is a
+**document change**, not proof that a future implementation is correct.
+Independent re-review of v0.2, DB lock/statement traces and implementation
+acceptance are all mandatory before marking this design accepted.
+
+The preflight evidence in stacked Drafts [#141](https://github.com/upiscium/TSUMGI/pull/141),
+[#142](https://github.com/upiscium/TSUMGI/pull/142), and
+[#143](https://github.com/upiscium/TSUMGI/pull/143) is related but not an
+implicit merge, approval or implementation of this branch. In particular
+legacy Control Claim will still execute correctly marked cancelled-owner
+Jobs and an old Gateway can submit default-direct Jobs. Before any enablement,
+operators must exclude **all** legacy Control processes and their reconnectable
+credentials and existing DB sessions, not simply observe zero connections
+once. A backwards executable-only rollback is unsafe while owned Jobs exist.
