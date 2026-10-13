@@ -19,8 +19,17 @@ Worker claim-fence design.
   confirmed admission. The Stage 3A internal idempotency/readback path can
   reconcile a known Job identity while the Gateway remains alive; **it does
   not guarantee idempotency or reconciliation across separate HTTP retries**.
-  A 503/timeout is not proof that no Job was committed. Do not advertise exactly
-  once execution, zero orphan Jobs, or a hard end-to-end cancellation bound.
+  A 503/timeout is not proof that no Job was committed. The Gateway now bounds
+  concurrent pre-admission HTTP body reads/JSON parsing (per-instance ingress
+  slots) and stops buffering once the largest configured chat request byte
+  limit is exceeded; upload time is bounded by the largest configured profile
+  timeout. After admission, cancellation has an independent per-instance
+  concurrency budget and a finite caller wait, while the synchronous DB
+  thread retains its permit until actual completion. If the Control database
+  stays unreachable, cancellation can still remain unresolved; subsequent
+  requests may fall back to the finite Job deadline rather than immediate
+  interruption. Do not advertise exactly-once execution, zero orphan Jobs,
+  universal network-deadline guarantees, or a hard end-to-end cancellation bound.
 - #140's PostgreSQL 17+ `transaction_timeout` requirement applies to the
   **currently staged opt-in bounded chat path**, not a new universal product
   requirement for every Control submission. The existing

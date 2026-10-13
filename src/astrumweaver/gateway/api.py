@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.requests import ClientDisconnect
 
 from ..control.auth import ClientAuthMode
 from ..control.models import JobStatus, JobSubmission, utc_now
@@ -158,6 +159,9 @@ class ChatGatewayService:
         # Cancellation transfers its permit to late cleanup until completion.
         self.max_pending_admissions = max_pending_admissions
         self._admissions_in_flight = 0
+        # Separate bounded pre-admission ingress (HTTP body/JSON parsing).
+        # This count is per-Gateway, not a cluster-wide or auth boundary.
+        self._ingress_in_flight = 0
         self._unexpected_cleanup_failures = 0
         # Exhausted readback/cancel acknowledgement: explicitly unresolved,
         # never counted as a confirmed cancellation.
@@ -295,8 +299,14 @@ class ChatGatewayService:
 
             operation.add_done_callback(finished)
         try:
-            # Caller cancellation must not cancel the synchronous DB thread.
-            await asyncio.shield(operation)
+            # Bound the HTTP wait without cancelling the synchronous DB thread.
+            # Its completion callback still owns the permit and disposition.
+            await asyncio.wait_for(
+                asyncio.shield(operation), timeout=_POSTADMIT_CANCEL_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            _log.warning("chat cancellation waiter timed out; DB outcome pending")
+            return
         except Exception:
             # Callback is responsible for final disposition accounting.
             return
@@ -760,31 +770,79 @@ def create_chat_router(
         dependencies=[Depends(require_client)],
     )
     async def chat_completions(request: Request):
-        raw = await request.body()
-        maximum = max(
-            int(profile.resolved.effective_limits["request_bytes"])
-            for profile in catalog.profiles
-        )
-        if len(raw) > maximum:
+        # Bound concurrent body readers/parsers BEFORE consuming or buffering
+        # input. The pending-admission budget protects the later DB threads.
+        if service._ingress_in_flight >= service.max_pending_admissions:
             return _error(
-                413,
-                code="request_too_large",
-                message="chat request exceeds every configured profile byte limit",
+                429,
+                code="admission_overloaded",
+                message="chat ingress concurrency limit reached",
             )
+        service._ingress_in_flight += 1
         try:
-            value = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return _error(
-                400,
-                code="invalid_json",
-                message="chat request body must be valid JSON",
+            maximum = max(
+                int(profile.resolved.effective_limits["request_bytes"])
+                for profile in catalog.profiles
             )
-        if not isinstance(value, dict):
-            return _error(
-                400,
-                code="invalid_request",
-                message="chat request body must be a JSON object",
+            ingress_timeout = max(
+                float(profile.request_timeout_seconds) for profile in catalog.profiles
             )
+            parts: list[bytes] = []
+            received = 0
+
+            async def read_limited_body() -> None:
+                nonlocal received
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > maximum:
+                        raise OverflowError("chat request body over configured limit")
+                    if chunk:
+                        parts.append(chunk)
+
+            try:
+                # request.body() would buffer the entire upload before its
+                # size is checked, allowing an unbounded memory allocation.
+                await asyncio.wait_for(read_limited_body(), timeout=ingress_timeout)
+            except OverflowError:
+                return _error(
+                    413,
+                    code="request_too_large",
+                    message="chat request exceeds every configured profile byte limit",
+                )
+            except asyncio.TimeoutError:
+                return _error(
+                    408,
+                    code="request_timeout",
+                    message="chat request upload timed out",
+                )
+            except ClientDisconnect:
+                return _error(
+                    499,
+                    code="client_disconnected",
+                    message="chat client disconnected during upload",
+                )
+
+            raw = b"".join(parts)
+            # The already-accepted Stage3 admission disconnect watcher may
+            # safely own receive() after upload. Match Starlette body()'s
+            # cached-body invariant so subsequent Request access works.
+            request._body = raw
+            try:
+                value = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return _error(
+                    400,
+                    code="invalid_json",
+                    message="chat request body must be valid JSON",
+                )
+            if not isinstance(value, dict):
+                return _error(
+                    400,
+                    code="invalid_request",
+                    message="chat request body must be a JSON object",
+                )
+        finally:
+            service._ingress_in_flight -= 1
         try:
             if value.get("stream") is True:
                 iterator = await service.stream(

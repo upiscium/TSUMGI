@@ -11,6 +11,7 @@ from astrumweaver.control import (
     DeadlineExceededError, InMemoryControlRepository, JobStatus, JobSubmission,
     PostgresControlRepository, utc_now,
 )
+import astrumweaver.gateway.api as gateway_module
 from astrumweaver.gateway.api import ChatGatewayService
 from astrumweaver.gateway.chat import ChatGatewayError, ChatProfileCatalog
 from test_chat_gateway_admission_cancellation import _wait_for
@@ -126,6 +127,31 @@ async def test_naturally_terminal_completion_does_not_attempt_cancellation():
     assert exc.value.code == "request_cancelled"
     assert repo.calls == 0
     assert not service._postadmit_cancellations
+
+
+@pytest.mark.asyncio
+async def test_cancel_waiter_deadline_does_not_release_blocked_thread_slot(monkeypatch):
+    # A client should get a bounded response even if the DB thread is stuck.
+    # The thread and its permit remain until its actual disposition is known.
+    monkeypatch.setattr(gateway_module, "_POSTADMIT_CANCEL_TIMEOUT_SECONDS", 0.06)
+    repo = BlockingCancelRepository()
+    service = _service(repo, budget=1)
+    task = asyncio.create_task(
+        service.complete(_DisconnectedRequest(), _BODY, request_size_bytes=70)
+    )
+    try:
+        await _wait_for(lambda: repo.calls == 1)
+        with pytest.raises(ChatGatewayError) as exc:
+            await asyncio.wait_for(task, 2)
+        assert exc.value.code == "client_disconnected"
+        assert len(service._postadmit_cancellations) == 1
+        assert repo.list_jobs()[0].status is JobStatus.QUEUED
+    finally:
+        repo.release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    await _wait_for(lambda: not service._postadmit_cancellations)
+    assert service._unresolved_cancellations == 1
+    assert repo.list_jobs()[0].status is JobStatus.QUEUED
 
 
 def test_inmemory_optional_cancel_deadline_keeps_unbounded_nonchat_behavior():
