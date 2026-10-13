@@ -107,20 +107,39 @@ class _OwnedChatStream:
         self._iterator = iterator
         self.job_id = job_id
         self._cancel = cancel
+        self._closed = False
+        self._terminal_seen = False
 
     def __aiter__(self):
         return self
 
     async def __anext__(self) -> str:
-        return await anext(self._iterator)
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            value = await anext(self._iterator)
+        except StopAsyncIteration:
+            # Natural exhaustion is not an abandoned response.
+            self._terminal_seen = True
+            raise
+        if value == "data: [DONE]\n\n":
+            # The generator emits this only after confirmed durable success.
+            # Even if ASGI closes before another __anext__ call, no cleanup
+            # cancellation is needed for this completed Job.
+            self._terminal_seen = True
+        return value
 
     async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         try:
             await self._iterator.aclose()
         finally:
-            # Async generators do not run finally when aclose() precedes
-            # their first anext(). Response lifecycle owns this extra gate.
-            await self._cancel(self.job_id)
+            # An async generator closed before first iteration may never run
+            # its own finally; compensate only for unfinished streams.
+            if not self._terminal_seen:
+                await self._cancel(self.job_id)
 
 
 class _OwnedChatStreamingResponse(StreamingResponse):
@@ -226,12 +245,15 @@ class ChatGatewayService:
         await self._cancel_admission_job(submitted.job_id)
 
     async def _reconcile_admission(self, key: str) -> None:
+        # Keep the entire finite retry sequence short after a cancelled
+        # synchronous submit. PostgreSQL may still COMMIT later, so exhaustion
+        # is explicitly UNKNOWN, not evidence that the Job does not exist.
         for _ in range(3):
             try:
                 record = await asyncio.to_thread(
                     self.repository.get_job_by_idempotency_key,
                     key,
-                    admission_deadline_at=utc_now() + timedelta(seconds=2),
+                    admission_deadline_at=utc_now() + timedelta(seconds=0.6),
                 )
             except Exception:
                 continue

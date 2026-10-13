@@ -288,8 +288,16 @@ async def test_loopback_overload_flood_does_not_spawn_unbounded_admissions():
 
 
 @pytest.mark.asyncio
-async def test_asgi_disconnect_does_not_retro_cancel_success_or_unowned_job():
+async def test_asgi_disconnect_does_not_retro_cancel_success_or_unowned_job(monkeypatch):
     async with gated_gateway() as (repo, app):
+        original_cancel = repo.cancel_job
+        cancel_calls = []
+
+        def observed_cancel(job_id, **kwargs):
+            cancel_calls.append(job_id)
+            return original_cancel(job_id, **kwargs)
+
+        monkeypatch.setattr(repo, "cancel_job", observed_cancel)
         async with asgi_request(app) as (messages, sent, task):
             assert await asyncio.to_thread(repo.entered.wait, 3)
             repo.release.set()
@@ -309,3 +317,6 @@ async def test_asgi_disconnect_does_not_retro_cancel_success_or_unowned_job():
             await asyncio.wait_for(task, 3)
             assert repo.get_job(owned.job_id).status is JobStatus.SUCCEEDED
             assert repo.get_job(unowned.job_id).status is JobStatus.QUEUED
+            # A fully completed stream must not spawn a useless DB cancellation
+            # or consume a separate post-admission cancellation permit.
+            assert cancel_calls == []
