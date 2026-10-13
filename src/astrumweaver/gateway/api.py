@@ -283,9 +283,13 @@ class ChatGatewayService:
             def finished(task: asyncio.Task[Any]) -> None:
                 self._postadmit_cancellations.pop(job_id, None)
                 try:
-                    task.result()
+                    observed = task.result()
+                    if observed.job_id != job_id or observed.status is not JobStatus.CANCELLED:
+                        # A terminal success/failure is not cancellation proof.
+                        self._unresolved_cancellations += 1
+                        _log.warning("chat cancellation not acknowledged as CANCELLED")
                 except (Exception, asyncio.CancelledError):
-                    # Do not expose a private DB exception or claim CANCELLED.
+                    # Do not expose private DB exception details or claim success.
                     self._unresolved_cancellations += 1
                     _log.warning("chat cancellation outcome unresolved")
 
