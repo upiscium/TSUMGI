@@ -151,6 +151,12 @@ def test_nologin_is_not_a_fence_for_an_existing_writer_session(legacy_role):
     existing = _legacy_connection(role)
     try:
         backend_pid = existing.info.backend_pid
+        backend_started = existing.execute(
+            "SELECT backend_start FROM pg_stat_activity "
+            "WHERE pid=pg_backend_pid()"
+        ).fetchone()[0]
+        assert backend_started is not None
+        existing.rollback()
         with psycopg.connect(DSN) as admin:
             admin.execute(
                 sql.SQL("ALTER ROLE {} NOLOGIN").format(sql.Identifier(role))
@@ -179,10 +185,22 @@ def test_nologin_is_not_a_fence_for_an_existing_writer_session(legacy_role):
                 (role,),
             ).fetchone()[0]
             assert active >= 1, "NOLOGIN did not remove live sessions"
+            # A PID alone is insufficient: a connection might have exited
+            # and its PID could be reused. Match the exact scratch role and
+            # its observed backend-start timestamp in the *same statement*
+            # that invokes pg_terminate_backend on the matched row.
+            wrong_role = admin.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE pid=%s AND usename=%s AND backend_start=%s",
+                (backend_pid, role + "_not_this_role", backend_started),
+            ).fetchall()
+            assert wrong_role == []
             ended = admin.execute(
-                "SELECT pg_terminate_backend(%s)", (backend_pid,)
-            ).fetchone()
-            assert ended == (True,)
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE pid=%s AND usename=%s AND backend_start=%s",
+                (backend_pid, role, backend_started),
+            ).fetchall()
+            assert ended == [(True,)]
 
         # Once the old session is killed, it no longer retains write access.
         with pytest.raises(psycopg.OperationalError):

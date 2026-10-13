@@ -40,7 +40,7 @@ reversed on teardown.
 | --- | --- | --- |
 | `REVOKE CONNECT ON DATABASE ... FROM old_role` | A new role session still connects because the database's default `PUBLIC` CONNECT grant remains | A per-role REVOKE does not revoke access inherited through PUBLIC |
 | `ALTER ROLE old_role NOLOGIN` | New login fails, but the **already authenticated session still UPDATEs a genuine TSUMGI Job** | NOLOGIN alone is **not** a cutover; old sessions can retain writer authority |
-| After NOLOGIN, explicitly terminate only that old role's authenticated backend | Existing session stops accepting SQL and a new role login remains denied | Role-scoped revocation + deliberate session termination is a feasible *component* of fencing, not proof every actor was eliminated |
+| After NOLOGIN, terminate only the backend matching **the test role, observed PID and backend-start timestamp**, rejecting a mismatched identity | Existing session stops accepting SQL and a new role login remains denied | Role-scoped revocation + deliberate session termination is a feasible *component* of fencing, not proof every actor was eliminated |
 
 Both opt-in real PostgreSQL tests currently PASS. They demonstrate unsafe
 negative controls deliberately; passing these cases does **not** make
