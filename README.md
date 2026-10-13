@@ -93,6 +93,7 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 
 ## Documentation
 - [Release readiness and deployment decision boundaries](docs/release-readiness.md) — candidate selection, verification and operator gates; not a release authorization.
+- [Operator rollout and recovery gates](docs/operator-rollout-gates.md) — service identity, PostgreSQL restoration, existing-version rollback and site go/no-go; production use requires explicit approval.
 - [Naming and compatibility](docs/naming.md)
 
 - [Installation](docs/installation.md)
