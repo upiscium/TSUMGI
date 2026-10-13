@@ -68,35 +68,56 @@ def _verify_actual_connection(connection, dsn: str) -> None:
             raise RuntimeError("real Control probe nonce mismatch")
 
 
+# libpq can silently inherit connection routing, identity and credentials
+# from the caller environment even when the explicit DSN looks local.
+_LIBPQ_CONNECTION_ENV = frozenset({
+    "PGHOSTADDR", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD",
+    "PGPASSFILE", "PGSERVICE", "PGSERVICEFILE", "PGSYSCONFDIR", "PGOPTIONS",
+    "PGCONNECT_TIMEOUT", "PGAPPNAME", "PGTARGETSESSIONATTRS",
+    "PGLOADBALANCEHOSTS", "PGSSLMODE", "PGREQUIRESSL", "PGSSLKEY",
+    "PGSSLCERT", "PGSSLROOTCERT", "PGSSLCRL", "PGSSLCRLDIR",
+    "PGSSLPASSWORD", "PGSSLNEGOTIATION", "PGGSSENCMODE",
+    "PGCHANNELBINDING", "PGKRBSRVNAME", "PGGSSLIB",
+})
+
+
+def _checked_connect(real_connect, conninfo="", **kwargs):
+    """Refuse effective libpq routing BEFORE any connection/authentication."""
+    overrides = sorted(
+        key for key in _LIBPQ_CONNECTION_ENV if os.environ.get(key)
+    )
+    if overrides:
+        raise RuntimeError(
+            "Control probe rejected libpq environment options: "
+            + ", ".join(overrides)
+        )
+    if conninfo != DSN:
+        raise RuntimeError("Control probe refused alternate PostgreSQL DSN")
+    unexpected = set(kwargs) - {"autocommit", "row_factory", "connect_timeout"}
+    if unexpected:
+        raise RuntimeError("Control probe refused alternate connection options")
+    _identity_requirements(conninfo)
+    connection = real_connect(conninfo, **kwargs)
+    try:
+        _verify_actual_connection(connection, conninfo)
+        if not connection.autocommit:
+            connection.rollback()
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
 @pytest.fixture()
 def verified_scheduler(monkeypatch):
-    """Fence all psycopg connections BEFORE applying actual SQL migrations."""
+    """Fence every psycopg connection BEFORE product migrations or SQL."""
     if DSN is None:
         pytest.skip("disposable PostgreSQL DSN not present")
     _identity_requirements(DSN)
     raw_connect = psycopg.connect
 
     def verified_connect(conninfo="", **kwargs):
-        if conninfo != DSN:
-            raise RuntimeError("Control probe refused alternate PostgreSQL DSN")
-        unexpected = set(kwargs) - {
-            "autocommit", "row_factory", "connect_timeout",
-        }
-        if unexpected:
-            raise RuntimeError(
-                "Control probe refused alternate connection options"
-            )
-        _identity_requirements(conninfo)  # reject before creating socket
-        connection = raw_connect(conninfo, **kwargs)
-        try:
-            _verify_actual_connection(connection, conninfo)
-            if not connection.autocommit:
-                # The verification SELECTs opened an implicit transaction.
-                connection.rollback()
-        except BaseException:
-            connection.close()
-            raise
-        return connection
+        return _checked_connect(raw_connect, conninfo, **kwargs)
 
     monkeypatch.setattr(psycopg, "connect", verified_connect)
     apply_migrations(DSN)
@@ -110,6 +131,23 @@ def verified_scheduler(monkeypatch):
         connection.execute(
             "TRUNCATE TABLE job_events, jobs, workers RESTART IDENTITY CASCADE"
         )
+
+
+def test_libpq_hostaddr_override_rejected_before_connection(monkeypatch):
+    """A hostile PGHOSTADDR must not cause a credential exchange to remote."""
+    if DSN is None:
+        pytest.skip("disposable DSN not provided")
+    invoked = []
+
+    def forbidden_network_connect(*args, **kwargs):
+        invoked.append((args, kwargs))
+        raise AssertionError("test must reject before libpq network access")
+
+    with monkeypatch.context() as patch:
+        patch.setenv("PGHOSTADDR", "198.51.100.9")
+        with pytest.raises(RuntimeError, match="PGHOSTADDR"):
+            _checked_connect(forbidden_network_connect, DSN)
+    assert invoked == []
 
 
 def _register(repo: PostgresControlRepository, *, max_concurrency=1):
@@ -202,7 +240,9 @@ def test_old_control_can_claim_despite_durable_owner_contract(
     worker = _register(repo)
     owner_id = uuid4()
 
-    with psycopg.connect(DSN, autocommit=True) as conn:
+    # All setup DDL is one transaction: a mid-setup error rolls everything
+    # back before the test can claim anything or install a persistent column.
+    with psycopg.connect(DSN) as conn:
         # Disposable-only additive illustration, no product migration.
         conn.execute(
             "CREATE TABLE gateway_admissions_scheduler_probe "
@@ -297,7 +337,9 @@ def test_disposable_pg_role_rls_could_exclude_owned_jobs_from_old_claim(
         JobSubmission(capability="code.review", priority=10)
     )
 
-    with psycopg.connect(DSN, autocommit=True) as admin:
+    # Transactional setup: if CREATE ROLE or a column ALTER fails, none of
+    # the scratch schema or cluster role mutations survive a partial setup.
+    with psycopg.connect(DSN) as admin:
         admin.execute(
             "CREATE TABLE gateway_admissions_rls_probe ("
             "id uuid PRIMARY KEY, state text NOT NULL)"
@@ -324,13 +366,13 @@ def test_disposable_pg_role_rls_could_exclude_owned_jobs_from_old_claim(
         )
 
     try:
-        with psycopg.connect(DSN, autocommit=True) as admin:
+        with psycopg.connect(DSN) as admin:
             admin.execute(
                 sql.SQL("GRANT USAGE ON SCHEMA public TO {}")
                 .format(sql.Identifier(role_name))
             )
             admin.execute(
-                sql.SQL("GRANT ALL ON TABLE jobs, workers TO {}")
+                sql.SQL("GRANT SELECT, UPDATE ON TABLE jobs, workers TO {}")
                 .format(sql.Identifier(role_name))
             )
             admin.execute(
@@ -359,6 +401,17 @@ def test_disposable_pg_role_rls_could_exclude_owned_jobs_from_old_claim(
                     yield connection
 
         old_control = LegacyRoleControl(DSN)
+        with old_control._connection() as legacy_conn:
+            privileges = legacy_conn.execute(
+                "SELECT has_table_privilege(current_user,'jobs','INSERT') AS can_insert,"
+                " has_table_privilege(current_user,'jobs','DELETE') AS can_delete,"
+                " has_table_privilege(current_user,'jobs','SELECT') AS can_select,"
+                " has_table_privilege(current_user,'jobs','UPDATE') AS can_update"
+            ).fetchone()
+            assert privileges == {
+                "can_insert": False, "can_delete": False,
+                "can_select": True, "can_update": True,
+            }
         claimed = old_control.claim_next_job(worker)
         assert claimed is not None and claimed.job_id == direct_job.job_id
         assert repo.get_job(gateway_job.job_id).status is JobStatus.QUEUED
@@ -378,7 +431,10 @@ def test_disposable_pg_role_rls_could_exclude_owned_jobs_from_old_claim(
         repo.cancel_job(privileged_claim.job_id)
         assert repo.get_worker(worker).active_jobs == 0
     finally:
-        with psycopg.connect(DSN, autocommit=True) as admin:
+        # Atomic teardown too: either the role/policies/temp columns are
+        # removed together or the disposable test database is left for a
+        # fail-closed operator cleanup rather than partially reverted.
+        with psycopg.connect(DSN) as admin:
             # Restore the disposable database before the test fixture cleans up.
             admin.execute("ALTER TABLE jobs DISABLE ROW LEVEL SECURITY")
             admin.execute(
@@ -402,3 +458,57 @@ def test_disposable_pg_role_rls_could_exclude_owned_jobs_from_old_claim(
             admin.execute(
                 sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role_name))
             )
+
+
+def test_disposable_schema_setup_failure_rolls_back_every_ddl(
+    verified_scheduler,
+):
+    """Negative fault injection: CREATE and ALTER must roll back together."""
+    with pytest.raises(psycopg.errors.DuplicateColumn):
+        with psycopg.connect(DSN) as connection:
+            connection.execute(
+                "CREATE TABLE gateway_admissions_rollback_probe "
+                "(id integer PRIMARY KEY)"
+            )
+            connection.execute(
+                "ALTER TABLE jobs ADD COLUMN scheduler_rollback_probe integer"
+            )
+            # Deliberate fault after prior DDL succeeded.
+            connection.execute(
+                "ALTER TABLE jobs ADD COLUMN scheduler_rollback_probe integer"
+            )
+    with psycopg.connect(DSN) as connection:
+        table = connection.execute(
+            "SELECT to_regclass('public.gateway_admissions_rollback_probe')"
+        ).fetchone()[0]
+        column = connection.execute(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='jobs' "
+            "AND column_name='scheduler_rollback_probe'"
+        ).fetchone()[0]
+    assert table is None and column == 0
+
+
+def test_disposable_role_setup_failure_rolls_back_global_role(
+    verified_scheduler,
+):
+    """Negative fault injection: test role must not leak on setup error."""
+    from psycopg import sql
+
+    role = "tsumgi_rollback_probe_" + uuid4().hex[:12]
+    with pytest.raises(psycopg.errors.DuplicateObject):
+        with psycopg.connect(DSN) as connection:
+            connection.execute(
+                sql.SQL("CREATE ROLE {} NOLOGIN NOSUPERUSER NOBYPASSRLS")
+                .format(sql.Identifier(role))
+            )
+            # Deliberate fault after CREATE ROLE completed in this txn.
+            connection.execute(
+                sql.SQL("CREATE ROLE {} NOLOGIN NOSUPERUSER NOBYPASSRLS")
+                .format(sql.Identifier(role))
+            )
+    with psycopg.connect(DSN) as connection:
+        count = connection.execute(
+            "SELECT count(*) FROM pg_roles WHERE rolname=%s", (role,),
+        ).fetchone()[0]
+    assert count == 0
