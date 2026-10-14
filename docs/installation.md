@@ -545,15 +545,17 @@ ASTRUMWEAVER_CLIENT_TOKEN=REPLACE_WITH_CLIENT_TOKEN
 ASTRUMWEAVER_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
 ```
 
-Apply database migrations before first startup on an **explicitly authorized target**. The migrator reads `ASTRUMWEAVER_DATABASE_URL` from its environment. **Do not embed a password-bearing connection URL in a `sudo env ...` command**: it can enter shell history and process arguments. Use the protected `control.env` file prepared above, passed only by absolute *file path* to a transient systemd service:
+Apply database migrations before first startup on an **explicitly authorized target**. The migrator reads `ASTRUMWEAVER_DATABASE_URL` from its environment. **Do not embed a password-bearing connection URL in a `sudo env ...` command**: it can enter shell history and process arguments. Prepare a **root-owned, mode-0700 directory** under `/run`, then copy only the trusted input `control.env` into it as a **root-owned, mode-0600** file. Its parent directory must not be writable by untrusted users:
 
 ```sh
+sudo install -d -o root -g root -m 0700 /run/astrumweaver-bootstrap
+sudo install -o root -g root -m 0600 ./control.env /run/astrumweaver-bootstrap/control.env
 sudo systemd-run --wait --collect --pipe \
-  --property="EnvironmentFile=$(realpath ./control.env)" \
+  --property=EnvironmentFile=/run/astrumweaver-bootstrap/control.env \
   /nix/var/nix/profiles/astrumweaver-control/bin/astrumweaver-migrate
 ```
 
-Ensure `control.env` is a trusted, non-symlinked root-readable file with restrictive permissions; the file contains credentials, so keep it outside Git and do not copy its contents into logs or shell arguments. This example uses systemd's transient privileged service identity for migration and removes the unit after completion; it is **not** an instruction to mutate an already-running site. Existing deployments require the [operator rollout/backup/rollback GO](operator-rollout-gates.md) **before** a database migration or service switch. The recommended [first-run setup TUI](setup-tui.md) automates the normal credential-safe bootstrap path.
+This passes only an absolute **file path** to the privileged transient systemd service; the database secret is not passed as a command-line argument. The source `control.env` must itself be trusted, protected and outside Git; do not copy its contents into logs. After the migration attempt is finished and its result recorded, remove the **temporary** bootstrap copy and directory (`sudo rm -- /run/astrumweaver-bootstrap/control.env` then `sudo rmdir -- /run/astrumweaver-bootstrap`). Preserve the separate input `./control.env` until its reviewed service installation step completes. Do not interpret the example as authorization to mutate an already-running site. Existing deployments require the [operator rollout/backup/rollback GO](operator-rollout-gates.md) **before** a database migration or service switch. The recommended [first-run setup TUI](setup-tui.md) automates the normal credential-safe bootstrap path.
 
 Install and start the service:
 
