@@ -79,7 +79,8 @@ class ControlRepository(Protocol):
     ) -> WorkerRecord: ...
 
     def submit_job(
-        self, submission: JobSubmission, *, now: datetime | None = None
+        self, submission: JobSubmission, *, now: datetime | None = None,
+        admission_deadline_at: datetime | None = None,
     ) -> JobRecord: ...
 
     def get_worker(self, worker_id: str) -> WorkerRecord: ...
@@ -102,6 +103,10 @@ class ControlRepository(Protocol):
     ) -> list[JobRecord]: ...
 
     def get_job(self, job_id: str) -> JobRecord: ...
+
+    def get_job_by_idempotency_key(
+        self, key: str, *, admission_deadline_at: datetime | None = None
+    ) -> JobRecord | None: ...
 
     def append_job_event(
         self,
@@ -155,7 +160,8 @@ class ControlRepository(Protocol):
     ) -> JobRecord: ...
 
     def cancel_job(
-        self, job_id: str, *, now: datetime | None = None
+        self, job_id: str, *, now: datetime | None = None,
+        admission_deadline_at: datetime | None = None,
     ) -> JobRecord: ...
 
     def recover_expired_jobs(
@@ -465,10 +471,29 @@ class InMemoryControlRepository:
         return expired
 
     def submit_job(
-        self, submission: JobSubmission, *, now: datetime | None = None
+        self, submission: JobSubmission, *, now: datetime | None = None,
+        admission_deadline_at: datetime | None = None,
     ) -> JobRecord:
         timestamp = _aware(now)
+        if admission_deadline_at is not None and (
+            not isinstance(admission_deadline_at, datetime)
+            or admission_deadline_at.tzinfo is None
+        ):
+            raise ValueError("admission deadline must be timezone-aware")
+        if (
+            admission_deadline_at is not None
+            and submission.deadline_at is not None
+            and admission_deadline_at > submission.deadline_at
+        ):
+            raise ValueError("admission deadline cannot exceed serving Job deadline")
         with self._lock:
+            # Check a fresh wall clock under the lock. An injected request
+            # creation timestamp must not make a late submission admissible.
+            if (
+                admission_deadline_at is not None
+                and utc_now() >= admission_deadline_at
+            ):
+                raise DeadlineExceededError("admission deadline expired")
             # Resolve durable idempotency before transient admission state.
             if submission.idempotency_key:
                 existing_id = self._idempotency.get(submission.idempotency_key)
@@ -546,6 +571,13 @@ class InMemoryControlRepository:
                 return self._jobs[job_id]
             except KeyError as exc:
                 raise NotFoundError(f"job not found: {job_id}") from exc
+
+    def get_job_by_idempotency_key(
+        self, key: str, *, admission_deadline_at: datetime | None = None
+    ) -> JobRecord | None:
+        with self._lock:
+            job_id = self._idempotency.get(key)
+            return None if job_id is None else self._jobs[job_id]
 
     def list_jobs(self) -> list[JobRecord]:
         with self._lock:
@@ -805,10 +837,18 @@ class InMemoryControlRepository:
             return failed
 
     def cancel_job(
-        self, job_id: str, *, now: datetime | None = None
+        self, job_id: str, *, now: datetime | None = None,
+        admission_deadline_at: datetime | None = None,
     ) -> JobRecord:
+        if admission_deadline_at is not None:
+            if not isinstance(admission_deadline_at, datetime) or admission_deadline_at.tzinfo is None:
+                raise ValueError("admission_deadline_at must be timezone-aware")
+            if utc_now() >= admission_deadline_at:
+                raise DeadlineExceededError("chat cancellation deadline expired")
         timestamp = _aware(now)
         with self._lock:
+            if admission_deadline_at is not None and utc_now() >= admission_deadline_at:
+                raise DeadlineExceededError("chat cancellation deadline expired")
             job = self.get_job(job_id)
             if job.status in {
                 JobStatus.SUCCEEDED,

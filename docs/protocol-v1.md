@@ -380,12 +380,32 @@ Control process:
 enabled = true
 catalog = "/etc/astrumweaver/chat-catalog.json"
 poll_interval_seconds = 0.05
+max_pending_admissions = 8
 ```
 
 When omitted or `enabled = false`, existing v1 Control routes are unchanged.
 The catalog contains only reviewed logical serving profiles and their resolved
 #93 deployment/contract identities. `GET /v1/models` exposes those profile IDs,
 not runtime model discovery.
+
+The optional `max_pending_admissions` sets the positive per-Gateway
+concurrent durable chat admission budget (candidate default 8). A cancelled
+HTTP request retains its slot until the underlying synchronous admission and
+late-job cleanup complete. Excess requests receive `429 admission_overloaded`
+without starting another admission Task. This is **not** a bound on actual
+PostgreSQL execution time or a verified durable cancellation acknowledgement;
+a permanently blocked database can exhaust all available permits and require
+operator recovery. See [#137](https://github.com/upiscium/TSUMGI/issues/137)
+and the proposed [ADR 0002 PR](https://github.com/upiscium/TSUMGI/pull/139).
+
+In proposed Stage 2 for [#137](https://github.com/upiscium/TSUMGI/issues/137),
+chat admission also propagates the request's absolute deadline into the
+synchronous repository call and, for real PostgreSQL, enforces bounded
+connection/statement/lock/transaction work (PostgreSQL 17+ required).
+This **does not** prove durable cancellation after an unknown COMMIT result
+or an abrupt process crash. See
+[experimental admission deadline details](design/chat-gateway-admission-deadlines.md)
+and [proposed ADR #139](https://github.com/upiscium/TSUMGI/pull/139).
 
 The Stage A routes reuse the configured Client authentication policy:
 

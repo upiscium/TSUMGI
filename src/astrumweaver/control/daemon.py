@@ -101,6 +101,9 @@ def build_app(config_path: str):
                 poll_interval_seconds=float(
                     chat_section.get("poll_interval_seconds", 0.05)
                 ),
+                max_pending_admissions=chat_section.get(
+                    "max_pending_admissions", 8
+                ),
             )
         )
 
