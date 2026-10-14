@@ -17,7 +17,7 @@ def test_product_rc_versions_align_across_python_and_nix() -> None:
     assert project["name"] == "astrumweaver"
     match = re.fullmatch(r"(\d+\.\d+\.\d+)rc([1-9]\d*)", project["version"])
     assert match
-    nix_version = f"{match[1]}-rc.{match[2]}"
+    nix_version = f"{match[1]}pre{match[2]}"
     for path, count in SURFACES.items():
         data = (ROOT / path).read_text()
         assert data.count(nix_version) == count, path
@@ -27,7 +27,7 @@ def test_product_rc_versions_align_across_python_and_nix() -> None:
 
 def test_rc_notes_have_risk_and_approval_boundaries() -> None:
     notes = (ROOT / "docs/releases/v0.1.0-rc.1.md").read_text()
-    for phrase in ("UNPUBLISHED", "v0.1.0-rc.1", "0.1.0rc1", "UNKNOWN_COMMIT",
+    for phrase in ("UNPUBLISHED", "v0.1.0-rc.1", "0.1.0rc1", "0.1.0pre1", "UNKNOWN_COMMIT",
                    "PostgreSQL 17", "UTF8", "OBSERVED_ONLY", "astrumweaver", "#79", "#124"):
         assert phrase in notes
     checklist = (ROOT / "docs/rc-qualification-v0.1.0-rc.1.md").read_text()

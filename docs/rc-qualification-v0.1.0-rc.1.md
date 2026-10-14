@@ -10,9 +10,11 @@ The owner accepted Option B preparation, not publication. This branch starts fro
 | --- | --- |
 | Public identity | TSUMGI `v0.1.0-rc.1`, tag **not created** |
 | Python metadata | `astrumweaver==0.1.0rc1` |
-| Nix product packages | `0.1.0-rc.1` |
+| Nix product packages | `0.1.0pre1` (sorts before Nix stable `0.1.0`) |
 | Decision CUDA provider | Retain separately pinned `0.6.0-dev-<revision>` |
 | Technical naming | Retain `astrumweaver` CLI, import, Nix, systemd and data compatibility; #120 Phase B remains separate |
+
+**Nix upgrade ordering:** Verified with `builtins.compareVersions`: `0.1.0-rc.1` (hyphen spelling) sorts *after* final `0.1.0` and is therefore unsuitable for Nix package profile version comparison. `0.1.0pre1` sorts *before* `0.1.0` and is the selected Nix spelling, while the public Git tag remains `v0.1.0-rc.1` and the Python wheel uses PEP 440 `0.1.0rc1`. The older `0.1.0-dev` also sorts *after* `0.1.0pre1` in Nix, so a blind `nix profile upgrade` from the development version may not select the RC. Use an explicitly pinned immutable RC source/profile target and site-approved migration plan rather than automatic version-order assumptions.
 
 ## Required evidence before publication
 
