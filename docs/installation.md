@@ -545,13 +545,15 @@ ASTRUMWEAVER_CLIENT_TOKEN=REPLACE_WITH_CLIENT_TOKEN
 ASTRUMWEAVER_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
 ```
 
-Apply database migrations before first startup:
+Apply database migrations before first startup on an **explicitly authorized target**. The migrator reads `ASTRUMWEAVER_DATABASE_URL` from its environment. **Do not embed a password-bearing connection URL in a `sudo env ...` command**: it can enter shell history and process arguments. Use the protected `control.env` file prepared above, passed only by absolute *file path* to a transient systemd service:
 
 ```sh
-sudo env \
-  ASTRUMWEAVER_DATABASE_URL='postgresql://USER:PASSWORD@DB_HOST:5432/astrumweaver' \
+sudo systemd-run --wait --collect --pipe \
+  --property="EnvironmentFile=$(realpath ./control.env)" \
   /nix/var/nix/profiles/astrumweaver-control/bin/astrumweaver-migrate
 ```
+
+Ensure `control.env` is a trusted, non-symlinked root-readable file with restrictive permissions; the file contains credentials, so keep it outside Git and do not copy its contents into logs or shell arguments. This example uses systemd's transient privileged service identity for migration and removes the unit after completion; it is **not** an instruction to mutate an already-running site. Existing deployments require the [operator rollout/backup/rollback GO](operator-rollout-gates.md) **before** a database migration or service switch. The recommended [first-run setup TUI](setup-tui.md) automates the normal credential-safe bootstrap path.
 
 Install and start the service:
 
@@ -642,6 +644,8 @@ then use the reviewed RuntimeProvider setup path described in
 
 ## Upgrading
 
+**Production HOLD:** The commands in this section change installed binaries and may restart running services. For **any existing deployment**, do **not** upgrade a moving flake input, a Nix profile, Control/Worker, or PostgreSQL merely by following this guide. First approve an immutable source/package revision and complete the [#124 operator rollout gates](operator-rollout-gates.md): site/change owner, installation inventory, separate recoverable PG17 backup and restored-Control readback, schema compatibility, existing-version rollback test, selected-GPU boundary, maintenance window and explicit **GO/NO-GO**. Release version/publication [#79](release-readiness.md) is a separate decision. The commands below are a procedural reference **only after site authority is established**.
+
 ### NixOS
 
 Update the flake input and rebuild:
@@ -683,7 +687,7 @@ If the new Control binary contains new database migrations, run
 
 ### Retrying an interrupted generic systemd first-run
 
-This section is for the generic systemd helpers. Control defaults to the
+**Do not use these retry commands to overwrite an existing live site without the same [#124 operator GO/NO-GO](operator-rollout-gates.md).** Preserve the previously installed executable, credential and database restore targets before reapplying a setup plan or restarting a service. This section is for the generic systemd helpers. Control defaults to the
 `astrumweaver-control` user/group and `/var/lib/astrumweaver-control`; Worker
 remains `astrumweaver` and `/var/lib/astrumweaver`. The shared
 `/etc/astrumweaver` directory is `root:astrumweaver-config 0710` (traverse
