@@ -1,5 +1,7 @@
 # TSUMGI integrated-main release and site handoff — 2026-10-14
 
+**Subsequent 2026-10-15 decision:** the owner accepted **Option B for RC preparation only**. This document records the 2026-10-14 integrated-main baseline before that decision. See [draft v0.1.0-rc.1 notes](releases/v0.1.0-rc.1.md) and [candidate qualification](rc-qualification-v0.1.0-rc.1.md). No tag/publication or #124 site change was thereby approved.
+
 **Status: RELEASE PREPARATION / OPERATOR PREPARATION. Neither a version freeze, publication approval nor a production GO.**
 
 This is the latest verified checkpoint for [#79](https://github.com/upiscium/TSUMGI/issues/79) (version/publication) and [#124](https://github.com/upiscium/TSUMGI/issues/124) (site rollout and recovery). It supersedes the 2026-10-11/12 *current* wording retained historically in [release-readiness.md](release-readiness.md), but not the scoped experimental evidence or this document's other linked contracts. It is an **evidence and decision manifest**, not an execution script.
