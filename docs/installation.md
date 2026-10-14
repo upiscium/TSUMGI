@@ -545,13 +545,17 @@ ASTRUMWEAVER_CLIENT_TOKEN=REPLACE_WITH_CLIENT_TOKEN
 ASTRUMWEAVER_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
 ```
 
-Apply database migrations before first startup:
+Apply database migrations before first startup on an **explicitly authorized target**. The migrator reads `ASTRUMWEAVER_DATABASE_URL` from its environment. **Do not embed a password-bearing connection URL in a `sudo env ...` command**: it can enter shell history and process arguments. Prepare a **root-owned, mode-0700 directory** under `/run`, then copy only the trusted input `control.env` into it as a **root-owned, mode-0600** file. Its parent directory must not be writable by untrusted users:
 
 ```sh
-sudo env \
-  ASTRUMWEAVER_DATABASE_URL='postgresql://USER:PASSWORD@DB_HOST:5432/astrumweaver' \
+sudo install -d -o root -g root -m 0700 /run/astrumweaver-bootstrap
+sudo install -o root -g root -m 0600 ./control.env /run/astrumweaver-bootstrap/control.env
+sudo systemd-run --wait --collect --pipe \
+  --property=EnvironmentFile=/run/astrumweaver-bootstrap/control.env \
   /nix/var/nix/profiles/astrumweaver-control/bin/astrumweaver-migrate
 ```
+
+This passes only an absolute **file path** to the privileged transient systemd service; the database secret is not passed as a command-line argument. The source `control.env` must itself be trusted, protected and outside Git; do not copy its contents into logs. After the migration attempt is finished and its result recorded, remove the **temporary** bootstrap copy and directory (`sudo rm -- /run/astrumweaver-bootstrap/control.env` then `sudo rmdir -- /run/astrumweaver-bootstrap`). Preserve the separate input `./control.env` until its reviewed service installation step completes. Do not interpret the example as authorization to mutate an already-running site. Existing deployments require the [operator rollout/backup/rollback GO](operator-rollout-gates.md) **before** a database migration or service switch. The recommended [first-run setup TUI](setup-tui.md) automates the normal credential-safe bootstrap path.
 
 Install and start the service:
 
@@ -642,6 +646,8 @@ then use the reviewed RuntimeProvider setup path described in
 
 ## Upgrading
 
+**Production HOLD:** The commands in this section change installed binaries and may restart running services. For **any existing deployment**, do **not** upgrade a moving flake input, a Nix profile, Control/Worker, or PostgreSQL merely by following this guide. First approve an immutable source/package revision and complete the [#124 operator rollout gates](operator-rollout-gates.md): site/change owner, installation inventory, separate recoverable PG17 backup and restored-Control readback, schema compatibility, existing-version rollback test, selected-GPU boundary, maintenance window and explicit **GO/NO-GO**. Release version/publication [#79](release-readiness.md) is a separate decision. The commands below are a procedural reference **only after site authority is established**.
+
 ### NixOS
 
 Update the flake input and rebuild:
@@ -683,7 +689,7 @@ If the new Control binary contains new database migrations, run
 
 ### Retrying an interrupted generic systemd first-run
 
-This section is for the generic systemd helpers. Control defaults to the
+**Do not use these retry commands to overwrite an existing live site without the same [#124 operator GO/NO-GO](operator-rollout-gates.md).** Preserve the previously installed executable, credential and database restore targets before reapplying a setup plan or restarting a service. This section is for the generic systemd helpers. Control defaults to the
 `astrumweaver-control` user/group and `/var/lib/astrumweaver-control`; Worker
 remains `astrumweaver` and `/var/lib/astrumweaver`. The shared
 `/etc/astrumweaver` directory is `root:astrumweaver-config 0710` (traverse

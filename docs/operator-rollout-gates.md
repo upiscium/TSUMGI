@@ -1,5 +1,7 @@
 # Operator-owned Control / Worker rollout and recovery gate
 
+**Current integrated-main handoff (2026-10-14):** [release/source/site decision evidence](release-gate-2026-10-14.md) at merged main `597f1e85ee56fd1b6c997831bac68bbce4b4f289`. #135's runbook has been merged; #137's bounded best-effort source fix was subsequently integrated via #145 with main CI unit/nix SUCCESS. Read-only inspection found three active Worker services in authorized isolated GPU test LXCs. This is **not** proof that the named production site, Control/database/ingress, permanent Worker-UID compartment, old-version rollback or maintenance window have been accepted. Do not replace already-running services or treat test evidence as site GO.
+
 Status: **OPERATOR DECISION REQUIRED — NOT A PRODUCTION RUNBOOK AUTHORIZATION**.
 
 Tracking: [#124](https://github.com/upiscium/TSUMGI/issues/124)

@@ -1,5 +1,7 @@
 # Release and production deployment decision record
 
+**Latest authoritative integrated-main checkpoint (2026-10-14):** [TSUMGI source, release and operator handoff](release-gate-2026-10-14.md), bound to merged main `597f1e85ee56fd1b6c997831bac68bbce4b4f289`, completed post-merge GitHub unit/nix CI [#38541792235](https://github.com/upiscium/TSUMGI/actions/runs/38541792235), and scoped PostgreSQL17 best-effort admission tests. The older 2026-10-12 and 2026-10-11 checkpoints below are **historical**, not current GitHub status. #137 is CLOSED via merged #145, #135/#136 have been merged, and #79/#124 remain distinct OPEN gates. No version, tag, publication or production rollout approved.
+
 Status: **PREPARATION ONLY — no version, tag, publication or production rollout approved**.
 
 Tracking: [#79](https://github.com/upiscium/TSUMGI/issues/79) (release),
@@ -9,7 +11,7 @@ This is a release-engineering checklist, not a replacement for the
 [installation guide](installation.md) or
 [GPU ownership ADR](adr/0001-gpu-ownership-and-vram-availability.md).
 
-## Current qualification checkpoint — 2026-10-12 (authoritative)
+## Historical qualification checkpoint — 2026-10-12 (superseded by 2026-10-14)
 
 **Integrated source:** `main` at
 `6560ec999c9ef58417a97c307aee15eba5d11da2`
