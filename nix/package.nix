@@ -13,7 +13,7 @@ let
 in
 python312Packages.buildPythonPackage {
   pname = "astrumweaver";
-  version = "0.1.0-dev";
+  version = "0.1.0pre1";
   pyproject = true;
 
   src = lib.cleanSourceWith {

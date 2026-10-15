@@ -7,6 +7,8 @@ TSUMGI is a deployment-agnostic compute fabric for scheduling capability-based w
 It is GPU-first, but its control-plane contracts are intentionally not tied to LLMs, a particular accelerator generation, Proxmox, or a one-GPU-per-worker topology.
 
 > **Project status:** early v0.1 architecture/bootstrap. Interfaces may change until the first stable worker/control contract is accepted.
+>
+> **Candidate status:** [v0.1.0-rc.1 release notes](docs/releases/v0.1.0-rc.1.md) and [qualification gates](docs/rc-qualification-v0.1.0-rc.1.md) are in **preparation only**. No tag, published prerelease or production rollout is authorized.
 
 ## Start here
 
