@@ -6,6 +6,8 @@ import asyncio
 import contextlib
 import json
 import os
+import secrets
+import tempfile
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -99,6 +101,7 @@ class LlamaCppProviderConfig:
     n_cpu_ffn: int | None = None
     offline: bool = True
     no_webui: bool = True
+    private_native_transport: bool = False
     jinja: bool = False
     chat_template_file: str | None = None
     embeddings: bool = False
@@ -135,6 +138,8 @@ class LlamaCppProviderConfig:
             raise ValueError("context_size must not be negative")
         if self.main_gpu < 0:
             raise ValueError("main_gpu must not be negative")
+        if type(self.private_native_transport) is not bool:
+            raise TypeError("private_native_transport must be boolean")
         if type(self.jinja) is not bool:
             raise TypeError("jinja must be boolean")
         if type(self.embeddings) is not bool:
@@ -1575,8 +1580,10 @@ class LlamaCppManagedRuntime(ManagedRuntime):
         embeddings: bool = False,
         pooling: str | None = None,
         decision: bool = False,
+        private_auth_files: tempfile.TemporaryDirectory[str] | None = None,
     ) -> None:
         self.api = api
+        self._private_auth_files = private_auth_files
         self.process = process
         self.context = context
         self.model_ref = model_ref
@@ -1748,8 +1755,19 @@ class LlamaCppManagedRuntime(ManagedRuntime):
     async def release(self) -> None:
         if self._closed:
             return
-        await self.api.close()
-        self._closed = True
+        try:
+            # Do not unlink the bearer or socket while an owned server can
+            # still accept native inference.
+            if self._private_auth_files is not None:
+                await self.process.stop()
+        finally:
+            try:
+                await self.api.close()
+            finally:
+                if self._private_auth_files is not None:
+                    self._private_auth_files.cleanup()
+                    self._private_auth_files = None
+                self._closed = True
 
 
 class LlamaCppProvider(RuntimeProvider):
@@ -1761,6 +1779,7 @@ class LlamaCppProvider(RuntimeProvider):
         process_factory: Any | None = None,
     ) -> None:
         self.config = config or LlamaCppProviderConfig()
+        self._custom_factories = api_factory is not None or process_factory is not None
         self._api_factory = api_factory or (
             lambda base_url: HttpLlamaCppApi(
                 base_url,
@@ -2054,6 +2073,11 @@ class LlamaCppProvider(RuntimeProvider):
                 "n_cpu_ffn": policy.n_cpu_ffn,
                 "offline": self.config.offline,
                 "no_webui": self.config.no_webui,
+                # Keep the old setup schema identical until explicitly opted in.
+                **(
+                    {"private_native_transport": True}
+                    if self.config.private_native_transport else {}
+                ),
                 "jinja": self.config.jinja,
                 "chat_template_file": self.config.chat_template_file,
                 "embeddings": self.config.embeddings,
@@ -2179,16 +2203,18 @@ class LlamaCppProvider(RuntimeProvider):
             ),
         )
 
-        api = self._api_factory(base_url)
-        process = self._process_factory(
+        private_mode = self.config.private_native_transport
+        if cfg.get("private_native_transport", False) is not private_mode:
+            raise ValueError(
+                "llama.cpp private transport must match the frozen provider config"
+            )
+        process_args = dict(
             executable=executable,
             base_url=base_url,
             model_ref=model_ref,
             model_alias=model_alias,
             gpu_uuids=context.worker.gpu_uuids,
-            context_size=int(
-                cfg.get("context_size", self.config.context_size)
-            ),
+            context_size=int(cfg.get("context_size", self.config.context_size)),
             launch_policy=policy,
             offline=bool(cfg.get("offline", self.config.offline)),
             no_webui=bool(cfg.get("no_webui", self.config.no_webui)),
@@ -2197,6 +2223,44 @@ class LlamaCppProvider(RuntimeProvider):
             embeddings=embeddings,
             pooling=pooling,
         )
+        private_auth_files: tempfile.TemporaryDirectory[str] | None = None
+        if private_mode:
+            if self._custom_factories:
+                raise RuntimeError(
+                    "private native transport requires the reviewed native process and API"
+                )
+            # The socket and bearer are private to this Worker UID.
+            # Neither secret is copied into argv or the serving manifest.
+            private_auth_files = tempfile.TemporaryDirectory(
+                prefix="tsumgi-single-llama-auth-"
+            )
+            try:
+                key_file = Path(private_auth_files.name) / "native.key"
+                key = secrets.token_urlsafe(48)
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(
+                    os, "O_NOFOLLOW", 0
+                )
+                fd = os.open(key_file, flags, 0o600)
+                with os.fdopen(fd, "w", encoding="ascii") as file:
+                    file.write(key + "\n")
+                socket_file = str(Path(private_auth_files.name) / "native.sock")
+                process = self._process_factory(
+                    **process_args,
+                    api_key_file=str(key_file),
+                    unix_socket_path=socket_file,
+                )
+                api = HttpLlamaCppApi(
+                    base_url,
+                    timeout_seconds=self.config.request_timeout_seconds,
+                    api_key=key,
+                    unix_socket_path=socket_file,
+                )
+            except BaseException:
+                private_auth_files.cleanup()
+                raise
+        else:
+            api = self._api_factory(base_url)
+            process = self._process_factory(**process_args)
 
         return LlamaCppManagedRuntime(
             api=api,
@@ -2210,4 +2274,5 @@ class LlamaCppProvider(RuntimeProvider):
             embeddings=embeddings,
             pooling=pooling,
             decision=decision,
+            private_auth_files=private_auth_files,
         )

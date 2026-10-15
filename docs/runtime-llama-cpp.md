@@ -54,6 +54,54 @@ against the same TSUMGI candidate as the installer. A different
 candidate upgrade, and profile rollback are documented under
 [Installation — RuntimeBackend Nix profile](installation.md#runtimebackend-nix-profile).
 
+## Protected single-model native transport (candidate opt-in)
+
+For a single-model `llama-cpp` Worker, set
+`provider_config.private_native_transport = true` in the reviewed runtime
+deployment. Its frozen `setup_intent.configuration` must contain the same
+boolean. **Do not put a bearer token, absolute socket filename, or key-file
+path into the deployment manifest.** The Worker generates these on every new
+provider instance.
+
+With this opt-in, TSUMGI creates a mode-0700, Worker-UID-owned temporary
+directory with a randomly generated mode-0600 API-key file and an adjacent
+Unix-domain socket. The owned `llama-server` receives
+`--api-key-file <private path>` and `--host <private socket>`. The internal
+httpx client sends `Authorization: Bearer ...` over the socket and never
+uses an ambient HTTP proxy. The compatibility `base_url` stays a loopback
+URL in the manifest, but **the native subprocess does not bind that TCP
+port**. Secrets are removed when the managed runtime is released; a fresh
+Worker provider instance generates a different key and socket.
+
+Example *non-secret* provider configuration (other model and launch-policy
+fields are omitted):
+
+```json
+{
+  "provider_id": "llama-cpp",
+  "provider_config": {
+    "base_url": "http://127.0.0.1:8080",
+    "private_native_transport": true
+  }
+}
+```
+
+This setting is **off for legacy manifests**, retaining compatibility but
+providing no secret/socket compartment for their native localhost HTTP
+listener. Private mode refuses custom injected process/client factories
+rather than silently falling back to insecure HTTP. Both the executable
+path and the model are still required to be reviewed and immutable.
+
+Operator acceptance additionally requires a **non-shared, dedicated Worker
+service UID** and a negative probe that a distinct unprivileged account
+cannot enter the key/socket directory or read the bearer. Mode 0700 does
+*not* protect against untrusted code running as the same UID or root.
+Check stop/restart key rotation, successful protected Native Job execution,
+no unexpected TCP listener, and rollback to the prior working service
+before activation. This candidate addition does **not** retroactively change
+the published `v0.1.0-rc.1` package; release/version changes require a
+separate reviewed artifact.
+
 ## Native decision mode
 
 The provider can be configured with `decision = true` for a deployment whose
