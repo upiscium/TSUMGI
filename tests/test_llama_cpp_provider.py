@@ -2239,3 +2239,144 @@ async def test_managed_decision_runtime_requires_native_decision_model() -> None
         {"decision.system_one"}
     )
     await runtime.stop()
+
+def test_private_single_model_requires_explicit_opt_in() -> None:
+    legacy = LlamaCppProvider()
+    assert "private_native_transport" not in legacy.setup_intent(context()).configuration
+    with pytest.raises(TypeError, match="private_native_transport"):
+        LlamaCppProviderConfig(private_native_transport="yes")  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_private_single_model_uses_owned_bearer_and_unix_socket() -> None:
+    import stat
+    from pathlib import Path
+
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(private_native_transport=True)
+    )
+    ctx = context()
+    intent = provider.setup_intent(ctx)
+    assert intent.configuration["private_native_transport"] is True
+    runtime = provider.create_runtime(ctx, intent)
+    protected_dir = Path(runtime._private_auth_files.name)
+    key_file = Path(runtime.process.api_key_file)
+    unix_socket = runtime.process.unix_socket_path
+    assert protected_dir == key_file.parent
+    assert stat.S_IMODE(protected_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+    token = key_file.read_text().strip()
+    assert len(token) >= 48
+    assert runtime.api._client.headers["authorization"] == "Bearer " + token
+    assert unix_socket == str(protected_dir / "native.sock")
+    argv = runtime.process.command()
+    assert argv[argv.index("--host") + 1] == unix_socket
+    assert "--port" not in argv
+    assert argv[argv.index("--api-key-file") + 1] == str(key_file)
+    assert token not in " ".join(argv)
+    await runtime.release()
+    await runtime.release()
+    assert not protected_dir.exists()
+    assert not key_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_private_single_model_rotates_bearer_and_rejects_mismatched_setup() -> None:
+    from dataclasses import replace
+    from pathlib import Path
+
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(private_native_transport=True)
+    )
+    ctx = context()
+    setup = provider.setup_intent(ctx)
+    wrong = replace(
+        setup,
+        configuration={**setup.configuration, "private_native_transport": False},
+    )
+    with pytest.raises(ValueError, match="private transport"):
+        provider.create_runtime(ctx, wrong)
+    first = provider.create_runtime(ctx, setup)
+    old_key = Path(first.process.api_key_file).read_text().strip()
+    old_dir = Path(first._private_auth_files.name)
+    await first.release()
+    second = provider.create_runtime(ctx, setup)
+    try:
+        new_key = Path(second.process.api_key_file).read_text().strip()
+        assert new_key != old_key
+        assert second._private_auth_files.name != str(old_dir)
+        assert not old_dir.exists()
+    finally:
+        await second.release()
+
+
+def test_private_single_model_rejects_custom_factories() -> None:
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(private_native_transport=True),
+        api_factory=lambda base_url: object(),
+    )
+    with pytest.raises(RuntimeError, match="reviewed native process"):
+        provider.create_runtime(context(), provider.setup_intent(context()))
+
+
+@pytest.mark.asyncio
+async def test_private_single_deployment_round_trip_uses_protected_transport() -> None:
+    from pathlib import Path
+
+    from astrumweaver.runtime import (
+        RuntimeDeploymentSpec,
+        managed_runtime_from_deployment,
+    )
+
+    ctx = context()
+    provider = LlamaCppProvider(LlamaCppProviderConfig(private_native_transport=True))
+    deployment = RuntimeDeploymentSpec(
+        provider_id=provider.info.provider_id,
+        provider_config={"private_native_transport": True},
+        demand=ctx.demand,
+        setup_intent=provider.setup_intent(ctx),
+    )
+    encoded = deployment.to_dict()
+    serialized = json.dumps(encoded)
+    assert "native.key" not in serialized
+    assert "Bearer " not in serialized
+    managed = managed_runtime_from_deployment(
+        RuntimeDeploymentSpec.from_dict(encoded),
+        worker=ctx.worker,
+        host=ctx.host,
+    )
+    secret_dir = Path(managed._private_auth_files.name)
+    try:
+        assert managed.process.unix_socket_path == str(secret_dir / "native.sock")
+        assert Path(managed.process.api_key_file).is_file()
+        assert "--port" not in managed.process.command()
+    finally:
+        await managed.release()
+    assert not secret_dir.exists()
+
+
+def test_private_single_creation_failure_cleans_ephemeral_secret(monkeypatch) -> None:
+    from pathlib import Path
+
+    import astrumweaver.runtime.providers.llama_cpp as single
+
+    created: list[str] = []
+    factory = single.tempfile.TemporaryDirectory
+
+    def record_temp(*args, **kwargs):
+        temp = factory(*args, **kwargs)
+        created.append(temp.name)
+        return temp
+
+    def invalid_process(**kwargs):
+        raise RuntimeError("synthetic native process constructor failure")
+
+    monkeypatch.setattr(single.tempfile, "TemporaryDirectory", record_temp)
+    monkeypatch.setattr(single, "LlamaCppSubprocessController", invalid_process)
+
+    provider = LlamaCppProvider(LlamaCppProviderConfig(private_native_transport=True))
+    ctx = context()
+    with pytest.raises(RuntimeError, match="synthetic native process"):
+        provider.create_runtime(ctx, provider.setup_intent(ctx))
+    assert len(created) == 1
+    assert not Path(created[0]).exists()
