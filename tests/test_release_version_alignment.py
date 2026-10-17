@@ -42,7 +42,7 @@ def test_ga_release_notes_constrain_claims_and_publication() -> None:
     readme = (ROOT / "README.md").read_text()
     readiness = (ROOT / "docs/release-readiness.md").read_text()
     for phrase in (
-        "v0.1.0", "NOT PUBLISHED", "astrumweaver==0.1.0",
+        "v0.1.0", "does not establish publication", "astrumweaver==0.1.0",
         "PostgreSQL 17", "UTF8", "UNKNOWN_COMMIT", "OBSERVED_ONLY",
         "#120", "#124", "#149", "#150", "#151", "trusted",
         "feature", "SHA-256",
@@ -69,4 +69,4 @@ def test_ga_scope_does_not_imply_release_or_site_authorization() -> None:
     assert "not newly demonstrated as a full technical PASS" in notes
     assert "site-specific" in gate
     assert "No" in notes
-    assert "NOT PUBLISHED" in notes
+    assert "does not establish publication" in notes
