@@ -24,14 +24,74 @@ EXPECTED_NIX_PRODUCT_ATTRIBUTES = {
 }
 
 
+def _nix_code_mask(source: str) -> bytearray:
+    """Mark code positions, ignoring comments and both Nix string syntaxes."""
+    mask = bytearray(b"\x01") * len(source)
+    i = 0
+    while i < len(source):
+        start = i
+        if source.startswith("''", i):
+            i += 2
+            while i < len(source):
+                if source.startswith("''$" + "{", i):
+                    i += 4
+                elif source.startswith("''" + "'", i):
+                    i += 3
+                elif source.startswith("''", i):
+                    i += 2
+                    break
+                else:
+                    i += 1
+            else:
+                raise AssertionError("unterminated Nix indented string")
+        elif source[i] == '"':
+            i += 1
+            while i < len(source):
+                if source[i] == "\\":
+                    i += 2
+                elif source[i] == '"':
+                    i += 1
+                    break
+                else:
+                    i += 1
+            else:
+                raise AssertionError("unterminated Nix quoted string")
+        elif source.startswith("/*", i):
+            depth = 1
+            i += 2
+            while depth:
+                if i >= len(source):
+                    raise AssertionError("unterminated Nix block comment")
+                if source.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                elif source.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+        elif source[i] == "#":
+            newline = source.find("\n", i)
+            i = len(source) if newline < 0 else newline
+        else:
+            i += 1
+            continue
+        mask[start:i] = b"\x00" * (i-start)
+    return mask
+
+
 def _assert_ga_nix_product_attributes(path: str, data: str) -> None:
-    # This is a deliberately narrow check of fixed, simple product declarations,
-    # not a general Nix parser. Require all occurrences and exact full values.
-    actual = re.findall(
-        r'^[ \t]*(name|version)[ \t]*=[ \t]*"([^"\n]*)"[ \t]*;',
-        data,
-        flags=re.MULTILINE,
-    )
+    # Exact assignments must occur in active Nix code. A block comment, a
+    # quoted literal or an indented shell string cannot supply a fake version.
+    mask = _nix_code_mask(data)
+    actual = [
+        (match.group(1), match.group(2))
+        for match in re.finditer(
+            r'^[ \t]*(name|version)[ \t]*=[ \t]*"([^"\n]*)"[ \t]*;',
+            data, flags=re.MULTILINE,
+        )
+        if mask[match.start(1)]
+    ]
     expected = EXPECTED_NIX_PRODUCT_ATTRIBUTES[path]
     assert actual == expected, (path, actual, expected)
 
@@ -76,6 +136,39 @@ def test_ga_product_versions_ignore_comments_for_missing_declarations() -> None:
             pass
         else:
             raise AssertionError((path, "commented-out declaration was accepted"))
+
+
+def test_ga_product_versions_ignore_nested_block_comment_decoys() -> None:
+    fake = (
+        '/* outer\n  /* inner */\n  version = "0.1.0";\n*/\n'
+        '  version = "0.1.0pre2";\n'
+    )
+    mask = _nix_code_mask(fake)
+    assert not mask[fake.index('version = "0.1.0"')]
+    try:
+        _assert_ga_nix_product_attributes("nix/package.nix", fake)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("block comment incorrectly satisfied GA identity")
+
+
+def test_ga_product_versions_ignore_indented_shell_decoys() -> None:
+    fake = (
+        "installPhase = ''\n"
+        '  cp migrations/*.sql /tmp/example\n'
+        '  version = "0.1.0";\n'
+        "'';\n"
+        '  version = "0.1.0pre2";\n'
+    )
+    assert not _nix_code_mask(fake)[fake.index('version = "0.1.0"')]
+    try:
+        _assert_ga_nix_product_attributes("nix/package.nix", fake)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("indented string incorrectly satisfied GA identity")
+
 
 def test_historical_rc_evidence_is_preserved_and_not_live_status() -> None:
     notes = (ROOT / "docs/releases/v0.1.0-rc.1.md").read_text()
