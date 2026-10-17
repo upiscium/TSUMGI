@@ -4,7 +4,7 @@ let
   pythonEnv = python312.withPackages (_: [ astrumweaver ]);
 in
 buildEnv {
-  name = "astrumweaver-worker-support-0.1.0pre1";
+  name = "astrumweaver-worker-support-0.1.0";
   paths = [
     pythonEnv
     integration

@@ -6,9 +6,11 @@ TSUMGI is a deployment-agnostic compute fabric for scheduling capability-based w
 
 It is GPU-first, but its control-plane contracts are intentionally not tied to LLMs, a particular accelerator generation, Proxmox, or a one-GPU-per-worker topology.
 
-> **Project status:** early v0.1 architecture/bootstrap. Interfaces may change until the first stable worker/control contract is accepted.
+> **Release status (2026-10-17):** v0.1.0 is **feature-frozen and in Release PR review**, not yet tagged or published as a stable release. [v0.1.0 release notes](docs/releases/v0.1.0.md) · [GA qualification gate](docs/ga-qualification-v0.1.0.md).
 >
-> **Candidate status:** [v0.1.0-rc.1 release notes](docs/releases/v0.1.0-rc.1.md) and [qualification gates](docs/rc-qualification-v0.1.0-rc.1.md) are in **preparation only**. No tag, published prerelease or production rollout is authorized.
+> **Published release:** [v0.1.0-rc.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.0-rc.1) is the existing experimental prerelease. A Release PR does **not** authorize a production site upgrade; see [operator rollout gates](docs/operator-rollout-gates.md).
+>
+> **Support boundary:** x86_64 Linux (NixOS or generic systemd + Nix), PostgreSQL 17 UTF8 and explicitly trusted hosts/clients. Production-grade isolation, an always-on SLA, and fully documented installation-only Real Smoke are not claimed.
 
 ## Start here
 
@@ -94,6 +96,7 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 - Existing development machines may later participate as drainable/borrowable workers without reprovisioning.
 
 ## Documentation
+- [v0.1.0 GA release notes](docs/releases/v0.1.0.md) and [qualification checklist](docs/ga-qualification-v0.1.0.md) — frozen functionality, known limits and pending publication gates.
 - [Release readiness and deployment decision boundaries](docs/release-readiness.md) — candidate selection, verification and operator gates; not a release authorization.
 - [Operator rollout and recovery gates](docs/operator-rollout-gates.md) — service identity, PostgreSQL restoration, existing-version rollback and site go/no-go; production use requires explicit approval.
 - [Naming and compatibility](docs/naming.md)

@@ -1,3 +1,6 @@
+<!-- Historical prerelease qualification snapshot -->
+> **Historical RC planning record:** [v0.1.0-rc.1 was publicly released on 2026-10-15](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.0-rc.1). The `NO TAG` and `NO PUBLICATION` language below is retained as pre-release history, **not current RC status**. Refer to [the v0.1.0 GA qualification checklist](ga-qualification-v0.1.0.md) for current publication criteria.
+
 # TSUMGI v0.1.0-rc.1 qualification checklist
 
 **PREPARATION ONLY — NO TAG, NO PRODUCTION DEPLOYMENT, NO PUBLICATION.**
