@@ -1,5 +1,18 @@
 # Release and production deployment decision record
 
+## Current release state — 2026-10-17 (supersedes historical checkpoints below)
+
+**Feature Freeze approved:** the maintainer authorized TSUMGI v0.1.0 feature freeze and preparation of a Release PR. The release candidate is based on already published [v0.1.0-rc.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.0-rc.1), source commit `40e0151e44e7e19e7cc4c36ae873e2b138b4d7d4`. RC1 already passed source CI and real, scoped installed-Control/Worker/OpenCode acceptance; the v0.1.0 Release PR changes **only version metadata, release-facing documentation and validation tests**.
+
+**Publication is still NOT APPROVED:** GA `v0.1.0` tag, stable GitHub Release, artifacts, checksums, release-specific CI and maintainer publication approval are pending. Neither opening nor merging a Release PR activates/upgrades an installed site. [v0.1.0 release notes](releases/v0.1.0.md) · [GA qualification checklist](ga-qualification-v0.1.0.md).
+
+The [#80](https://github.com/upiscium/TSUMGI/issues/80) documentation-only Real Smoke requirement was **closed by an explicit operator administrative waiver**, not a full technical PASS; preserve that distinction. The [#124](https://github.com/upiscium/TSUMGI/issues/124) operator site acceptance is separate from source publication. Deferred [#120](https://github.com/upiscium/TSUMGI/issues/120), [#149](https://github.com/upiscium/TSUMGI/issues/149), [#150](https://github.com/upiscium/TSUMGI/issues/150) and [#151](https://github.com/upiscium/TSUMGI/issues/151) are not silently treated as completed.
+
+### Historical release planning record
+
+The entries below were written before RC1 was published on 2026-10-15 and are **retained as historical snapshots**. Statements there that say the RC does not exist or that main still has development versions do not describe the present repository.
+
+
 **2026-10-15 maintainer selection:** **Option B RC preparation** (current integrated TSUMGI source) was accepted for a **dedicated version/release-notes PR**, with proposed `v0.1.0-rc.1`, Python `0.1.0rc1`, and Nix `0.1.0pre1` (Nix prerelease ordering). See [draft prerelease notes](releases/v0.1.0-rc.1.md) and [release qualification checklist](rc-qualification-v0.1.0-rc.1.md). This approval does **not** select or create an immutable tag, approve GitHub Release publication, waive remaining exact-candidate tests or grant any site #124 GO. The source checkpoint below remains dated historical evidence until this RC preparation is reviewed and accepted.
 
 **Latest authoritative integrated-main checkpoint (2026-10-14):** [TSUMGI source, release and operator handoff](release-gate-2026-10-14.md), bound to merged main `597f1e85ee56fd1b6c997831bac68bbce4b4f289`, completed post-merge GitHub unit/nix CI [#38541792235](https://github.com/upiscium/TSUMGI/actions/runs/38541792235), and scoped PostgreSQL17 best-effort admission tests. The older 2026-10-12 and 2026-10-11 checkpoints below are **historical**, not current GitHub status. #137 is CLOSED via merged #145, #135/#136 have been merged, and #79/#124 remain distinct OPEN gates. No version, tag, publication or production rollout approved.
