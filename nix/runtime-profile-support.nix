@@ -2,6 +2,7 @@
 
 let
   profile = "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp";
+  bonsaiProfile = "/nix/var/nix/profiles/astrumweaver-runtime-bonsai";
   candidateRef = "path:${source}";
   registryRef = "astrumweaver-runtime-candidate";
 in
@@ -9,6 +10,8 @@ writeShellApplication {
   name = "astrumweaver-runtime-profile";
   text = ''
     profile=${lib.escapeShellArg profile}
+    bonsai_profile=${lib.escapeShellArg bonsaiProfile}
+    runtime_attr="runtime-llama-cpp"
     candidate_ref=${lib.escapeShellArg candidateRef}
     registry_ref=${lib.escapeShellArg registryRef}
     nix_bin=${lib.escapeShellArg "${nix}/bin/nix"}
@@ -22,27 +25,42 @@ usage:
   astrumweaver-runtime-profile upgrade llama-cpp
   astrumweaver-runtime-profile rollback llama-cpp
   astrumweaver-runtime-profile status llama-cpp
+  astrumweaver-runtime-profile verify package bonsai-llama-cpp
+  astrumweaver-runtime-profile ensure bonsai-llama-cpp
+  astrumweaver-runtime-profile upgrade bonsai-llama-cpp
+  astrumweaver-runtime-profile rollback bonsai-llama-cpp
+  astrumweaver-runtime-profile status bonsai-llama-cpp
 EOF
       exit "''${1:-2}"
     }
 
     require_llama_cpp() {
-      if [ "''${1-}" != "llama-cpp" ]; then
-        echo "astrumweaver-runtime-profile: unsupported runtime package: ''${1-<missing>}" >&2
-        exit 2
-      fi
+      case "''${1-}" in
+        llama-cpp)
+          profile=${lib.escapeShellArg profile}
+          runtime_attr="runtime-llama-cpp"
+          ;;
+        bonsai-llama-cpp)
+          profile="$bonsai_profile"
+          runtime_attr="runtime-bonsai-llama-cpp"
+          ;;
+        *)
+          echo "astrumweaver-runtime-profile: unsupported runtime package: ''${1-<missing>}" >&2
+          exit 2
+          ;;
+      esac
     }
 
     managed_llama_cpp_profile() {
       if [ ! -x "$profile/bin/llama-server" ]; then
         return 1
       fi
-      "$python_bin" - "$nix_bin" "$profile" "$registry_ref" <<'PY'
+      "$python_bin" - "$nix_bin" "$profile" "$registry_ref" "$runtime_attr" <<'PY'
 import json
 import subprocess
 import sys
 
-nix_bin, profile, registry_ref = sys.argv[1:]
+nix_bin, profile, registry_ref, runtime_attr = sys.argv[1:]
 
 completed = subprocess.run(
     [nix_bin, "profile", "list", "--profile", profile, "--json"],
@@ -67,7 +85,7 @@ else:
     raise SystemExit(1)
 
 expected_original = "flake:" + registry_ref
-expected_attr = "packages.x86_64-linux.runtime-llama-cpp"
+expected_attr = "packages.x86_64-linux." + runtime_attr
 matches = [
     element
     for element in values
@@ -82,12 +100,12 @@ PY
 
     verify_llama_cpp() {
       managed_llama_cpp_profile || return 1
-      "$python_bin" - "$nix_bin" "$profile" "$candidate_ref" "$registry_ref" <<'PY'
+      "$python_bin" - "$nix_bin" "$profile" "$candidate_ref" "$registry_ref" "$runtime_attr" <<'PY'
 import json
 import subprocess
 import sys
 
-nix_bin, profile, candidate_ref, registry_ref = sys.argv[1:]
+nix_bin, profile, candidate_ref, registry_ref, runtime_attr = sys.argv[1:]
 
 def run_json(args):
     completed = subprocess.run(
@@ -123,7 +141,7 @@ else:
     raise SystemExit(1)
 
 expected_original = "flake:" + registry_ref
-expected_attr = "packages.x86_64-linux.runtime-llama-cpp"
+expected_attr = "packages.x86_64-linux." + runtime_attr
 matches = [
     element
     for element in values
@@ -171,7 +189,7 @@ PY
         "$nix_bin" profile add \
           --profile "$profile" \
           --override-flake "$registry_ref" "$candidate_ref" \
-          "$registry_ref#runtime-llama-cpp"
+          "$registry_ref#$runtime_attr"
       fi
 
       if ! verify_llama_cpp; then
