@@ -17,6 +17,14 @@
       astrumweaver = pkgs.callPackage ./nix/package.nix { };
       integration = pkgs.callPackage ./nix/integration-package.nix { };
       runtimeLlamaCpp = runtimePkgs.llama-cpp-cuda;
+      qwen38LlamaCore = runtimePkgs.callPackage ./nix/qwen38-llama-cpp.nix { };
+      qwen38LlamaBridge = runtimePkgs.callPackage ./nix/qwen38-llama-driver-bridge.nix {
+        core = qwen38LlamaCore;
+      };
+      runtimeQwen38 = runtimePkgs.buildEnv {
+        name = "tsumgi-qwen38-llama-cpp-runtime";
+        paths = [ qwen38LlamaCore qwen38LlamaBridge ];
+      };
       runtimeProfileSupport = pkgs.callPackage ./nix/runtime-profile-support.nix {
         source = self;
       };
@@ -199,6 +207,7 @@
       packages.${system} = {
         inherit astrumweaver control worker installer integration;
         runtime-llama-cpp = runtimeLlamaCpp;
+        runtime-qwen38-llama-cpp = runtimeQwen38;
         decision-llama-cuda-sm61 = decisionLlamaCuda "61";
         decision-llama-cuda-sm86 = decisionLlamaCuda "86";
         default = astrumweaver;
@@ -239,6 +248,7 @@
           test -x ${installer}/bin/astrumweaver-runtime-profile
           ${installer}/bin/astrumweaver-runtime-profile --help >/dev/null
           ${installer}/bin/astrumweaver-runtime-profile status llama-cpp >/dev/null 2>&1 || test "$?" = 1
+          ${installer}/bin/astrumweaver-runtime-profile status qwen38-llama-cpp >/dev/null 2>&1 || test "$?" = 1
           test -x ${control}/bin/astrumweaver-control
           test -x ${control}/bin/astrumweaver-migrate
           test -x ${control}/bin/astrumweaver-setup-control-plane
