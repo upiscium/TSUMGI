@@ -17,7 +17,7 @@ TSUMGI supports **only** the explicitly pinned **PrismML Ternary-Bonsai-2-27B-PQ
 
 The runtime release and model are independent third-party sources. The GitHub archive is fixed-output-hashed at Nix build time. TSUMGI **does not automatically download a model in first-run setup**: preparation is `reference_only`. Verify the entire model with `sha256sum` and retain its operator-controlled local path before any activation. Filename validation is **not** a substitute for checking model contents or their SHA-256; a model manifest/reference audit must bind the expected hash.
 
-Only **PQ2_0 of Bonsai 2 27B** is qualified. PTQ1_0, Q2_0, later Bonsai, other sizes, generic TQ/PQ formats, embeddings and native decision heads have no support claim under this profile.
+Only **PQ2_0 of Bonsai 2 27B** is qualified. The 6873 MiB model-size estimate intentionally rounds the exact 7,206,168,928-byte weight file **up** to the next MiB; this is a conservative capacity floor. PTQ1_0, Q2_0, later Bonsai, other sizes, generic TQ/PQ formats, embeddings and native decision heads have no support claim under this profile.
 
 ## Separation and installation
 
@@ -48,7 +48,7 @@ This does *not* change an active Worker automatically. Select the normal `llama-
 
 ## Native security and lifecycle
 
-The derived `llama-server` wrapper uses **only a private 0700 host-`libcuda.so.1` shim** plus immutable Nix runtime libraries, refuses CUDA stub libraries and fails if no real driver is available. `env -i` prevents the native child from inheriting Worker/Control or cloud secrets; it passes only minimal environment values (selected GPU UUIDs, library paths, basic locale and temporary-dir controls). Host-wide physical GPU exclusivity is infrastructure responsibility; logical GPU ownership and preflight/fail-closed remain TSUMGI responsibilities.
+The derived `llama-server` wrapper uses **only a private 0700 host-`libcuda.so.1` shim** plus immutable Nix runtime libraries, refuses CUDA stub libraries and fails if no real driver is available. `env -i` prevents accidental direct environment inheritance of Worker/Control secrets, but is not a confidentiality boundary against a compromised same-UID native child; it passes only minimal environment values (selected GPU UUIDs, library paths, basic locale and temporary-dir controls). Host-wide physical GPU exclusivity is infrastructure responsibility; logical GPU ownership and preflight/fail-closed remain TSUMGI responsibilities.
 
 These protections do **not** establish hostile same-UID isolation or secure multi-tenant localhost service access. That stricter trust boundary remains deferred in [#149](https://github.com/upiscium/TSUMGI/issues/149). Release 0.1.0 service behavior, credentials, worker configuration and native model content are not modified by building this package.
 

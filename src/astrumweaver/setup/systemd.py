@@ -53,9 +53,6 @@ GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER = (
 GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE = (
     "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server"
 )
-GENERIC_SYSTEMD_BONSAI_EXECUTABLE = (
-    "/nix/var/nix/profiles/astrumweaver-runtime-bonsai/bin/llama-server"
-)
 
 _PROVIDER_EXECUTABLES: Mapping[str, str] = {
     "ollama": "ollama",

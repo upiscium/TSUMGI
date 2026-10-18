@@ -399,3 +399,72 @@ def test_bonsai_pins_verified_native_tool_and_memory_flags() -> None:
     ).process.command()
     assert "--reasoning" not in args
     assert "--flash-attn" not in args
+
+
+def test_default_upstream_reviewed_intent_remains_schema_stable() -> None:
+    upstream = LlamaCppProvider()
+    intent = upstream.setup_intent(_ctx(model_ref="/models/upstream-Q4_K_M.gguf"))
+    assert "runtime_flavor" not in intent.configuration
+    assert intent.package_references == ("llama-cpp",)
+    assert intent.configuration["executable"] == "llama-server"
+
+
+def test_upstream_flavor_rejects_bonsai_pinned_executable_or_package() -> None:
+    with pytest.raises(ValueError, match="upstream llama.cpp cannot use"):
+        LlamaCppProviderConfig(
+            runtime_flavor="upstream", executable=LLAMA_CPP_BONSAI_RUNTIME
+        )
+    with pytest.raises(ValueError, match="upstream llama.cpp cannot use"):
+        LlamaCppProviderConfig(
+            runtime_flavor="upstream", package_reference=LLAMA_CPP_BONSAI_PACKAGE
+        )
+
+
+def test_tampered_bonsai_setup_package_is_rejected() -> None:
+    provider = LlamaCppProvider(LlamaCppProviderConfig(runtime_flavor="bonsai2-pq2"))
+    ctx = _ctx()
+    setup = provider.setup_intent(ctx)
+    with pytest.raises(ValueError, match="only the pinned Nix package"):
+        provider.create_runtime(
+            ctx,
+            replace(setup, package_references=("llama-cpp",)),
+        )
+
+
+@pytest.mark.asyncio
+async def test_managed_bonsai_hash_failure_prevents_native_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock
+    import astrumweaver.runtime.providers.llama_cpp as native
+
+    provider = LlamaCppProvider(LlamaCppProviderConfig(runtime_flavor="bonsai2-pq2"))
+    ctx = _ctx()
+    runtime = provider.create_runtime(ctx, provider.setup_intent(ctx))
+    monkeypatch.setattr(runtime.api, "health", AsyncMock(return_value=False))
+    called = AsyncMock()
+    monkeypatch.setattr(runtime.process, "start", called)
+
+    def reject(_: str) -> None:
+        raise RuntimeError("Bonsai 2 model SHA-256 does not match pinned artifact")
+
+    monkeypatch.setattr(native, "_verify_bonsai_model_bytes", reject)
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        await runtime.start()
+    called.assert_not_awaited()
+
+
+def test_bonsai_disk_size_floor_is_ceil_of_verified_bytes() -> None:
+    import math
+    import astrumweaver.runtime.providers.llama_cpp as native
+    assert math.ceil(native.LLAMA_CPP_BONSAI_MODEL_SIZE_BYTES / (1024 * 1024)) == 6873
+    assert LlamaCppProvider(
+        LlamaCppProviderConfig(runtime_flavor="bonsai2-pq2")
+    ).compatibility(_ctx(estimated_size_mb=6873)).compatible
+
+
+def test_cuda_driver_wrapper_requires_trusted_root_owned_library() -> None:
+    root=Path(__file__).resolve().parents[1]
+    bridge=(root/"nix/bonsai-llama-driver-bridge.nix").read_text()
+    assert "cuda_driver_library_is_not_root_owned_read_only" in bridge
+    assert 'stat -c %u' in bridge and 'stat -c %a' in bridge

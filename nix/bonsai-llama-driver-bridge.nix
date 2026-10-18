@@ -30,6 +30,11 @@ writeShellApplication {
       echo "tsumgi-bonsai: cuda_stub_is_not_a_driver" >&2
       exit 65
     fi
+    driver_mode="$(stat -c %a -- "$driver")"
+    if [[ "$(stat -c %u -- "$driver")" != "0" ]] || (( (8#$driver_mode & 18) != 0 )); then
+      echo "tsumgi-bonsai: cuda_driver_library_is_not_root_owned_read_only" >&2
+      exit 65
+    fi
     private="$(mktemp -d -t tsumgi-bonsai-cuda.XXXXXXXX)"
     chmod 700 "$private"
     ln -s -- "$driver" "$private/libcuda.so.1"

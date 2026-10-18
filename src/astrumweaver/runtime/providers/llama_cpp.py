@@ -262,6 +262,11 @@ class LlamaCppProviderConfig:
                 raise ValueError("Bonsai 2 is qualified for Chat/Tool Call only")
             if self.context_size < 8192:
                 object.__setattr__(self, "context_size", 8192)
+        elif (
+            self.executable == LLAMA_CPP_BONSAI_RUNTIME
+            or self.package_reference == LLAMA_CPP_BONSAI_PACKAGE
+        ):
+            raise ValueError("upstream llama.cpp cannot use the pinned Bonsai runtime")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2136,7 +2141,11 @@ class LlamaCppProvider(RuntimeProvider):
             configuration={
                 "base_url": self.config.base_url,
                 "executable": self.config.executable,
-                "runtime_flavor": self.config.runtime_flavor,
+                **(
+                    {"runtime_flavor": "bonsai2-pq2"}
+                    if self.config.runtime_flavor == "bonsai2-pq2"
+                    else {}
+                ),
                 "model_ref": context.demand.model.model_ref,
                 "model_alias": "astrumweaver",
                 "context_size": self.config.context_size,
@@ -2196,6 +2205,8 @@ class LlamaCppProvider(RuntimeProvider):
         if cfg.get("runtime_flavor", "upstream") != self.config.runtime_flavor:
             raise ValueError("runtime flavor does not match reviewed setup")
         if self.config.runtime_flavor == "bonsai2-pq2":
+            if setup.package_references != (LLAMA_CPP_BONSAI_PACKAGE,):
+                raise ValueError("Bonsai setup must reference only the pinned Nix package")
             if cfg.get("executable", self.config.executable) != LLAMA_CPP_BONSAI_RUNTIME:
                 raise ValueError("Bonsai executable differs from pinned Nix runtime")
             if Path(str(cfg.get("model_ref", ""))).name != LLAMA_CPP_BONSAI_MODEL_NAME:
