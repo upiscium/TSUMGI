@@ -38,6 +38,32 @@ writeShellApplication {
     private="$(mktemp -d -t tsumgi-bonsai-cuda.XXXXXXXX)"
     chmod 700 "$private"
     ln -s -- "$driver" "$private/libcuda.so.1"
+    # CUDA may dlopen the PTX JIT compiler after llama.cpp initialises.
+    # A private libcuda-only bridge passes --version but fails at GPU load
+    # with "PTX JIT compiler library not found" on Pascal GPUs.
+    # Include the host-matched NVVM companion of the PTX JIT compiler.
+    for soname in libnvidia-ptxjitcompiler.so.1 libnvidia-nvvm.so.4; do
+      companion=""
+      for candidate in "$(dirname -- "$driver")/$soname" \
+                       /run/opengl-driver/lib/"$soname" \
+                       /usr/lib/x86_64-linux-gnu/"$soname" \
+                       /lib/x86_64-linux-gnu/"$soname"; do
+        if [[ -f "$candidate" ]]; then
+          companion="$(readlink -f -- "$candidate")"
+          break
+        fi
+      done
+      if [[ -z "$companion" || ! -f "$companion" || "$companion" == */stubs/* ]]; then
+        echo "tsumgi-bonsai: required_nvidia_driver_companion_unavailable: $soname" >&2
+        exit 65
+      fi
+      companion_mode="$(stat -c %a -- "$companion")"
+      if [[ "$(stat -c %u -- "$companion")" != "0" ]] || (( (8#$companion_mode & 18) != 0 )); then
+        echo "tsumgi-bonsai: nvidia_driver_companion_not_root_owned_read_only: $soname" >&2
+        exit 65
+      fi
+      ln -s -- "$companion" "$private/$soname"
+    done
     runtime_env=(
       "LD_LIBRARY_PATH=$private:${core}/lib/tsumgi-bonsai:${libraries}"
       "PATH=$PATH"

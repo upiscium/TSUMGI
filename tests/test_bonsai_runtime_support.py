@@ -468,3 +468,12 @@ def test_cuda_driver_wrapper_requires_trusted_root_owned_library() -> None:
     bridge=(root/"nix/bonsai-llama-driver-bridge.nix").read_text()
     assert "cuda_driver_library_is_not_root_owned_read_only" in bridge
     assert 'stat -c %u' in bridge and 'stat -c %a' in bridge
+
+def test_bonsai_nix_bridge_passes_pinned_nvidia_ptx_jit_and_nvvm_libraries() -> None:
+    """Actual Pascal native model loading needs companions beyond libcuda."""
+    bridge = (Path(__file__).resolve().parents[1] / "nix/bonsai-llama-driver-bridge.nix").read_text()
+    assert "libnvidia-ptxjitcompiler.so.1" in bridge
+    assert "libnvidia-nvvm.so.4" in bridge
+    assert "required_nvidia_driver_companion_unavailable" in bridge
+    assert "nvidia_driver_companion_not_root_owned_read_only" in bridge
+    assert '"$private/$soname"' in bridge
