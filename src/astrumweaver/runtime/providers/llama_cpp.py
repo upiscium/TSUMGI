@@ -6,6 +6,8 @@ import asyncio
 import contextlib
 import json
 import os
+import hashlib
+import stat
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -63,12 +65,39 @@ from ..contracts import (
 LLAMA_CPP_PROVIDER_ID = "llama-cpp"
 # Official opt-in scope. No other Bonsai packing is qualified in this revision.
 LLAMA_CPP_BONSAI_MODEL_NAME = "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+LLAMA_CPP_BONSAI_MODEL_SHA256 = "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1"
+LLAMA_CPP_BONSAI_MODEL_SIZE_BYTES = 7206168928
 LLAMA_CPP_BONSAI_RUNTIME = "/nix/var/nix/profiles/astrumweaver-runtime-bonsai/bin/llama-server"
 LLAMA_CPP_BONSAI_PACKAGE = "bonsai-llama-cpp"
 LLAMA_CPP_STANDARD_RUNTIME = "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server"
 LLAMA_CPP_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
 LLAMA_CPP_EMBEDDING_CAPABILITIES = frozenset({"text.embed"})
 LLAMA_CPP_DECISION_CAPABILITIES = frozenset({"decision.system_one"})
+
+
+def _verify_bonsai_model_bytes(model_ref: str) -> None:
+    """Fail closed if the loaded PQ2_0 bytes are not the reviewed artifact.
+
+    This is checked before each owned child launch and never relies on a
+    model basename alone. The surrounding LXC is an operator-trusted scope;
+    this is not a TOCTOU-proof hostile same-UID filesystem guarantee.
+    """
+    path = Path(model_ref)
+    try:
+        with path.open("rb") as handle:
+            model_stat = os.fstat(handle.fileno())
+            if (
+                not stat.S_ISREG(model_stat.st_mode)
+                or model_stat.st_size != LLAMA_CPP_BONSAI_MODEL_SIZE_BYTES
+            ):
+                raise RuntimeError("Bonsai 2 model size/format does not match the pinned artifact")
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise RuntimeError("Bonsai 2 pinned model cannot be read") from exc
+    if digest.hexdigest() != LLAMA_CPP_BONSAI_MODEL_SHA256:
+        raise RuntimeError("Bonsai 2 model SHA-256 does not match pinned artifact")
 
 
 def _nonblank(value: str, field_name: str) -> str:
@@ -231,6 +260,8 @@ class LlamaCppProviderConfig:
             object.__setattr__(self, "jinja", True)
             if self.embeddings or self.decision:
                 raise ValueError("Bonsai 2 is qualified for Chat/Tool Call only")
+            if self.context_size < 8192:
+                object.__setattr__(self, "context_size", 8192)
 
 
 @dataclass(frozen=True, slots=True)
@@ -538,6 +569,8 @@ class LlamaCppSubprocessController:
         pooling: str | None = None,
         api_key_file: str | None = None,
         unix_socket_path: str | None = None,
+        reasoning_off: bool = False,
+        flash_attn: bool = False,
     ) -> None:
         if api_key_file is not None and not Path(api_key_file).is_absolute():
             raise ValueError("llama.cpp API-key file must be absolute")
@@ -562,6 +595,8 @@ class LlamaCppSubprocessController:
         self.chat_template_file = chat_template_file
         self.embeddings = embeddings
         self.pooling = pooling
+        self.reasoning_off = reasoning_off
+        self.flash_attn = flash_attn
         self._process: asyncio.subprocess.Process | None = None
 
     @property
@@ -605,6 +640,10 @@ class LlamaCppSubprocessController:
             args.extend(["--api-key-file", self.api_key_file])
         if self.jinja:
             args.append("--jinja")
+        if self.reasoning_off:
+            args.extend(["--reasoning", "off"])
+        if self.flash_attn:
+            args.extend(["--flash-attn", "on"])
         if self.chat_template_file is not None:
             args.extend(
                 ["--chat-template-file", self.chat_template_file]
@@ -1600,9 +1639,11 @@ class LlamaCppManagedRuntime(ManagedRuntime):
         embeddings: bool = False,
         pooling: str | None = None,
         decision: bool = False,
+        verify_bonsai_artifact: bool = False,
     ) -> None:
         self.api = api
         self.process = process
+        self.verify_bonsai_artifact = verify_bonsai_artifact
         self.context = context
         self.model_ref = model_ref
         self.model_alias = model_alias
@@ -1648,6 +1689,8 @@ class LlamaCppManagedRuntime(ManagedRuntime):
             raise RuntimeError(
                 "an external llama.cpp server is already using the configured endpoint"
             )
+        if self.verify_bonsai_artifact and not self.process.running:
+            await asyncio.to_thread(_verify_bonsai_model_bytes, self.model_ref)
 
         started_here = False
         if not self.process.running:
@@ -2052,6 +2095,16 @@ class LlamaCppProvider(RuntimeProvider):
                     code="bonsai-gpu-required",
                     message="Bonsai 2 GPU qualification requires a selected GPU",
                 ))
+            if demand.gpu_topology is not GPUTopology.SINGLE_GPU or resources.gpu_count != 1:
+                reasons.append(CompatibilityReason(
+                    code="bonsai-single-gpu-only",
+                    message="Initial Bonsai 2 PQ2_0 acceptance requires exactly one GPU",
+                ))
+            if demand.residency_policy is not ResidencyPolicy.VRAM_ONLY:
+                reasons.append(CompatibilityReason(
+                    code="bonsai-vram-only",
+                    message="Initial Bonsai 2 PQ2_0 acceptance requires vram_only",
+                ))
             if model.estimated_size_mb is not None and model.estimated_size_mb < 6873:
                 reasons.append(CompatibilityReason(
                     code="bonsai-model-size-understated",
@@ -2147,6 +2200,20 @@ class LlamaCppProvider(RuntimeProvider):
                 raise ValueError("Bonsai executable differs from pinned Nix runtime")
             if Path(str(cfg.get("model_ref", ""))).name != LLAMA_CPP_BONSAI_MODEL_NAME:
                 raise ValueError("Bonsai model differs from qualified PQ2_0 reference")
+            if str(cfg.get("model_ref", "")) != context.demand.model.model_ref:
+                raise ValueError("Bonsai model path differs from reviewed demand")
+            if cfg.get("gpu_layers") != "all" or cfg.get("fit") is not False:
+                raise ValueError("Bonsai requires full-VRAM GPU layers and fit=off")
+            if str(cfg.get("split_mode")) != "none":
+                raise ValueError("Bonsai requires single-GPU no-split placement")
+            if cfg.get("tensor_split") is not None:
+                raise ValueError("Bonsai does not support tensor-split deployment")
+            if cfg.get("jinja") is not True:
+                raise ValueError("Bonsai requires Jinja structured-tool support")
+            if cfg.get("offline") is not True or cfg.get("no_webui") is not True:
+                raise ValueError("Bonsai requires offline native runtime with no Web UI")
+            if int(cfg.get("context_size", 0)) < 8192:
+                raise ValueError("Bonsai Coding Leaf requires at least 8192 context tokens")
         base_url = str(cfg.get("base_url") or self.config.base_url)
         model_ref = str(
             cfg.get("model_ref") or context.demand.model.model_ref
@@ -2256,6 +2323,11 @@ class LlamaCppProvider(RuntimeProvider):
             chat_template_file=chat_template_file,
             embeddings=embeddings,
             pooling=pooling,
+            **(
+                {"reasoning_off": True, "flash_attn": True}
+                if self.config.runtime_flavor == "bonsai2-pq2"
+                else {}
+            ),
         )
 
         return LlamaCppManagedRuntime(
@@ -2270,4 +2342,5 @@ class LlamaCppProvider(RuntimeProvider):
             embeddings=embeddings,
             pooling=pooling,
             decision=decision,
+            verify_bonsai_artifact=self.config.runtime_flavor == "bonsai2-pq2",
         )

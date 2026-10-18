@@ -65,3 +65,9 @@ Before promoting this runtime to a live Worker, independently qualify an **actua
 - `bonsai-model-size-understated`: review the actual immutable model file and set a correct conservative capacity estimate.
 - `cuda_driver_library_unavailable` or `cuda_stub_is_not_a_driver`: verify native host driver exposure, not a CUDA SDK stub. Do not patch global dynamic linker paths.
 - `invalid-profile` or `candidate-mismatch`: keep the existing profile intact, inspect Nix profile provenance and review the exact installer candidate. Do not `nix profile upgrade` an unmanaged path or silently fall back to upstream.
+
+## Verified safeguards for the Coding Leaf
+
+The Bonsai-specific provider validates the entire GGUF by byte count and SHA-256 against the qualified PQ2_0 artifact before every owned native child start. Renaming an unrelated file to the supported basename is insufficient to pass. This check protects the trusted-LXC deployment workflow; it is not a hostile same-UID TOCTOU proof.
+
+Real Control-to-Worker-to-OpenCode trials found that a 4,096-token context can exhaust the generation budget and fail to complete. The supported Coding Leaf configuration therefore requires at least **8,192 context tokens**, Jinja tool templates, full-GPU offload without automatic fitting, and the observed PrismML arguments **--reasoning off** and **--flash-attn on**. The initial 8,192-token Control E2E passed a single-file edit; multi-file E2E completion is a separate acceptance gate and must not be inferred from native direct-CLI successes.

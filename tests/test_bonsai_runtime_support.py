@@ -282,3 +282,120 @@ def test_systemd_driver_maps_the_provider_to_managed_nix_profile_manager(
     driver = create_systemd_driver()
     assert driver.installers["llama-cpp"] == (str(manager), "ensure")
     assert driver.verifiers["llama-cpp"] == (str(manager), "verify")
+
+
+def test_bonsai_model_bytes_must_match_exact_size_and_sha256(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hashlib
+    import astrumweaver.runtime.providers.llama_cpp as native
+
+    local_model = tmp_path / native.LLAMA_CPP_BONSAI_MODEL_NAME
+    local_model.write_bytes(b"incorrect")
+    with pytest.raises(RuntimeError, match="model size"):
+        native._verify_bonsai_model_bytes(str(local_model))
+
+    expected = b"CORRECT_PINNED"
+    monkeypatch.setattr(native, "LLAMA_CPP_BONSAI_MODEL_SIZE_BYTES", len(expected))
+    monkeypatch.setattr(
+        native, "LLAMA_CPP_BONSAI_MODEL_SHA256", hashlib.sha256(expected).hexdigest()
+    )
+
+    local_model.write_bytes(b"incorrect_data")
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        native._verify_bonsai_model_bytes(str(local_model))
+
+    local_model.write_bytes(expected)
+    native._verify_bonsai_model_bytes(str(local_model))
+    with pytest.raises(RuntimeError, match="cannot be read"):
+        native._verify_bonsai_model_bytes(str(tmp_path / "missing.gguf"))
+
+
+def test_bonsai_requires_vram_only_and_a_single_gpu() -> None:
+    provider = LlamaCppProvider(LlamaCppProviderConfig(runtime_flavor="bonsai2-pq2"))
+    from dataclasses import replace
+
+    base = _ctx()
+    different = replace(
+        base,
+        demand=replace(base.demand, residency_policy=ResidencyPolicy.PREFER_VRAM),
+    )
+    report = provider.compatibility(different)
+    assert "bonsai-vram-only" in {reason.code for reason in report.reasons}
+    assert not report.compatible
+
+    another_gpu = replace(
+        base,
+        worker=replace(
+            base.worker,
+            resources=ResourceShape(
+                gpu_count=2,
+                total_vram_mb=22528,
+                max_single_gpu_vram_mb=11264,
+            ),
+            gpu_uuids=("GPU-test-one", "GPU-test-two"),
+        ),
+        demand=replace(
+            base.demand,
+            gpu_topology=GPUTopology.MULTI_GPU,
+            min_gpu_count=2,
+        ),
+    )
+    report = provider.compatibility(another_gpu)
+    assert "bonsai-single-gpu-only" in {reason.code for reason in report.reasons}
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("model_ref", "/other/Ternary-Bonsai-2-27B-PQ2_0.gguf", "model path"),
+        ("gpu_layers", 0, "full-VRAM"),
+        ("fit", True, "full-VRAM"),
+        ("jinja", False, "Jinja"),
+        ("offline", False, "offline"),
+        ("no_webui", False, "offline"),
+        ("context_size", 4096, "at least 8192"),
+    ],
+)
+def test_reviewed_bonsai_setup_rejects_tampered_runtime_settings(
+    field: str, value: object, expected: str,
+) -> None:
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(runtime_flavor="bonsai2-pq2")
+    )
+    ctx = _ctx()
+    setup = provider.setup_intent(ctx)
+    data = dict(setup.configuration)
+    data[field] = value
+    with pytest.raises(ValueError, match=expected):
+        provider.create_runtime(ctx, replace(setup, configuration=data))
+
+
+def test_bonsai_flavor_sets_coding_context_minimum() -> None:
+    assert LlamaCppProviderConfig(runtime_flavor="bonsai2-pq2").context_size == 8192
+    assert LlamaCppProviderConfig(
+        runtime_flavor="bonsai2-pq2", context_size=32768
+    ).context_size == 32768
+    assert LlamaCppProviderConfig().context_size == 4096
+
+
+def test_bonsai_pins_verified_native_tool_and_memory_flags() -> None:
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(runtime_flavor="bonsai2-pq2")
+    )
+    ctx = _ctx()
+    command = provider.create_runtime(
+        ctx, provider.setup_intent(ctx)
+    ).process.command()
+    assert command[command.index("--reasoning") + 1] == "off"
+    assert command[command.index("--flash-attn") + 1] == "on"
+    assert command[command.index("--ctx-size") + 1] == "8192"
+    assert "--jinja" in command
+
+    unqualified = _ctx(model_ref="/models/upstream-qwen.gguf")
+    upstream = LlamaCppProvider()
+    args = upstream.create_runtime(
+        unqualified, upstream.setup_intent(unqualified)
+    ).process.command()
+    assert "--reasoning" not in args
+    assert "--flash-attn" not in args
