@@ -61,6 +61,11 @@ from ..contracts import (
 
 
 LLAMA_CPP_PROVIDER_ID = "llama-cpp"
+# Official opt-in scope. No other Bonsai packing is qualified in this revision.
+LLAMA_CPP_BONSAI_MODEL_NAME = "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+LLAMA_CPP_BONSAI_RUNTIME = "/nix/var/nix/profiles/astrumweaver-runtime-bonsai/bin/llama-server"
+LLAMA_CPP_BONSAI_PACKAGE = "bonsai-llama-cpp"
+LLAMA_CPP_STANDARD_RUNTIME = "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server"
 LLAMA_CPP_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
 LLAMA_CPP_EMBEDDING_CAPABILITIES = frozenset({"text.embed"})
 LLAMA_CPP_DECISION_CAPABILITIES = frozenset({"decision.system_one"})
@@ -104,6 +109,8 @@ class LlamaCppProviderConfig:
     embeddings: bool = False
     pooling: str | None = None
     decision: bool = False
+    # upstream is unchanged; Bonsai 2 is a separate, pinned Nix binary flavor.
+    runtime_flavor: str = "upstream"
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -206,6 +213,24 @@ class LlamaCppProviderConfig:
             value = getattr(self, field_name)
             if value is not None and value < 0:
                 raise ValueError(f"{field_name} must not be negative")
+
+        if self.runtime_flavor not in {"upstream", "bonsai2-pq2"}:
+            raise ValueError("unsupported llama.cpp runtime_flavor")
+        if self.runtime_flavor == "bonsai2-pq2":
+            if self.executable not in {
+                "llama-server",
+                LLAMA_CPP_STANDARD_RUNTIME,
+                LLAMA_CPP_BONSAI_RUNTIME,
+            }:
+                raise ValueError("Bonsai 2 requires the pinned Nix runtime executable")
+            if self.package_reference not in {"llama-cpp", LLAMA_CPP_BONSAI_PACKAGE}:
+                raise ValueError("Bonsai 2 requires the pinned Nix runtime package")
+            object.__setattr__(self, "executable", LLAMA_CPP_BONSAI_RUNTIME)
+            object.__setattr__(self, "package_reference", LLAMA_CPP_BONSAI_PACKAGE)
+            # Real OpenCode structured tools rely on llama.cpp Jinja templates.
+            object.__setattr__(self, "jinja", True)
+            if self.embeddings or self.decision:
+                raise ValueError("Bonsai 2 is qualified for Chat/Tool Call only")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2010,6 +2035,33 @@ class LlamaCppProvider(RuntimeProvider):
                     )
                 )
 
+        model_name = Path(model.model_ref).name
+        if self.config.runtime_flavor == "bonsai2-pq2":
+            if model_name != LLAMA_CPP_BONSAI_MODEL_NAME:
+                reasons.append(CompatibilityReason(
+                    code="bonsai-model-not-qualified",
+                    message="Only the pinned Bonsai 2 27B PQ2_0 GGUF is qualified",
+                ))
+            if model.topology is not ModelTopology.DENSE:
+                reasons.append(CompatibilityReason(
+                    code="bonsai-topology-mismatch",
+                    message="Bonsai 2 27B PQ2_0 is a dense model",
+                ))
+            if resources.gpu_count == 0:
+                reasons.append(CompatibilityReason(
+                    code="bonsai-gpu-required",
+                    message="Bonsai 2 GPU qualification requires a selected GPU",
+                ))
+            if model.estimated_size_mb is not None and model.estimated_size_mb < 6873:
+                reasons.append(CompatibilityReason(
+                    code="bonsai-model-size-understated",
+                    message="Bonsai PQ2_0 is at least 6873 MiB on disk",
+                ))
+        elif model_name == LLAMA_CPP_BONSAI_MODEL_NAME:
+            reasons.append(CompatibilityReason(
+                code="bonsai-specialized-runtime-required",
+                message="Bonsai PQ2_0 must use the pinned Bonsai backend, not upstream llama.cpp",
+            ))
         return RuntimeCompatibility(
             provider_id=LLAMA_CPP_PROVIDER_ID,
             reasons=tuple(reasons),
@@ -2031,6 +2083,7 @@ class LlamaCppProvider(RuntimeProvider):
             configuration={
                 "base_url": self.config.base_url,
                 "executable": self.config.executable,
+                "runtime_flavor": self.config.runtime_flavor,
                 "model_ref": context.demand.model.model_ref,
                 "model_alias": "astrumweaver",
                 "context_size": self.config.context_size,
@@ -2087,6 +2140,13 @@ class LlamaCppProvider(RuntimeProvider):
             )
 
         cfg = dict(setup.configuration)
+        if cfg.get("runtime_flavor", "upstream") != self.config.runtime_flavor:
+            raise ValueError("runtime flavor does not match reviewed setup")
+        if self.config.runtime_flavor == "bonsai2-pq2":
+            if cfg.get("executable", self.config.executable) != LLAMA_CPP_BONSAI_RUNTIME:
+                raise ValueError("Bonsai executable differs from pinned Nix runtime")
+            if Path(str(cfg.get("model_ref", ""))).name != LLAMA_CPP_BONSAI_MODEL_NAME:
+                raise ValueError("Bonsai model differs from qualified PQ2_0 reference")
         base_url = str(cfg.get("base_url") or self.config.base_url)
         model_ref = str(
             cfg.get("model_ref") or context.demand.model.model_ref
