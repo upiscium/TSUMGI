@@ -17,6 +17,7 @@ def test_qwen38_upstream_runtime_is_separately_pinned() -> None:
     assert "astrumweaver-runtime-qwen38" in manager
     assert "astrumweaver-runtime-llama-cpp" in manager
     assert "env -i" in bridge
+    assert '--reasoning off --flash-attn on &' in bridge
     assert "cuda_stub_is_not_a_driver" in bridge
     assert "cuda_driver_library_unavailable" in bridge
     assert "PrismML" not in core

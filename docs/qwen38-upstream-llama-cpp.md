@@ -14,7 +14,7 @@ This package adds an **opt-in, pinned, upstream** `ggml-org/llama.cpp` CUDA runt
 | Model SHA-256 | `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482` |
 | License | upstream llama.cpp MIT; Qwen3.8 model Apache-2.0 as declared by model provider |
 
-The Nix package uses the SHA-256-pinned CUDA 12.8 binary release and immutable CUDA runtime libraries from this flake's nixpkgs. It uses the host NVIDIA driver `libcuda.so.1` only via a temporary 0700 shim, rejecting missing/stub drivers, stripping inherited Worker secrets from the child process. CUDA 12.9 SONAME-compatible runtime and cublas from the pinned Nix closure were validated on sirius RTX 3060 SM86; do not claim broad architecture support.
+The Qwen3.8-specific Nix wrapper enforces reasoning=off and flash-attn=on after the Provider arguments, mirroring the tested native/OpenCode configuration. The Nix package uses the SHA-256-pinned CUDA 12.8 binary release and immutable CUDA runtime libraries from this flake's nixpkgs. It uses the host NVIDIA driver `libcuda.so.1` only via a temporary 0700 shim, rejecting missing/stub drivers, stripping inherited Worker secrets from the child process. CUDA 12.9 SONAME-compatible runtime and cublas from the pinned Nix closure were validated on sirius RTX 3060 SM86; do not claim broad architecture support.
 
 ## Installation and rollback
 

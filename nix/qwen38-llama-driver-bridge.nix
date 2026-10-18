@@ -64,7 +64,7 @@ writeShellApplication {
     trap 'exit 143' TERM
     trap 'exit 130' INT
     trap 'exit 129' HUP
-    env -i "''${runtime_env[@]}" "${core}/lib/tsumgi-qwen38/llama-server" "$@" &
+    env -i "''${runtime_env[@]}" "${core}/lib/tsumgi-qwen38/llama-server" "$@" --reasoning off --flash-attn on &
     child=$!
     wait "$child"
   '';
