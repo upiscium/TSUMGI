@@ -476,4 +476,7 @@ def test_bonsai_nix_bridge_passes_pinned_nvidia_ptx_jit_and_nvvm_libraries() -> 
     assert "libnvidia-nvvm.so.4" in bridge
     assert "required_nvidia_driver_companion_unavailable" in bridge
     assert "nvidia_driver_companion_not_root_owned_read_only" in bridge
-    assert '"$private/$soname"' in bridge
+    assert '"$private/libnvidia-ptxjitcompiler.so.1"' in bridge
+    assert '"$private/libnvidia-nvvm.so.4"' in bridge
+    assert "nvidia_driver_version_mismatch" in bridge
+    assert "ptx_companion" in bridge and "nvvm_companion" in bridge
