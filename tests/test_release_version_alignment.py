@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # Only exact, real, quoted Nix attribute assignments count. A substring such
-# as 0.1.0pre2 or an extra comment must never satisfy the stable release gate.
+# as 0.1.1pre2 or an extra comment must never satisfy the exact RC identity.
 EXPECTED_NIX_PRODUCT_ATTRIBUTES = {
     "nix/package.nix": [("version", "0.1.1pre1")],
     "nix/integration-package.nix": [("version", "0.1.1pre1")],
@@ -114,7 +114,7 @@ def test_candidate_product_versions_reject_incorrect_full_attributes() -> None:
             original = f'{key} = "{value}";'
             assert original in data
             invalid = data.replace(original, f'{key} = "{value}pre2";', 1)
-            invalid += '\n# 0.1.0\n'
+            invalid += '\n# version = "0.1.1pre1";\n'
             try:
                 _assert_current_nix_product_attributes(path, invalid)
             except AssertionError:
@@ -168,6 +168,19 @@ def test_candidate_product_versions_ignore_indented_shell_decoys() -> None:
         pass
     else:
         raise AssertionError("indented string incorrectly satisfied GA identity")
+
+
+def test_rc_release_note_version_identity_matches_current_packages() -> None:
+    """Release notes must not describe a different Python/Nix release tier."""
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    doc = (ROOT / "docs/releases/v0.1.1-rc.1.md").read_text()
+    assert project["version"] == "0.1.1rc1"
+    assert "v0.1.1-rc.1" in doc
+    assert "astrumweaver==0.1.1rc1" in doc
+    assert "0.1.1pre1" in doc
+    assert "does not establish" in doc
+    assert "not included" in doc
+    assert "000–005 are unchanged" in doc
 
 
 def test_historical_rc_evidence_is_preserved_and_not_live_status() -> None:
