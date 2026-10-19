@@ -1,5 +1,6 @@
 """Validate v0.1.1 GA candidate versions while preserving published release history."""
 import re
+import hashlib
 import tomllib
 from pathlib import Path
 
@@ -198,10 +199,9 @@ def test_published_v011_rc_notes_remain_a_distinct_historical_artifact() -> None
     assert "0.1.1pre1" in rc
     assert "f49c0f9dd2f494b45c0d4a76c24eab80157832c7" in rc
     # Exact historical RC file hash is published in the RC provenance manifest.
-    import hashlib
     assert hashlib.sha256((ROOT / "docs/releases/v0.1.1-rc.1.md").read_bytes()).hexdigest() == (
         "f4dfd051aad2815a01982b85ddcaa2f381c8a0d4c6790e6c1d747ed0b2d46afc"
-    )
+    ), "Published v0.1.1-rc.1 historical release note has changed"
 
 
 def test_historical_rc_evidence_is_preserved_and_not_live_status() -> None:
