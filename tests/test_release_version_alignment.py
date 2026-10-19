@@ -175,12 +175,20 @@ def test_v011_ga_release_note_version_identity_matches_current_packages() -> Non
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     doc = (ROOT / "docs/releases/v0.1.1.md").read_text()
     assert project["version"] == "0.1.1"
-    assert "v0.1.1" in doc
-    assert "astrumweaver==0.1.1" in doc
-    assert "0.1.1" in doc
+    tick = chr(96)
+    assert "| Intended GitHub tag | " + tick + "v0.1.1" + tick in doc
+    assert "| Python distribution | " + tick + "astrumweaver==0.1.1" + tick + " |" in doc
+    assert (
+        "| Nix Control, Worker, Installer and integration packages | "
+        + tick + "0.1.1" + tick + " |"
+    ) in doc
+    identity_table = doc.split("## Identity, scope and version compatibility", 1)[1].split("## Opt-in",1)[0]
+    assert "0.1.1rc1" not in identity_table
+    assert "0.1.1pre1" not in identity_table
     assert "does not establish publication" in doc
-    assert "#158" in doc
+    assert "does not include unmerged upstream-Qwen3.8 packaging [#158]" in doc.replace("**", "")
     assert "000–005 are unchanged" in doc
+    assert "4 of 5" in doc
 
 
 def test_published_v011_rc_notes_remain_a_distinct_historical_artifact() -> None:
@@ -189,6 +197,11 @@ def test_published_v011_rc_notes_remain_a_distinct_historical_artifact() -> None
     assert "astrumweaver==0.1.1rc1" in rc
     assert "0.1.1pre1" in rc
     assert "f49c0f9dd2f494b45c0d4a76c24eab80157832c7" in rc
+    # Exact historical RC file hash is published in the RC provenance manifest.
+    import hashlib
+    assert hashlib.sha256((ROOT / "docs/releases/v0.1.1-rc.1.md").read_bytes()).hexdigest() == (
+        "f4dfd051aad2815a01982b85ddcaa2f381c8a0d4c6790e6c1d747ed0b2d46afc"
+    )
 
 
 def test_historical_rc_evidence_is_preserved_and_not_live_status() -> None:
