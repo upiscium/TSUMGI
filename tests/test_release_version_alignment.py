@@ -1,25 +1,26 @@
-"""Validate v0.1.1-rc.1 candidate versions while preserving v0.1.0 GA history."""
+"""Validate v0.1.1 GA candidate versions while preserving published release history."""
 import re
+import hashlib
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # Only exact, real, quoted Nix attribute assignments count. A substring such
-# as 0.1.1pre2 or an extra comment must never satisfy the exact RC identity.
+# as 0.1.1pre2 or an extra comment must never satisfy the exact GA identity.
 EXPECTED_NIX_PRODUCT_ATTRIBUTES = {
-    "nix/package.nix": [("version", "0.1.1pre1")],
-    "nix/integration-package.nix": [("version", "0.1.1pre1")],
+    "nix/package.nix": [("version", "0.1.1")],
+    "nix/integration-package.nix": [("version", "0.1.1")],
     "nix/control-support.nix": [
-        ("version", "0.1.1pre1"),
-        ("name", "astrumweaver-control-support-0.1.1pre1"),
+        ("version", "0.1.1"),
+        ("name", "astrumweaver-control-support-0.1.1"),
     ],
     "nix/worker-support.nix": [
-        ("name", "astrumweaver-worker-support-0.1.1pre1"),
+        ("name", "astrumweaver-worker-support-0.1.1"),
     ],
     "nix/installer-support.nix": [
-        ("version", "0.1.1pre1"),
-        ("name", "astrumweaver-installer-support-base-0.1.1pre1"),
-        ("name", "astrumweaver-installer-support-0.1.1pre1"),
+        ("version", "0.1.1"),
+        ("name", "astrumweaver-installer-support-base-0.1.1"),
+        ("name", "astrumweaver-installer-support-0.1.1"),
     ],
 }
 
@@ -96,25 +97,25 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
     assert actual == expected, (path, actual, expected)
 
 
-def test_candidate_product_versions_align_across_python_and_nix() -> None:
+def test_ga_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "astrumweaver"
-    assert project["version"] == "0.1.1rc1"
-    assert re.fullmatch(r"\d+\.\d+\.\d+rc\d+", project["version"])
+    assert project["version"] == "0.1.1"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
         _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
     assert (ROOT / "src/astrumweaver").is_dir()
     assert 'version = "0.6.0-dev-' in (ROOT / "nix/decision-llama-cuda.nix").read_text()
 
 
-def test_candidate_product_versions_reject_incorrect_full_attributes() -> None:
+def test_ga_candidate_product_versions_reject_incorrect_full_attributes() -> None:
     for path, assignments in EXPECTED_NIX_PRODUCT_ATTRIBUTES.items():
         data = (ROOT / path).read_text()
         for key, value in assignments:
             original = f'{key} = "{value}";'
             assert original in data
             invalid = data.replace(original, f'{key} = "{value}pre2";', 1)
-            invalid += '\n# version = "0.1.1pre1";\n'
+            invalid += '\n# version = "0.1.1";\n'
             try:
                 _assert_current_nix_product_attributes(path, invalid)
             except AssertionError:
@@ -123,7 +124,7 @@ def test_candidate_product_versions_reject_incorrect_full_attributes() -> None:
                 raise AssertionError((path, key, value, "wrong attribute was accepted"))
 
 
-def test_candidate_product_versions_ignore_comments_for_missing_declarations() -> None:
+def test_ga_candidate_product_versions_ignore_comments_for_missing_declarations() -> None:
     for path, assignments in EXPECTED_NIX_PRODUCT_ATTRIBUTES.items():
         data = (ROOT / path).read_text()
         key, value = assignments[0]
@@ -138,13 +139,13 @@ def test_candidate_product_versions_ignore_comments_for_missing_declarations() -
             raise AssertionError((path, "commented-out declaration was accepted"))
 
 
-def test_candidate_product_versions_ignore_nested_block_comment_decoys() -> None:
+def test_ga_candidate_product_versions_ignore_nested_block_comment_decoys() -> None:
     fake = (
-        '/* outer\n  /* inner */\n  version = "0.1.1pre1";\n*/\n'
+        '/* outer\n  /* inner */\n  version = "0.1.1";\n*/\n'
         '  version = "0.1.1pre2";\n'
     )
     mask = _nix_code_mask(fake)
-    assert not mask[fake.index('version = "0.1.1pre1"')]
+    assert not mask[fake.index('version = "0.1.1"')]
     try:
         _assert_current_nix_product_attributes("nix/package.nix", fake)
     except AssertionError:
@@ -153,15 +154,15 @@ def test_candidate_product_versions_ignore_nested_block_comment_decoys() -> None
         raise AssertionError("block comment incorrectly satisfied GA identity")
 
 
-def test_candidate_product_versions_ignore_indented_shell_decoys() -> None:
+def test_ga_candidate_product_versions_ignore_indented_shell_decoys() -> None:
     fake = (
         "installPhase = ''\n"
         '  cp migrations/*.sql /tmp/example\n'
-        '  version = "0.1.1pre1";\n'
+        '  version = "0.1.1";\n'
         "'';\n"
         '  version = "0.1.1pre2";\n'
     )
-    assert not _nix_code_mask(fake)[fake.index('version = "0.1.1pre1"')]
+    assert not _nix_code_mask(fake)[fake.index('version = "0.1.1"')]
     try:
         _assert_current_nix_product_attributes("nix/package.nix", fake)
     except AssertionError:
@@ -170,17 +171,37 @@ def test_candidate_product_versions_ignore_indented_shell_decoys() -> None:
         raise AssertionError("indented string incorrectly satisfied GA identity")
 
 
-def test_rc_release_note_version_identity_matches_current_packages() -> None:
+def test_v011_ga_release_note_version_identity_matches_current_packages() -> None:
     """Release notes must not describe a different Python/Nix release tier."""
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    doc = (ROOT / "docs/releases/v0.1.1-rc.1.md").read_text()
-    assert project["version"] == "0.1.1rc1"
-    assert "v0.1.1-rc.1" in doc
-    assert "astrumweaver==0.1.1rc1" in doc
-    assert "0.1.1pre1" in doc
-    assert "does not establish" in doc
-    assert "not included" in doc
+    doc = (ROOT / "docs/releases/v0.1.1.md").read_text()
+    assert project["version"] == "0.1.1"
+    tick = chr(96)
+    assert "| Intended GitHub tag | " + tick + "v0.1.1" + tick in doc
+    assert "| Python distribution | " + tick + "astrumweaver==0.1.1" + tick + " |" in doc
+    assert (
+        "| Nix Control, Worker, Installer and integration packages | "
+        + tick + "0.1.1" + tick + " |"
+    ) in doc
+    identity_table = doc.split("## Identity, scope and version compatibility", 1)[1].split("## Opt-in",1)[0]
+    assert "0.1.1rc1" not in identity_table
+    assert "0.1.1pre1" not in identity_table
+    assert "does not establish publication" in doc
+    assert "does not include unmerged upstream-Qwen3.8 packaging [#158]" in doc.replace("**", "")
     assert "000–005 are unchanged" in doc
+    assert "4 of 5" in doc
+
+
+def test_published_v011_rc_notes_remain_a_distinct_historical_artifact() -> None:
+    rc = (ROOT / "docs/releases/v0.1.1-rc.1.md").read_text()
+    assert "TSUMGI v0.1.1-rc.1" in rc
+    assert "astrumweaver==0.1.1rc1" in rc
+    assert "0.1.1pre1" in rc
+    assert "f49c0f9dd2f494b45c0d4a76c24eab80157832c7" in rc
+    # Exact historical RC file hash is published in the RC provenance manifest.
+    assert hashlib.sha256((ROOT / "docs/releases/v0.1.1-rc.1.md").read_bytes()).hexdigest() == (
+        "f4dfd051aad2815a01982b85ddcaa2f381c8a0d4c6790e6c1d747ed0b2d46afc"
+    ), "Published v0.1.1-rc.1 historical release note has changed"
 
 
 def test_historical_rc_evidence_is_preserved_and_not_live_status() -> None:
