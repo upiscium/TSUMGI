@@ -1,4 +1,4 @@
-"""Validate stable v0.1.0 product versions while preserving RC history and legacy ABI."""
+"""Validate v0.1.1-rc.1 candidate versions while preserving v0.1.0 GA history."""
 import re
 import tomllib
 from pathlib import Path
@@ -7,19 +7,19 @@ ROOT = Path(__file__).resolve().parents[1]
 # Only exact, real, quoted Nix attribute assignments count. A substring such
 # as 0.1.0pre2 or an extra comment must never satisfy the stable release gate.
 EXPECTED_NIX_PRODUCT_ATTRIBUTES = {
-    "nix/package.nix": [("version", "0.1.0")],
-    "nix/integration-package.nix": [("version", "0.1.0")],
+    "nix/package.nix": [("version", "0.1.1pre1")],
+    "nix/integration-package.nix": [("version", "0.1.1pre1")],
     "nix/control-support.nix": [
-        ("version", "0.1.0"),
-        ("name", "astrumweaver-control-support-0.1.0"),
+        ("version", "0.1.1pre1"),
+        ("name", "astrumweaver-control-support-0.1.1pre1"),
     ],
     "nix/worker-support.nix": [
-        ("name", "astrumweaver-worker-support-0.1.0"),
+        ("name", "astrumweaver-worker-support-0.1.1pre1"),
     ],
     "nix/installer-support.nix": [
-        ("version", "0.1.0"),
-        ("name", "astrumweaver-installer-support-base-0.1.0"),
-        ("name", "astrumweaver-installer-support-0.1.0"),
+        ("version", "0.1.1pre1"),
+        ("name", "astrumweaver-installer-support-base-0.1.1pre1"),
+        ("name", "astrumweaver-installer-support-0.1.1pre1"),
     ],
 }
 
@@ -80,7 +80,7 @@ def _nix_code_mask(source: str) -> bytearray:
     return mask
 
 
-def _assert_ga_nix_product_attributes(path: str, data: str) -> None:
+def _assert_current_nix_product_attributes(path: str, data: str) -> None:
     # Exact assignments must occur in active Nix code. A block comment, a
     # quoted literal or an indented shell string cannot supply a fake version.
     mask = _nix_code_mask(data)
@@ -96,18 +96,18 @@ def _assert_ga_nix_product_attributes(path: str, data: str) -> None:
     assert actual == expected, (path, actual, expected)
 
 
-def test_ga_product_versions_align_across_python_and_nix() -> None:
+def test_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "astrumweaver"
-    assert project["version"] == "0.1.0"
-    assert re.fullmatch(r"\d+\.\d+\.\d+", project["version"])
+    assert project["version"] == "0.1.1rc1"
+    assert re.fullmatch(r"\d+\.\d+\.\d+rc\d+", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
-        _assert_ga_nix_product_attributes(path, (ROOT / path).read_text())
+        _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
     assert (ROOT / "src/astrumweaver").is_dir()
     assert 'version = "0.6.0-dev-' in (ROOT / "nix/decision-llama-cuda.nix").read_text()
 
 
-def test_ga_product_versions_reject_incorrect_full_attributes() -> None:
+def test_candidate_product_versions_reject_incorrect_full_attributes() -> None:
     for path, assignments in EXPECTED_NIX_PRODUCT_ATTRIBUTES.items():
         data = (ROOT / path).read_text()
         for key, value in assignments:
@@ -116,14 +116,14 @@ def test_ga_product_versions_reject_incorrect_full_attributes() -> None:
             invalid = data.replace(original, f'{key} = "{value}pre2";', 1)
             invalid += '\n# 0.1.0\n'
             try:
-                _assert_ga_nix_product_attributes(path, invalid)
+                _assert_current_nix_product_attributes(path, invalid)
             except AssertionError:
                 pass
             else:
                 raise AssertionError((path, key, value, "wrong attribute was accepted"))
 
 
-def test_ga_product_versions_ignore_comments_for_missing_declarations() -> None:
+def test_candidate_product_versions_ignore_comments_for_missing_declarations() -> None:
     for path, assignments in EXPECTED_NIX_PRODUCT_ATTRIBUTES.items():
         data = (ROOT / path).read_text()
         key, value = assignments[0]
@@ -131,39 +131,39 @@ def test_ga_product_versions_ignore_comments_for_missing_declarations() -> None:
         assert original in data
         commented = data.replace(original, f'# {original}', 1)
         try:
-            _assert_ga_nix_product_attributes(path, commented)
+            _assert_current_nix_product_attributes(path, commented)
         except AssertionError:
             pass
         else:
             raise AssertionError((path, "commented-out declaration was accepted"))
 
 
-def test_ga_product_versions_ignore_nested_block_comment_decoys() -> None:
+def test_candidate_product_versions_ignore_nested_block_comment_decoys() -> None:
     fake = (
-        '/* outer\n  /* inner */\n  version = "0.1.0";\n*/\n'
-        '  version = "0.1.0pre2";\n'
+        '/* outer\n  /* inner */\n  version = "0.1.1pre1";\n*/\n'
+        '  version = "0.1.1pre2";\n'
     )
     mask = _nix_code_mask(fake)
-    assert not mask[fake.index('version = "0.1.0"')]
+    assert not mask[fake.index('version = "0.1.1pre1"')]
     try:
-        _assert_ga_nix_product_attributes("nix/package.nix", fake)
+        _assert_current_nix_product_attributes("nix/package.nix", fake)
     except AssertionError:
         pass
     else:
         raise AssertionError("block comment incorrectly satisfied GA identity")
 
 
-def test_ga_product_versions_ignore_indented_shell_decoys() -> None:
+def test_candidate_product_versions_ignore_indented_shell_decoys() -> None:
     fake = (
         "installPhase = ''\n"
         '  cp migrations/*.sql /tmp/example\n'
-        '  version = "0.1.0";\n'
+        '  version = "0.1.1pre1";\n'
         "'';\n"
-        '  version = "0.1.0pre2";\n'
+        '  version = "0.1.1pre2";\n'
     )
-    assert not _nix_code_mask(fake)[fake.index('version = "0.1.0"')]
+    assert not _nix_code_mask(fake)[fake.index('version = "0.1.1pre1"')]
     try:
-        _assert_ga_nix_product_attributes("nix/package.nix", fake)
+        _assert_current_nix_product_attributes("nix/package.nix", fake)
     except AssertionError:
         pass
     else:
