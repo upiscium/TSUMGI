@@ -1,4 +1,4 @@
-# Minimal host libcuda injection for upstream Qwen3.8. Rejects driver stubs
+# Minimal pinned host CUDA driver/companions for upstream Qwen3.8. Rejects driver stubs
 # and strips inherited Worker/Control secrets from the native child.
 { lib, writeShellApplication, coreutils, core, cudaPackages_12_9, stdenv, openssl }:
 let
@@ -30,9 +30,60 @@ writeShellApplication {
       echo "tsumgi-qwen38: cuda_stub_is_not_a_driver" >&2
       exit 65
     fi
+    driver_mode="$(stat -c %a -- "$driver")"
+    if [[ "$(stat -c %u -- "$driver")" != "0" ]] || (( (8#$driver_mode & 18) != 0 )); then
+      echo "tsumgi-qwen38: cuda_driver_library_is_not_root_owned_read_only" >&2
+      exit 65
+    fi
+    # Validate all host drivers before creating the private shim; failed
+    # preflight cannot leak an untrapped temporary directory.
+    driver_version="$(basename -- "$driver" | cut -d. -f3-)"
+    if [[ "$driver" != *.so.[0-9]* || -z "$driver_version" ]]; then
+      echo "tsumgi-qwen38: cuda_driver_version_unrecognized" >&2
+      exit 65
+    fi
+    ptx_companion=""
+    nvvm_companion=""
+    # CUDA may dlopen the PTX JIT compiler after llama.cpp initialises.
+    # A private libcuda-only bridge passes --version but fails at GPU load
+    # with "PTX JIT compiler library not found" on GPU targets without a matching precompiled CUDA kernel.
+    # Include the host-matched NVVM companion of the PTX JIT compiler.
+    for soname in libnvidia-ptxjitcompiler.so.1 libnvidia-nvvm.so.4; do
+      companion=""
+      for candidate in "$(dirname -- "$driver")/$soname" \
+                       /run/opengl-driver/lib/"$soname" \
+                       /usr/lib/x86_64-linux-gnu/"$soname" \
+                       /lib/x86_64-linux-gnu/"$soname"; do
+        if [[ -f "$candidate" ]]; then
+          companion="$(readlink -f -- "$candidate")"
+          break
+        fi
+      done
+      if [[ -z "$companion" || ! -f "$companion" || "$companion" == */stubs/* ]]; then
+        echo "tsumgi-qwen38: required_nvidia_driver_companion_unavailable: $soname" >&2
+        exit 65
+      fi
+      companion_mode="$(stat -c %a -- "$companion")"
+      if [[ "$(stat -c %u -- "$companion")" != "0" ]] || (( (8#$companion_mode & 18) != 0 )) || [[ ! -r "$companion" ]]; then
+        echo "tsumgi-qwen38: nvidia_driver_companion_not_root_owned_read_only: $soname" >&2
+        exit 65
+      fi
+      companion_version="$(basename -- "$companion" | cut -d. -f3-)"
+      if [[ "$companion_version" != "$driver_version" ]]; then
+        echo "tsumgi-qwen38: nvidia_driver_version_mismatch: $soname" >&2
+        exit 65
+      fi
+      if [[ "$soname" == libnvidia-ptxjitcompiler.so.1 ]]; then
+        ptx_companion="$companion"
+      else
+        nvvm_companion="$companion"
+      fi
+    done
     private="$(mktemp -d -t tsumgi-qwen38-cuda.XXXXXXXX)"
     chmod 700 "$private"
     ln -s -- "$driver" "$private/libcuda.so.1"
+    ln -s -- "$ptx_companion" "$private/libnvidia-ptxjitcompiler.so.1"
+    ln -s -- "$nvvm_companion" "$private/libnvidia-nvvm.so.4"
     runtime_env=(
       "LD_LIBRARY_PATH=$private:${core}/lib/tsumgi-qwen38:${libraries}"
       "PATH=$PATH"

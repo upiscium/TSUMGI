@@ -229,6 +229,10 @@ PY
         ;;
       rollback)
         require_llama_cpp "''${2-}"
+        if ! managed_llama_cpp_profile; then
+          echo "astrumweaver-runtime-profile: refusing to rollback unmanaged or mixed runtime profile: $profile" >&2
+          exit 1
+        fi
         "$nix_bin" profile rollback --profile "$profile"
         status_llama_cpp || true
         ;;
