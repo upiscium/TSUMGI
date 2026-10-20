@@ -25,6 +25,14 @@
         name = "tsumgi-qwen38-llama-cpp-runtime";
         paths = [ qwen38LlamaCore qwen38LlamaBridge ];
       };
+      bonsaiLlamaCore = runtimePkgs.callPackage ./nix/bonsai-llama-cpp.nix { };
+      bonsaiLlamaBridge = runtimePkgs.callPackage ./nix/bonsai-llama-driver-bridge.nix {
+        core = bonsaiLlamaCore;
+      };
+      runtimeBonsai = runtimePkgs.buildEnv {
+        name = "tsumgi-bonsai-llama-cpp-runtime";
+        paths = [ bonsaiLlamaCore bonsaiLlamaBridge ];
+      };
       runtimeProfileSupport = pkgs.callPackage ./nix/runtime-profile-support.nix {
         source = self;
       };
@@ -208,6 +216,7 @@
         inherit astrumweaver control worker installer integration;
         runtime-llama-cpp = runtimeLlamaCpp;
         runtime-qwen38-llama-cpp = runtimeQwen38;
+        runtime-bonsai-llama-cpp = runtimeBonsai;
         decision-llama-cuda-sm61 = decisionLlamaCuda "61";
         decision-llama-cuda-sm86 = decisionLlamaCuda "86";
         default = astrumweaver;
@@ -249,6 +258,7 @@
           ${installer}/bin/astrumweaver-runtime-profile --help >/dev/null
           ${installer}/bin/astrumweaver-runtime-profile status llama-cpp >/dev/null 2>&1 || test "$?" = 1
           ${installer}/bin/astrumweaver-runtime-profile status qwen38-llama-cpp >/dev/null 2>&1 || test "$?" = 1
+          ${installer}/bin/astrumweaver-runtime-profile status bonsai-llama-cpp >/dev/null 2>&1 || test "$?" = 1
           test -x ${control}/bin/astrumweaver-control
           test -x ${control}/bin/astrumweaver-migrate
           test -x ${control}/bin/astrumweaver-setup-control-plane

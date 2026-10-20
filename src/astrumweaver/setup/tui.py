@@ -235,6 +235,7 @@ _PROVIDER_OPTIONS: Mapping[str, tuple[TuiOptionSpec, ...]] = {
         TuiOptionSpec("cpu_moe", "CPU MoE", _parse_bool),
         TuiOptionSpec("n_cpu_moe", "CPU MoE layers", _parse_optional_int),
         TuiOptionSpec("n_cpu_ffn", "CPU FFN layers", _parse_optional_int),
+        TuiOptionSpec("runtime_flavor", "runtime (upstream/bonsai2-pq2)", str),
     ),
     "vllm": (
         TuiOptionSpec("gpu_memory_utilization", "GPU memory utilization", _parse_float),
