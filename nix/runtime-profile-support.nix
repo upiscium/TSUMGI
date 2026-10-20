@@ -47,7 +47,7 @@ EOF
           profile=${lib.escapeShellArg profile}
           runtime_attr="runtime-llama-cpp"
           ;;
-        qwen38-llama-cpp)
+        qwen38-llama-cpp|/nix/var/nix/profiles/astrumweaver-runtime-qwen38)
           profile="$qwen38_profile"
           runtime_attr="runtime-qwen38-llama-cpp"
           ;;

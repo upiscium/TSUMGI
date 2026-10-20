@@ -2223,6 +2223,11 @@ class LlamaCppProvider(RuntimeProvider):
         cfg = dict(setup.configuration)
         if cfg.get("runtime_flavor", "upstream") != self.config.runtime_flavor:
             raise ValueError("runtime flavor does not match reviewed setup")
+        if (
+            cfg.get("executable") == LLAMA_CPP_QWEN38_RUNTIME
+            and self.config.executable != LLAMA_CPP_QWEN38_RUNTIME
+        ):
+            raise ValueError("Qwen3.8 setup executable must be selected by the provider")
         if self.config.executable == LLAMA_CPP_QWEN38_RUNTIME:
             if setup.package_references != (self.config.package_reference,):
                 raise ValueError("Qwen3.8 setup must retain the selected Nix package reference")

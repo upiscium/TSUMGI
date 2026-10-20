@@ -53,7 +53,7 @@ def test_qwen38_and_bonsai_profiles_coexist_after_main_integration() -> None:
     for package, (attr, profile) in package_paths.items():
         assert f"{attr} =" in flake
         assert f'/nix/var/nix/profiles/{profile}' in manager
-        assert f"{package})" in manager
+        assert f"{package})" in manager or f"{package}|" in manager
         assert f'runtime_attr="{attr}"' in manager
         for action in ("verify package", "ensure", "upgrade", "rollback", "status"):
             assert f"{action} {package}" in manager
@@ -65,7 +65,7 @@ def test_qwen38_and_bonsai_profiles_coexist_after_main_integration() -> None:
         "managed_llama_cpp_profile() {", 1
     )[0]
     for package in package_paths:
-        assert f"{package})" in selector
+        assert f"{package})" in selector or f"{package}|" in selector
     assert "unsupported runtime package" in selector
     assert "exit 2" in selector
 
@@ -189,4 +189,29 @@ def test_qwen38_rejects_mismatched_install_intent_and_setup_tampering() -> None:
             ctx, replace(
                 setup, configuration={**setup.configuration, "executable": "llama-server"},
             ),
+        )
+
+
+
+def test_absolute_qwen38_managed_profile_is_a_supported_manager_selector() -> None:
+    manager = (Path(__file__).resolve().parents[1] / "nix/runtime-profile-support.nix").read_text()
+    assert "qwen38-llama-cpp|/nix/var/nix/profiles/astrumweaver-runtime-qwen38)" in manager
+
+
+def test_reviewed_generic_upstream_setup_cannot_inject_pinned_qwen38_executable() -> None:
+    from dataclasses import replace
+    import pytest
+    from astrumweaver.runtime.providers.llama_cpp import (
+        LlamaCppProvider, LlamaCppProviderConfig, LLAMA_CPP_QWEN38_RUNTIME,
+    )
+    context = _qwen38_ctx()
+    provider = LlamaCppProvider(LlamaCppProviderConfig())
+    intent = provider.setup_intent(context)
+    with pytest.raises(ValueError, match="Qwen3.8 setup executable must be selected"):
+        provider.create_runtime(
+            context,
+            replace(intent, configuration={
+                **intent.configuration,
+                "executable": LLAMA_CPP_QWEN38_RUNTIME,
+            }),
         )
