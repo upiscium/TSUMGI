@@ -69,6 +69,12 @@ LLAMA_CPP_BONSAI_MODEL_SHA256 = "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937
 LLAMA_CPP_BONSAI_MODEL_SIZE_BYTES = 7206168928
 LLAMA_CPP_BONSAI_RUNTIME = "/nix/var/nix/profiles/astrumweaver-runtime-bonsai/bin/llama-server"
 LLAMA_CPP_BONSAI_PACKAGE = "bonsai-llama-cpp"
+# Pin the opt-in Qwen3.8 executable and its install intent as one pair.
+# The absolute package reference is retained for existing operator-managed
+# profiles; qwen38-llama-cpp is the CLI manager's installable selector.
+LLAMA_CPP_QWEN38_PROFILE = "/nix/var/nix/profiles/astrumweaver-runtime-qwen38"
+LLAMA_CPP_QWEN38_RUNTIME = LLAMA_CPP_QWEN38_PROFILE + "/bin/llama-server"
+LLAMA_CPP_QWEN38_PACKAGE = "qwen38-llama-cpp"
 LLAMA_CPP_STANDARD_RUNTIME = "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server"
 LLAMA_CPP_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
 LLAMA_CPP_EMBEDDING_CAPABILITIES = frozenset({"text.embed"})
@@ -267,6 +273,19 @@ class LlamaCppProviderConfig:
             or self.package_reference == LLAMA_CPP_BONSAI_PACKAGE
         ):
             raise ValueError("upstream llama.cpp cannot use the pinned Bonsai runtime")
+
+        # Keep unmodified generic upstream configurations working; only the
+        # dedicated opt-in Qwen3.8 runtime is required to bind its executable
+        # and package/profile provenance, including the pre-existing site
+        # format that references the absolute managed Nix profile.
+        qwen38_executable = self.executable == LLAMA_CPP_QWEN38_RUNTIME
+        qwen38_package = self.package_reference in {
+            LLAMA_CPP_QWEN38_PACKAGE, LLAMA_CPP_QWEN38_PROFILE
+        }
+        if qwen38_executable != qwen38_package:
+            raise ValueError(
+                "Qwen3.8 pinned runtime requires matching executable and package reference"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2204,6 +2223,16 @@ class LlamaCppProvider(RuntimeProvider):
         cfg = dict(setup.configuration)
         if cfg.get("runtime_flavor", "upstream") != self.config.runtime_flavor:
             raise ValueError("runtime flavor does not match reviewed setup")
+        if (
+            cfg.get("executable") == LLAMA_CPP_QWEN38_RUNTIME
+            and self.config.executable != LLAMA_CPP_QWEN38_RUNTIME
+        ):
+            raise ValueError("Qwen3.8 setup executable must be selected by the provider")
+        if self.config.executable == LLAMA_CPP_QWEN38_RUNTIME:
+            if setup.package_references != (self.config.package_reference,):
+                raise ValueError("Qwen3.8 setup must retain the selected Nix package reference")
+            if cfg.get("executable") != LLAMA_CPP_QWEN38_RUNTIME:
+                raise ValueError("Qwen3.8 setup executable differs from pinned Nix runtime")
         if self.config.runtime_flavor == "bonsai2-pq2":
             if setup.package_references != (LLAMA_CPP_BONSAI_PACKAGE,):
                 raise ValueError("Bonsai setup must reference only the pinned Nix package")

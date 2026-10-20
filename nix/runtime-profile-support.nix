@@ -2,6 +2,7 @@
 
 let
   profile = "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp";
+  qwen38Profile = "/nix/var/nix/profiles/astrumweaver-runtime-qwen38";
   bonsaiProfile = "/nix/var/nix/profiles/astrumweaver-runtime-bonsai";
   candidateRef = "path:${source}";
   registryRef = "astrumweaver-runtime-candidate";
@@ -10,6 +11,7 @@ writeShellApplication {
   name = "astrumweaver-runtime-profile";
   text = ''
     profile=${lib.escapeShellArg profile}
+    qwen38_profile=${lib.escapeShellArg qwen38Profile}
     bonsai_profile=${lib.escapeShellArg bonsaiProfile}
     runtime_attr="runtime-llama-cpp"
     candidate_ref=${lib.escapeShellArg candidateRef}
@@ -25,6 +27,11 @@ usage:
   astrumweaver-runtime-profile upgrade llama-cpp
   astrumweaver-runtime-profile rollback llama-cpp
   astrumweaver-runtime-profile status llama-cpp
+  astrumweaver-runtime-profile verify package qwen38-llama-cpp
+  astrumweaver-runtime-profile ensure qwen38-llama-cpp
+  astrumweaver-runtime-profile upgrade qwen38-llama-cpp
+  astrumweaver-runtime-profile rollback qwen38-llama-cpp
+  astrumweaver-runtime-profile status qwen38-llama-cpp
   astrumweaver-runtime-profile verify package bonsai-llama-cpp
   astrumweaver-runtime-profile ensure bonsai-llama-cpp
   astrumweaver-runtime-profile upgrade bonsai-llama-cpp
@@ -39,6 +46,10 @@ EOF
         llama-cpp)
           profile=${lib.escapeShellArg profile}
           runtime_attr="runtime-llama-cpp"
+          ;;
+        qwen38-llama-cpp|/nix/var/nix/profiles/astrumweaver-runtime-qwen38)
+          profile="$qwen38_profile"
+          runtime_attr="runtime-qwen38-llama-cpp"
           ;;
         bonsai-llama-cpp)
           profile="$bonsai_profile"
@@ -218,6 +229,10 @@ PY
         ;;
       rollback)
         require_llama_cpp "''${2-}"
+        if ! managed_llama_cpp_profile; then
+          echo "astrumweaver-runtime-profile: refusing to rollback unmanaged or mixed runtime profile: $profile" >&2
+          exit 1
+        fi
         "$nix_bin" profile rollback --profile "$profile"
         status_llama_cpp || true
         ;;
