@@ -129,6 +129,7 @@ def _qwen38_ctx():
         ),
         residency_policy=ResidencyPolicy.VRAM_ONLY,
         gpu_topology=GPUTopology.MULTI_GPU,
+        min_gpu_count=2,
     )
     return RuntimeCompatibilityContext(
         worker=worker, host=RuntimeHostFacts(cpu_count=8, host_ram_mb=32768),
