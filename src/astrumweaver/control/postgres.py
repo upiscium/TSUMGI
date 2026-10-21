@@ -40,6 +40,8 @@ from .repository import (
     OverloadedError,
     RepositoryError,
     StorageUnavailable,
+    OFFLINE_REASON_KEY,
+    RECOVERABLE_OFFLINE_REASON,
     _assert_worker_epoch,
     _aware,
     _event_size,
@@ -539,9 +541,12 @@ class PostgresControlRepository:
         return None if row is None else str(row["id"])
 
     def register_worker(
-        self, registration: WorkerRegistration, *, now: datetime | None = None
+        self, registration: WorkerRegistration, *, recovery: bool = False,
+        now: datetime | None = None
     ) -> WorkerRecord:
         timestamp = _aware(now)
+        if OFFLINE_REASON_KEY in registration.metadata:
+            raise ConflictError("Worker cannot supply Control-owned offline reason")
         spec = registration.spec
         with self._transaction() as connection:
             existing = self._lock_worker_ownership(
@@ -549,6 +554,16 @@ class PostgresControlRepository:
             )
             if existing is not None:
                 current = self._worker(existing)
+                if recovery:
+                    if (current.state is not WorkerState.OFFLINE
+                        or current.metadata.get(OFFLINE_REASON_KEY) != RECOVERABLE_OFFLINE_REASON):
+                        raise ConflictError("Worker is not eligible for explicit recovery")
+                    if (current.spec != registration.spec
+                        or current.max_concurrency != registration.max_concurrency
+                        or current.serving != registration.serving):
+                        raise ConflictError("recovery Worker identity or runtime epoch differs")
+                    if current.active_jobs:
+                        raise ConflictError("recovery forbidden while Worker leases are active")
                 if current.active_jobs > 0:
                     if registration.spec != current.spec:
                         raise ConflictError(
@@ -563,6 +578,16 @@ class PostgresControlRepository:
                             "worker serving deployment cannot change while jobs are active"
                         )
 
+            if recovery:
+                if existing is None:
+                    raise ConflictError("Worker recovery requires an existing registration")
+                active_leases = connection.execute(
+                    """SELECT count(*)::integer AS count FROM jobs
+                       WHERE status = 'running' AND assigned_worker_id = %s""",
+                    (spec.worker_id,),
+                ).fetchone()["count"]
+                if active_leases:
+                    raise ConflictError("recovery forbidden while durable leases are active")
             conflicting = self._gpu_overlap(connection, registration)
             if conflicting:
                 raise ConflictError(
@@ -683,14 +708,19 @@ class PostgresControlRepository:
                     raise ConflictError(
                         f"GPU identity overlaps with worker {conflict}"
                     )
+            metadata = dict(current.metadata)
+            if state is WorkerState.OFFLINE:
+                metadata[OFFLINE_REASON_KEY] = "operator"
+            else:
+                metadata.pop(OFFLINE_REASON_KEY, None)
             row = connection.execute(
                 """
                 UPDATE workers
-                SET state = %s, last_seen_at = %s, updated_at = %s
+                SET state = %s, last_seen_at = %s, metadata = %s, updated_at = %s
                 WHERE id = %s
                 RETURNING *
                 """,
-                (state.value, timestamp, timestamp, worker_id),
+                (state.value, timestamp, _json(metadata), timestamp, worker_id),
             ).fetchone()
             return self._worker(row)
 
@@ -703,6 +733,8 @@ class PostgresControlRepository:
     ) -> WorkerRecord:
         timestamp = _aware(now)
         heartbeat = heartbeat or WorkerHeartbeat()
+        if OFFLINE_REASON_KEY in heartbeat.metadata:
+            raise ConflictError("Worker cannot override Control-owned offline reason")
         with self._transaction() as connection:
             # Keep the global lock order job -> worker whenever a job is
             # involved. Claim/completion/recovery use the same order.
@@ -793,11 +825,13 @@ class PostgresControlRepository:
             rows = connection.execute(
                 """
                 UPDATE workers
-                SET state = 'offline', updated_at = %s
+                SET state = 'offline',
+                    metadata = metadata || %s,
+                    updated_at = %s
                 WHERE state <> 'offline' AND last_seen_at < %s
                 RETURNING *
                 """,
-                (timestamp, cutoff),
+                (_json({OFFLINE_REASON_KEY: RECOVERABLE_OFFLINE_REASON}), timestamp, cutoff),
             ).fetchall()
         return [self._worker(row) for row in rows]
 

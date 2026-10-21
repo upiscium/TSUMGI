@@ -31,6 +31,13 @@ from .models import (
 )
 
 
+# Control-owned metadata marker, not supplied by a Worker registration/heartbeat.
+# Only TTL expiry qualifies for bounded automatic recovery; administrative OFFLINE
+# and failed-owner epoch transitions must remain fail-closed.
+OFFLINE_REASON_KEY = "_tsumgi_control_offline_reason"
+RECOVERABLE_OFFLINE_REASON = "heartbeat_timeout"
+
+
 class RepositoryError(RuntimeError):
     """Base control repository error."""
 
@@ -67,7 +74,8 @@ class ControlRepository(Protocol):
     def check_storage(self) -> None: ...
 
     def register_worker(
-        self, registration: WorkerRegistration, *, now: datetime | None = None
+        self, registration: WorkerRegistration, *, recovery: bool = False,
+        now: datetime | None = None
     ) -> WorkerRecord: ...
 
     def heartbeat_worker(
@@ -305,11 +313,24 @@ class InMemoryControlRepository:
                 )
 
     def register_worker(
-        self, registration: WorkerRegistration, *, now: datetime | None = None
+        self, registration: WorkerRegistration, *, recovery: bool = False,
+        now: datetime | None = None
     ) -> WorkerRecord:
         timestamp = _aware(now)
+        if OFFLINE_REASON_KEY in registration.metadata:
+            raise ConflictError("Worker cannot supply Control-owned offline reason")
         with self._lock:
             existing = self._workers.get(registration.spec.worker_id)
+            if recovery:
+                if (existing is None or existing.state is not WorkerState.OFFLINE
+                    or existing.metadata.get(OFFLINE_REASON_KEY) != RECOVERABLE_OFFLINE_REASON):
+                    raise ConflictError("Worker is not eligible for explicit recovery")
+                if (existing.spec != registration.spec
+                    or existing.max_concurrency != registration.max_concurrency
+                    or existing.serving != registration.serving):
+                    raise ConflictError("recovery Worker identity or runtime epoch differs")
+                if existing.active_jobs or self._active_job_count(registration.spec.worker_id):
+                    raise ConflictError("recovery forbidden while Worker leases are active")
             if existing and existing.active_jobs > 0:
                 if registration.spec != existing.spec:
                     raise ConflictError(
@@ -369,7 +390,12 @@ class InMemoryControlRepository:
                 self._assert_gpu_ownership_available(
                     registration, ignore_worker_id=worker_id
                 )
-            updated = replace(current, state=state, last_seen_at=timestamp)
+            metadata = dict(current.metadata)
+            if state is WorkerState.OFFLINE:
+                metadata[OFFLINE_REASON_KEY] = "operator"
+            else:
+                metadata.pop(OFFLINE_REASON_KEY, None)
+            updated = replace(current, state=state, last_seen_at=timestamp, metadata=metadata)
             self._workers[worker_id] = updated
             return updated
 
@@ -382,6 +408,8 @@ class InMemoryControlRepository:
     ) -> WorkerRecord:
         timestamp = _aware(now)
         heartbeat = heartbeat or WorkerHeartbeat()
+        if OFFLINE_REASON_KEY in heartbeat.metadata:
+            raise ConflictError("Worker cannot override Control-owned offline reason")
         with self._lock:
             current = self.get_worker(worker_id)
             _assert_worker_epoch(current, heartbeat.runtime_instance_epoch)
@@ -433,7 +461,8 @@ class InMemoryControlRepository:
             for worker_id, worker in list(self._workers.items()):
                 if worker.state is WorkerState.OFFLINE or worker.last_seen_at >= cutoff:
                     continue
-                updated = replace(worker, state=WorkerState.OFFLINE)
+                metadata = {**dict(worker.metadata), OFFLINE_REASON_KEY: RECOVERABLE_OFFLINE_REASON}
+                updated = replace(worker, state=WorkerState.OFFLINE, metadata=metadata)
                 self._workers[worker_id] = updated
                 expired.append(updated)
         return expired

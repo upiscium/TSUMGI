@@ -117,7 +117,10 @@ def submit(repo, count=1):
 
 
 @asynccontextmanager
-async def running(repo=None, executor=None, *, poll=0.01, heartbeat=0.025, request_timeout=0.3):
+async def running(
+    repo=None, executor=None, *, poll=0.01, heartbeat=0.025,
+    request_timeout=0.3, recovery=30.0,
+):
     repo = repo or InMemoryControlRepository(worker_ttl_seconds=1, lease_seconds=1)
     executor = executor or Executor()
     async with ObservedClient(repo) as client:
@@ -125,6 +128,7 @@ async def running(repo=None, executor=None, *, poll=0.01, heartbeat=0.025, reque
         runtime = WorkerRuntime(
             spec=SPEC, max_concurrency=1, executor=executor, client=client,
             heartbeat_interval_seconds=heartbeat, poll_interval_seconds=poll,
+            recovery_retry_interval_seconds=recovery,
         )
         task = asyncio.create_task(runtime.run_forever(), name="test-worker-loop")
         try:
@@ -621,3 +625,83 @@ async def test_daemon_forced_shutdown_invokes_executor_cancel_exactly_once(monke
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_ttl_offline_reconciliation_re_registers_only_after_auth_fencing():
+    """A TTL-expired idle Worker is recoverable through explicit register."""
+    repo = InMemoryControlRepository(worker_ttl_seconds=1, lease_seconds=3)
+    async with running(repo, heartbeat=0.025, poll=0.006, recovery=0.06) as (
+        repo, _, client, runtime, _
+    ):
+        initial = client.count("register")
+        assert initial == 1 and runtime.ready
+        repo.expire_stale_workers(now=utc_now() + timedelta(seconds=3))
+        assert repo.get_worker(SPEC.worker_id).state is WorkerState.OFFLINE
+        await eventually(lambda: runtime.control_state == "offline")
+        # Stateless heartbeat cannot promote even an otherwise healthy Worker.
+        assert client.count("register") == initial
+        await eventually(lambda: runtime.ready and client.count("register") >= 2, timeout=2)
+        assert repo.get_worker(SPEC.worker_id).state is WorkerState.ONLINE
+        recoveries = [
+            body for kind, _, body in client.calls
+            if kind == "register" and body.get("recovery") is True
+        ]
+        assert len(recoveries) == 1
+        assert client.max_in_flight == 1
+        job = submit(repo)[0]
+        await eventually(lambda: repo.get_job(job.job_id).status is JobStatus.SUCCEEDED)
+        assert runtime.ready
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_never_overrides_administrative_offline():
+    repo = InMemoryControlRepository(worker_ttl_seconds=1)
+    async with running(repo, heartbeat=0.025, poll=0.006, recovery=0.04) as (
+        repo, _, client, runtime, _
+    ):
+        repo.set_worker_state(SPEC.worker_id, WorkerState.OFFLINE)
+        await eventually(lambda: runtime.control_state == "offline")
+        await asyncio.sleep(0.2)
+        assert client.count("register") == 1
+        assert not runtime.ready
+        assert repo.get_worker(SPEC.worker_id).state is WorkerState.OFFLINE
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_never_steals_gpu_from_new_owner():
+    repo = InMemoryControlRepository(worker_ttl_seconds=1, lease_seconds=3)
+    async with running(repo, heartbeat=0.025, poll=0.006, recovery=0.05) as (
+        repo, _, client, runtime, _
+    ):
+        repo.expire_stale_workers(now=utc_now() + timedelta(seconds=3))
+        competitor = replace(SPEC, worker_id="different-worker")
+        repo.register_worker(WorkerRegistration(spec=competitor))
+        await eventually(lambda: runtime.control_state == "offline")
+        await eventually(lambda: client.count("register") >= 2)
+        assert repo.get_worker(SPEC.worker_id).state is WorkerState.OFFLINE
+        assert repo.get_worker(competitor.worker_id).state is WorkerState.ONLINE
+        assert not runtime.ready
+        before = client.count("claim")
+        await asyncio.sleep(0.13)
+        assert client.count("claim") == before
+        # The server did not accept the forbidden reconciliation.
+
+
+@pytest.mark.asyncio
+async def test_recovery_blocked_by_unfinished_durable_job_lease():
+    repo = InMemoryControlRepository(worker_ttl_seconds=1, lease_seconds=300)
+    async with running(repo, heartbeat=0.025, poll=0.006, recovery=0.04) as (
+        repo, _, client, runtime, _
+    ):
+        # Move a Job to a durable running lease without giving it to this
+        # Worker process. A crash/lost reply must not let it run another.
+        job = submit(repo)[0]
+        claimed = repo.claim_next_job(SPEC.worker_id)
+        assert claimed is not None
+        repo.expire_stale_workers(now=utc_now() + timedelta(seconds=3))
+        await eventually(lambda: runtime.control_state == "offline")
+        await eventually(lambda: client.count("register") >= 2)
+        assert not runtime.ready
+        assert repo.get_worker(SPEC.worker_id).state is WorkerState.OFFLINE
+        assert repo.get_job(job.job_id).status is JobStatus.RUNNING
