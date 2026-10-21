@@ -301,6 +301,79 @@ def test_request_subset_fails_closed(patch, code):
     assert error.value.code == code
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_explicit_store_false_matches_omission_and_is_not_persisted(stream):
+    # OpenCode v2.0.32 sends store=false with a streamed Tool request,
+    # whereas the proven v1.18.35 client omitted it. Both have the same
+    # bounded serving contract and must produce the same durable Job payload.
+    request = {
+        "model": "local-code-v1",
+        "messages": [
+            {"role": "system", "content": "You are concise."},
+            {"role": "user", "content": "Read the file"},
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read file contents",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                },
+            }
+        ],
+        "max_completion_tokens": 48,
+        "stream": stream,
+    }
+    if stream:
+        request["stream_options"] = {"include_usage": True}
+
+    absent = compile_chat_request(request, profile(), request_size_bytes=1024)
+    explicit = compile_chat_request(
+        {**request, "store": False},
+        profile(),
+        request_size_bytes=1040,
+    )
+    assert explicit.payload == absent.payload
+    assert explicit.payload["request"]["max_tokens"] == 48
+    assert explicit.payload["request"]["stream"] is stream
+    assert "store" not in explicit.payload
+    assert "store" not in explicit.payload["request"]
+    assert "store" not in absent.payload
+    assert "store" not in request
+
+
+@pytest.mark.parametrize(
+    ("store", "code"),
+    [
+        (True, "unsupported_feature"),
+        (None, "invalid_request"),
+        (0, "invalid_request"),
+        (1, "invalid_request"),
+        ("false", "invalid_request"),
+        ({}, "invalid_request"),
+        ([], "invalid_request"),
+    ],
+)
+def test_stored_completions_unavailable_and_store_type_fails_closed(store, code):
+    with pytest.raises(ChatGatewayError) as error:
+        compile_chat_request(
+            {
+                "model": "local-code-v1",
+                "messages": [{"role": "user", "content": "Do not store me"}],
+                "store": store,
+            },
+            profile(),
+            request_size_bytes=1024,
+        )
+    assert error.value.status_code == 400
+    assert error.value.code == code
+
+
 def test_streaming_request_compiles_to_same_bounded_job_envelope():
     compiled = compile_chat_request(
         {

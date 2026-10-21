@@ -103,3 +103,27 @@ only redacted evidence. See [OpenCode chat acceptance](../opencode-chat-acceptan
 
 A later compatibility update must preserve this historical pin rather than
 silently replacing the client version used for acceptance.
+
+
+## OpenCode 2.x request compatibility — `store` (TSUMGI #167)
+
+OpenCode 1.18.35 omits `store` on its OpenAI-compatible Chat requests;
+2.0.32 explicitly sends `store: false` by default. TSUMGI Stage A accepts
+that **false** no-storage opt-out and normalizes it away before producing
+the immutable `chat-job-v1` envelope. It does **not** enable any new
+Stored Completions persistence. Ordinary PostgreSQL operational Job
+records and logging are separately controlled and are not disabled by
+the `store` parameter.
+
+`store: true` remains unsupported and is explicitly rejected
+(`unsupported_feature`). Non-boolean `store` values are invalid
+(`invalid_request`); unspecified `store` retains legacy behavior.
+Other unknown top-level API fields remain rejected.
+
+This change resolves the observed initial v2.0.32 HTTP 400. It **does
+not by itself prove** end-to-end OpenCode v2 Coding Agent/tool behavior,
+streaming reliability, or specific version support. OpenCode 1.18.35
+remains the established production acceptance baseline until a separate
+real client v2 trial succeeds. The actual Stored Completions API, storage,
+access controls and retention design are future scope tracked by
+[Issue #168](https://github.com/upiscium/TSUMGI/issues/168).
