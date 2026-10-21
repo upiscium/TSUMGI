@@ -679,7 +679,18 @@ async def test_reconciliation_never_steals_gpu_from_new_owner():
         competitor = replace(SPEC, worker_id="different-worker")
         repo.register_worker(WorkerRegistration(spec=competitor))
         await eventually(lambda: runtime.control_state == "offline")
-        await eventually(lambda: client.count("register") >= 2)
+        await eventually(lambda: client.count("register") >= 4, timeout=2)
+        retry_times = [
+            observed_at for kind, observed_at, body in client.calls
+            if kind == "register" and body.get("recovery") is True
+        ]
+        assert len(retry_times) >= 3
+        # Conflicting re-enrollment must be fail-closed and bounded even when
+        # Control promptly rejects a retry with 409. No busy retry loop.
+        assert all(
+            later - earlier >= 0.04
+            for earlier, later in zip(retry_times, retry_times[1:])
+        )
         assert repo.get_worker(SPEC.worker_id).state is WorkerState.OFFLINE
         assert repo.get_worker(competitor.worker_id).state is WorkerState.ONLINE
         assert not runtime.ready
