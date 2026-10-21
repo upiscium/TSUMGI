@@ -6,9 +6,9 @@ TSUMGI is a deployment-agnostic compute fabric for scheduling capability-based w
 
 It is GPU-first, but its control-plane contracts are intentionally not tied to LLMs, a particular accelerator generation, Proxmox, or a one-GPU-per-worker topology.
 
-> **Stable release line:** TSUMGI v0.1.0 is **feature-frozen**. [v0.1.0 release notes](docs/releases/v0.1.0.md) · [GA qualification gate](docs/ga-qualification-v0.1.0.md). Verify whether the stable version has actually been published at [GitHub Releases](https://github.com/upiscium/TSUMGI/releases); a source PR or merge is not a publication or site-upgrade approval.
+> **Published stable release:** [v0.1.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.1), including the opt-in Bonsai 2 runtime. [v0.1.1 release notes](docs/releases/v0.1.1.md).
 >
-> **Earlier prerelease:** [v0.1.0-rc.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.0-rc.1) was published as an experimental candidate. Existing installations require a separate [operator rollout gate](docs/operator-rollout-gates.md) before upgrading.
+> **v0.1.2 maintenance candidate:** [v0.1.2-rc.1 release notes](docs/releases/v0.1.2-rc.1.md) and [planned v0.1.2 GA notes](docs/releases/v0.1.2.md). An RC source tree, tag, or published Release does **not** imply a deployed Control/Worker upgrade. Verify actual publication under [GitHub Releases](https://github.com/upiscium/TSUMGI/releases), and use the [operator rollout gate](docs/operator-rollout-gates.md) before site upgrades.
 >
 > **Support boundary:** x86_64 Linux (NixOS or generic systemd + Nix), PostgreSQL 17 UTF8 and explicitly trusted hosts/clients. Production-grade isolation, an always-on SLA, and fully documented installation-only Real Smoke are not claimed.
 
