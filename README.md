@@ -6,9 +6,9 @@ TSUMGI is a deployment-agnostic compute fabric for scheduling capability-based w
 
 It is GPU-first, but its control-plane contracts are intentionally not tied to LLMs, a particular accelerator generation, Proxmox, or a one-GPU-per-worker topology.
 
-> **Published stable release:** [v0.1.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.1), including the opt-in Bonsai 2 runtime. [v0.1.1 release notes](docs/releases/v0.1.1.md).
+> **Published stable release:** [v0.1.2](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.2), the maintenance rollup of Qwen3.8 CUDA, guarded Worker Offline recovery, and OpenCode v2 Chat compatibility. [v0.1.2 release notes](docs/releases/v0.1.2.md).
 >
-> **v0.1.2 maintenance candidate:** [v0.1.2-rc.1 release notes](docs/releases/v0.1.2-rc.1.md) and [planned v0.1.2 GA notes](docs/releases/v0.1.2.md). An RC source tree, tag, or published Release does **not** imply a deployed Control/Worker upgrade. Verify actual publication under [GitHub Releases](https://github.com/upiscium/TSUMGI/releases), and use the [operator rollout gate](docs/operator-rollout-gates.md) before site upgrades.
+> **Prior releases:** [v0.1.2-rc.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.2-rc.1) (published prerelease) and [v0.1.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.1) stable (Bonsai 2 opt-in). A tag or GitHub Release is a source publication, **not** a production Control/Worker upgrade authorization. Verify actual publication under [GitHub Releases](https://github.com/upiscium/TSUMGI/releases) and use the [operator rollout gate](docs/operator-rollout-gates.md) before site upgrades.
 >
 > **Support boundary:** x86_64 Linux (NixOS or generic systemd + Nix), PostgreSQL 17 UTF8 and explicitly trusted hosts/clients. Production-grade isolation, an always-on SLA, and fully documented installation-only Real Smoke are not claimed.
 
@@ -96,7 +96,7 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 - Existing development machines may later participate as drainable/borrowable workers without reprovisioning.
 
 ## Documentation
-- [v0.1.2 RC release notes](docs/releases/v0.1.2-rc.1.md) and [planned GA notes](docs/releases/v0.1.2.md) — maintenance release source scope, version and qualification.
+- [v0.1.2 GA release notes](docs/releases/v0.1.2.md) and [earlier v0.1.2-rc.1 notes](docs/releases/v0.1.2-rc.1.md) — verified maintenance release scope, version and qualification.
 - [v0.1.1 GA](docs/releases/v0.1.1.md) — previous published stable and optional Bonsai 2 contract.
 - [v0.1.0 GA release notes](docs/releases/v0.1.0.md) and [historical qualification checklist](docs/ga-qualification-v0.1.0.md) — previously frozen scope and acceptance evidence.
 - [Release readiness and deployment decision boundaries](docs/release-readiness.md) — candidate selection, verification and operator gates; not a release authorization.

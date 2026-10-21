@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrumweaver"
-version = "0.1.2rc1"
+version = "0.1.2"
 description = "TSUMGI deployment-agnostic compute fabric for heterogeneous compute nodes"
 readme = "README.md"
 license = { file = "LICENSE" }
