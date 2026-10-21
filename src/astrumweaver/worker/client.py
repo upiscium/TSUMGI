@@ -142,7 +142,7 @@ class ControlClient:
                 "protocol_version": PROTOCOL_VERSION,
                 "spec": worker_spec_to_dict(spec),
                 "max_concurrency": max_concurrency,
-                "recovery": recovery,
+                **({"recovery": True} if recovery else {}),
                 "metadata": dict(metadata or {}),
                 "serving": None if serving is None else serving.to_dict(),
                 "extensions": [] if serving is None else [SERVING_EXTENSION],

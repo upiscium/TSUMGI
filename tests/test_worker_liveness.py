@@ -636,6 +636,7 @@ async def test_ttl_offline_reconciliation_re_registers_only_after_auth_fencing()
     ):
         initial = client.count("register")
         assert initial == 1 and runtime.ready
+        assert "recovery" not in next(body for kind, _, body in client.calls if kind == "register")
         repo.expire_stale_workers(now=utc_now() + timedelta(seconds=3))
         assert repo.get_worker(SPEC.worker_id).state is WorkerState.OFFLINE
         await eventually(lambda: runtime.control_state == "offline")
