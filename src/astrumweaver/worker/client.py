@@ -131,6 +131,7 @@ class ControlClient:
         max_concurrency: int,
         metadata: Mapping[str, Any] | None = None,
         serving: WorkerServingAdvertisement | None = None,
+        recovery: bool = False,
     ) -> dict[str, Any]:
         if serving is not None:
             await self.require_extension(SERVING_EXTENSION)
@@ -141,6 +142,7 @@ class ControlClient:
                 "protocol_version": PROTOCOL_VERSION,
                 "spec": worker_spec_to_dict(spec),
                 "max_concurrency": max_concurrency,
+                **({"recovery": True} if recovery else {}),
                 "metadata": dict(metadata or {}),
                 "serving": None if serving is None else serving.to_dict(),
                 "extensions": [] if serving is None else [SERVING_EXTENSION],

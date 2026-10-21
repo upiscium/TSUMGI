@@ -225,10 +225,16 @@ def create_app(
     @app.post("/v1/workers/register", status_code=201, dependencies=[Depends(require_worker)])
     async def register_worker(request: Request) -> dict[str, Any]:
         try:
-            registration = worker_registration_from_dict(await _json_v1(request))
+            payload = await _json_v1(request)
+            recovery = payload.get("recovery", False)
+            if type(recovery) is not bool:
+                raise TypeError("recovery must be boolean")
+            registration = worker_registration_from_dict(payload)
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        record = await asyncio.to_thread(repository.register_worker, registration)
+        record = await asyncio.to_thread(
+            repository.register_worker, registration, recovery=recovery
+        )
         return worker_record_to_dict(record)
 
     @app.post("/v1/workers/{worker_id}/heartbeat", dependencies=[Depends(require_worker)])

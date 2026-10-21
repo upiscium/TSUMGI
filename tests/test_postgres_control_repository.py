@@ -770,3 +770,47 @@ async def test_postgres_post_start_runtime_failure_quarantines_worker(active):
             with pytest.raises(ConflictError):
                 await asyncio.to_thread(repo.complete_job, claimed.job_id, JobResult(text="stale"),
                                         worker_id=SPEC.worker_id, lease_token=claimed.lease_token)
+
+
+def test_postgres_explicit_stale_offline_recovery_and_active_lease_rejection():
+    from astrumweaver.control.repository import OFFLINE_REASON_KEY
+    assert DATABASE_URL is not None
+    repo = PostgresControlRepository(DATABASE_URL, worker_ttl_seconds=1)
+    registration = worker("pg-recovery", single_vram_mb=11000)
+    repo.register_worker(registration)
+    with pytest.raises(ConflictError, match="not eligible"):
+        repo.register_worker(registration, recovery=True)
+    repo.expire_stale_workers(now=utc_now()+timedelta(seconds=3))
+    assert repo.get_worker("pg-recovery").metadata[OFFLINE_REASON_KEY]=="heartbeat_timeout"
+    assert repo.register_worker(registration, recovery=True).state is WorkerState.ONLINE
+    repo.set_worker_state("pg-recovery",WorkerState.OFFLINE)
+    with pytest.raises(ConflictError, match="not eligible"):
+        repo.register_worker(registration, recovery=True)
+    repo.set_worker_state("pg-recovery", WorkerState.ONLINE)
+    requested = repo.submit_job(JobSubmission(capability="llm.chat", payload={}))
+    claimed = repo.claim_next_job("pg-recovery")
+    assert claimed and claimed.job_id == requested.job_id
+    repo.expire_stale_workers(now=utc_now()+timedelta(seconds=3))
+    with pytest.raises(ConflictError, match="leases"):
+        repo.register_worker(registration, recovery=True)
+    assert repo.get_worker("pg-recovery").state is WorkerState.OFFLINE
+
+
+def test_postgres_draining_ttl_expiry_cannot_re_register_and_lazy_expiry_is_fenced():
+    from astrumweaver.control.repository import OFFLINE_REASON_KEY
+    assert DATABASE_URL is not None
+    repo=PostgresControlRepository(DATABASE_URL,worker_ttl_seconds=1)
+    registration=worker("pg-drain-ttl",single_vram_mb=10000)
+    repo.register_worker(registration)
+    repo.set_worker_state("pg-drain-ttl",WorkerState.DRAINING)
+    repo.expire_stale_workers(now=utc_now()+timedelta(seconds=3))
+    assert repo.get_worker("pg-drain-ttl").metadata[OFFLINE_REASON_KEY]=="draining_expired"
+    with pytest.raises(ConflictError,match="not eligible"):
+        repo.register_worker(registration,recovery=True)
+    another=worker("pg-lazy-ttl",single_vram_mb=10000)
+    repo.register_worker(another)
+    assert repo.claim_next_job("pg-lazy-ttl",now=utc_now()+timedelta(seconds=3)) is None
+    stale=repo.get_worker("pg-lazy-ttl")
+    assert stale.state is WorkerState.OFFLINE
+    assert stale.metadata[OFFLINE_REASON_KEY]=="heartbeat_timeout"
+    assert repo.register_worker(another,recovery=True).state is WorkerState.ONLINE

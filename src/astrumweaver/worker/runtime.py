@@ -16,6 +16,7 @@ from typing import Any
 
 from ..contracts import WorkerSpec
 from ..control.models import WorkerState
+from ..control.repository import OFFLINE_REASON_KEY, RECOVERABLE_OFFLINE_REASON
 from ..control.serde import worker_spec_from_dict
 from ..transport import JOB_EVENTS_EXTENSION, PROTOCOL_VERSION, SERVING_EXTENSION
 from ..execution import (
@@ -208,6 +209,7 @@ class WorkerRuntime:
         client: ControlClient,
         poll_interval_seconds: float = 1.0,
         heartbeat_interval_seconds: float = 5.0,
+        recovery_retry_interval_seconds: float = 30.0,
         runtime_supervisor: RuntimeHealthSupervisor | None = None,
         serving: WorkerServingAdvertisement | None = None,
     ) -> None:
@@ -215,7 +217,10 @@ class WorkerRuntime:
             raise ValueError("v1 WorkerRuntime currently requires max_concurrency=1")
         if any(
             not math.isfinite(value) or value <= 0
-            for value in (poll_interval_seconds, heartbeat_interval_seconds)
+            for value in (
+                poll_interval_seconds, heartbeat_interval_seconds,
+                recovery_retry_interval_seconds,
+            )
         ):
             raise ValueError("worker intervals must be finite and positive")
         self.spec = spec
@@ -228,6 +233,9 @@ class WorkerRuntime:
         self.serving = serving
         self.poll_interval_seconds = poll_interval_seconds
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
+        self.recovery_retry_interval_seconds = recovery_retry_interval_seconds
+        self._recovery_eligible = False
+        self._next_recovery_at = 0.0
         self._stop = asyncio.Event()
         self._draining = False
         self._registered = False
@@ -326,6 +334,13 @@ class WorkerRuntime:
                 raise ValueError("Worker acknowledgement lacks serving extension")
             if acknowledged_serving != self.serving:
                 raise ValueError("Worker serving identity changed")
+            metadata = record.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                raise ValueError("Worker metadata is invalid")
+            can_recover = (
+                state is WorkerState.OFFLINE
+                and metadata.get(OFFLINE_REASON_KEY) == RECOVERABLE_OFFLINE_REASON
+            )
         except (KeyError, TypeError, ValueError) as exc:
             error = ControlTransportError(502, "invalid Worker acknowledgement")
             self._control_failed(error)
@@ -334,6 +349,11 @@ class WorkerRuntime:
             _LOG.info("Acknowledged Control Worker state: %s", state.value)
         self._registered = True
         self._control_state = state
+        if can_recover and not self._recovery_eligible:
+            self._next_recovery_at = (
+                time.monotonic() + self.recovery_retry_interval_seconds
+            )
+        self._recovery_eligible = can_recover
         # Count from request start, not response arrival: a delayed reply
         # cannot grant an unbounded extension of local readiness.
         self._control_valid_until = (
@@ -398,6 +418,49 @@ class WorkerRuntime:
             if time.monotonic() >= self._next_heartbeat_at:
                 await self._heartbeat_locked()
 
+    async def _reconcile_offline_if_due(self) -> None:
+        """Only an idle TTL-expired Worker may explicitly reclaim resources.
+
+        A stateless Heartbeat MUST NOT re-admit the Worker. The Control
+        repository makes the final atomic decision under GPU ownership locks,
+        unchanged serving epoch, and zero active durable leases.
+        """
+        async with self._control_lock:
+            if not (
+                self._recovery_eligible
+                and self._registered
+                and self._control_state is WorkerState.OFFLINE
+                and self.control_available
+                and self.runtime_available
+                and not self.draining
+                and not self._stop.is_set()
+                and self._active is None
+                and time.monotonic() >= self._next_recovery_at
+            ):
+                return
+            self._next_recovery_at = (
+                time.monotonic() + self.recovery_retry_interval_seconds
+            )
+            sent_at = time.monotonic()
+            try:
+                if isinstance(self.executor, StreamingJobExecutor):
+                    await self.client.require_extension(JOB_EVENTS_EXTENSION)
+                record = await self.client.register(
+                    spec=self.spec, max_concurrency=self.max_concurrency,
+                    metadata={"runtime": "astrumweaver-worker"},
+                    serving=self.serving, recovery=True,
+                )
+                self._acknowledge_control(record, sent_at=sent_at)
+                _LOG.info("Explicit Control Worker TTL reconciliation accepted")
+            except ControlTransportError as exc:
+                if exc.status_code == 409:
+                    # An authoritative conflict is not a network loss:
+                    # remain OFFLINE, retry no faster than the cooldown.
+                    _LOG.warning("Explicit Worker recovery blocked by Control conflict")
+                else:
+                    self._control_failed(exc)
+                # Keep running for heartbeats but never claim without Online.
+
     async def _wait_for_poll(self) -> None:
         delay = min(
             self.poll_interval_seconds,
@@ -422,6 +485,7 @@ class WorkerRuntime:
                     # Also runs during local/remote drain and OFFLINE pause.
                     # Completion and claim never reset this deadline.
                     await self._heartbeat_if_due()
+                    await self._reconcile_offline_if_due()
                     if not self.ready:
                         await self._wait_for_poll()
                         continue
@@ -457,8 +521,9 @@ class WorkerRuntime:
                     # Server lease expiry/recovery remains authoritative.
                     await self._wait_for_poll()
                 except ControlTransportError as exc:
-                    # Stay live but not ready. Retry a state-less heartbeat,
-                    # never enrollment or automatic ownership reacquisition.
+                    # Stay live but not ready. Retry a stateless heartbeat.
+                    # Only the separate TTL-marked, ownership-validated
+                    # reconciliation may ever reacquire OFFLINE resources.
                     self._control_failed(exc)
                     await self._wait_for_poll()
         finally:

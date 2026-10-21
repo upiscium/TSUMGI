@@ -817,3 +817,23 @@ def test_serving_lease_never_extends_past_request_deadline():
         now=now + timedelta(seconds=1),
     )
     assert repo.get_job(job.job_id).lease_expires_at == request.deadline_at
+
+
+def test_ttl_reconciliation_preserves_existing_runtime_epoch():
+    repo = InMemoryControlRepository(worker_ttl_seconds=1)
+    original = serving_worker("epoch-recovery")
+    assert original.serving is not None
+    repo.register_worker(original)
+    repo.expire_stale_workers(now=utc_now() + timedelta(seconds=3))
+    assert repo.get_worker("epoch-recovery").state is WorkerState.OFFLINE
+    renewed = serving_worker(
+        "epoch-recovery", epoch="22345678-1234-4234-9234-123456789abc"
+    )
+    with pytest.raises(ConflictError, match="runtime epoch differs"):
+        repo.register_worker(renewed, recovery=True)
+    assert repo.get_worker("epoch-recovery").state is WorkerState.OFFLINE
+    recovered = repo.register_worker(original, recovery=True)
+    assert recovered.state is WorkerState.ONLINE
+    assert recovered.serving == original.serving
+    with pytest.raises(ConflictError, match="not eligible"):
+        repo.register_worker(original, recovery=True)
