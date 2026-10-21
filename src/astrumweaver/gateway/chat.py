@@ -49,6 +49,7 @@ _ALLOWED_REQUEST_FIELDS = frozenset(
         "n",
         "stream",
         "stream_options",
+        "store",
     }
 )
 
@@ -597,6 +598,20 @@ def compile_chat_request(
             "unsupported_field",
             "request contains fields outside the Stage A subset",
         )
+
+    # OpenAI-compatible clients may explicitly send store=false by default.
+    # Accept only that no-storage intent; TSUMGI has no Stored Completions
+    # capability (tracked separately) and must never silently accept true.
+    if "store" in data:
+        if type(data["store"]) is not bool:
+            raise ChatGatewayError(
+                "invalid_request", "store must be a boolean"
+            )
+        if data["store"]:
+            raise ChatGatewayError(
+                "unsupported_feature", "Stored Completions are not supported"
+            )
+        data.pop("store")
 
     if data.get("model") != profile.profile_id:
         raise ChatGatewayError(

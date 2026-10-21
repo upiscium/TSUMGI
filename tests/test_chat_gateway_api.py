@@ -619,7 +619,10 @@ async def test_gateway_disconnect_cancels_only_owned_job():
 
 
 @pytest.mark.asyncio
-async def test_streaming_chat_emits_ordered_sse_and_done_after_success():
+@pytest.mark.parametrize("explicit_store_false", [False, True])
+async def test_streaming_chat_emits_ordered_sse_and_done_after_success(
+    explicit_store_false,
+):
     repository = InMemoryControlRepository()
     gateway, advertisement = serving_values()
     register_worker(repository, advertisement)
@@ -668,6 +671,7 @@ async def test_streaming_chat_emits_ordered_sse_and_done_after_success():
                 "model": "local-code-v1",
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": True,
+                **({"store": False} if explicit_store_false else {}),
             },
         )
     await worker
@@ -688,6 +692,45 @@ async def test_streaming_chat_emits_ordered_sse_and_done_after_success():
     assert len(jobs) == 1
     assert jobs[0].max_attempts == 1
     assert jobs[0].status is JobStatus.SUCCEEDED
+    assert "store" not in jobs[0].payload
+    assert "store" not in jobs[0].payload["request"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("store", "error_code"),
+    [
+        (True, "unsupported_feature"),
+        (None, "invalid_request"),
+        (0, "invalid_request"),
+        (1, "invalid_request"),
+        ("false", "invalid_request"),
+        ([], "invalid_request"),
+    ],
+)
+async def test_http_store_true_and_invalid_types_reject_before_job_admission(
+    store, error_code,
+):
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://control") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"authorization": f"Bearer {CLIENT_TOKEN}"},
+            json={
+                "model": "local-code-v1",
+                "messages": [{"role": "user", "content": "Do not store me"}],
+                "store": store,
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == error_code
+    assert repository.list_jobs() == []
 
 
 @pytest.mark.asyncio
@@ -825,7 +868,8 @@ async def test_partial_stream_failure_has_no_done_and_no_retry():
 
 
 @pytest.mark.asyncio
-async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape():
+@pytest.mark.parametrize("v2_request", [False, True])
+async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_request):
     repository = InMemoryControlRepository()
     gateway, advertisement = serving_values(tools=True)
     register_worker(repository, advertisement)
@@ -901,7 +945,11 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape():
                         },
                     }
                 ],
-                "tool_choice": "auto",
+                **(
+                    {"store": False, "max_completion_tokens": 128}
+                    if v2_request else
+                    {"tool_choice": "auto"}
+                ),
             },
         )
         await first_worker
@@ -991,7 +1039,11 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape():
                         },
                     }
                 ],
-                "tool_choice": "auto",
+                **(
+                    {"store": False, "max_completion_tokens": 128}
+                    if v2_request else
+                    {"tool_choice": "auto"}
+                ),
             },
         )
         await second_worker
@@ -1007,6 +1059,11 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape():
     assert history[1]["reasoning_content"] == "I need the file contents."
     assert history[1]["tool_calls"][0]["id"] == "call_read"
     assert history[2]["tool_call_id"] == "call_read"
+    for job in jobs:
+        assert "store" not in job.payload
+        assert "store" not in job.payload["request"]
+        if v2_request:
+            assert job.payload["request"]["max_tokens"] == 128
 
 
 class _DisconnectedRequest:
