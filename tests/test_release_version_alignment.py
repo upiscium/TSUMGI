@@ -1,26 +1,35 @@
-"""Validate v0.1.1 GA candidate versions while preserving published release history."""
+"""Validate v0.1.2 release tier while preserving immutable v0.1.1 history."""
 import re
 import hashlib
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+PROJECT_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+# The v0.1.2 RC and GA are the only allowed release tiers for current source.
+EXPECTED_NIX_VERSION_BY_PYTHON = {
+    "0.1.2rc1": "0.1.2pre1",
+    "0.1.2": "0.1.2",
+}
+assert PROJECT_VERSION in EXPECTED_NIX_VERSION_BY_PYTHON, PROJECT_VERSION
+CURRENT_NIX_VERSION = EXPECTED_NIX_VERSION_BY_PYTHON[PROJECT_VERSION]
+
 # Only exact, real, quoted Nix attribute assignments count. A substring such
-# as 0.1.1pre2 or an extra comment must never satisfy the exact GA identity.
+# as 0.1.2pre2 or an extra comment must never satisfy the exact RC/GA identity.
 EXPECTED_NIX_PRODUCT_ATTRIBUTES = {
-    "nix/package.nix": [("version", "0.1.1")],
-    "nix/integration-package.nix": [("version", "0.1.1")],
+    "nix/package.nix": [("version", CURRENT_NIX_VERSION)],
+    "nix/integration-package.nix": [("version", CURRENT_NIX_VERSION)],
     "nix/control-support.nix": [
-        ("version", "0.1.1"),
-        ("name", "astrumweaver-control-support-0.1.1"),
+        ("version", CURRENT_NIX_VERSION),
+        ("name", f"astrumweaver-control-support-{CURRENT_NIX_VERSION}"),
     ],
     "nix/worker-support.nix": [
-        ("name", "astrumweaver-worker-support-0.1.1"),
+        ("name", f"astrumweaver-worker-support-{CURRENT_NIX_VERSION}"),
     ],
     "nix/installer-support.nix": [
-        ("version", "0.1.1"),
-        ("name", "astrumweaver-installer-support-base-0.1.1"),
-        ("name", "astrumweaver-installer-support-0.1.1"),
+        ("version", CURRENT_NIX_VERSION),
+        ("name", f"astrumweaver-installer-support-base-{CURRENT_NIX_VERSION}"),
+        ("name", f"astrumweaver-installer-support-{CURRENT_NIX_VERSION}"),
     ],
 }
 
@@ -100,8 +109,9 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
 def test_ga_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "astrumweaver"
-    assert project["version"] == "0.1.1"
-    assert re.fullmatch(r"\d+\.\d+\.\d+", project["version"])
+    assert project["version"] in ("0.1.2rc1", "0.1.2")
+    assert project["version"] == PROJECT_VERSION
+    assert re.fullmatch(r"0\.1\.2(?:rc1)?", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
         _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
     assert (ROOT / "src/astrumweaver").is_dir()
@@ -115,7 +125,7 @@ def test_ga_candidate_product_versions_reject_incorrect_full_attributes() -> Non
             original = f'{key} = "{value}";'
             assert original in data
             invalid = data.replace(original, f'{key} = "{value}pre2";', 1)
-            invalid += '\n# version = "0.1.1";\n'
+            invalid += f'\n# version = "{CURRENT_NIX_VERSION}";\n'
             try:
                 _assert_current_nix_product_attributes(path, invalid)
             except AssertionError:
@@ -141,11 +151,11 @@ def test_ga_candidate_product_versions_ignore_comments_for_missing_declarations(
 
 def test_ga_candidate_product_versions_ignore_nested_block_comment_decoys() -> None:
     fake = (
-        '/* outer\n  /* inner */\n  version = "0.1.1";\n*/\n'
-        '  version = "0.1.1pre2";\n'
+        f'/* outer\n  /* inner */\n  version = "{CURRENT_NIX_VERSION}";\n*/\n'
+        f'  version = "{CURRENT_NIX_VERSION}pre2";\n'
     )
     mask = _nix_code_mask(fake)
-    assert not mask[fake.index('version = "0.1.1"')]
+    assert not mask[fake.index(f'version = "{CURRENT_NIX_VERSION}"')]
     try:
         _assert_current_nix_product_attributes("nix/package.nix", fake)
     except AssertionError:
@@ -158,11 +168,11 @@ def test_ga_candidate_product_versions_ignore_indented_shell_decoys() -> None:
     fake = (
         "installPhase = ''\n"
         '  cp migrations/*.sql /tmp/example\n'
-        '  version = "0.1.1";\n'
+        f'  version = "{CURRENT_NIX_VERSION}";\n'
         "'';\n"
-        '  version = "0.1.1pre2";\n'
+        f'  version = "{CURRENT_NIX_VERSION}pre2";\n'
     )
-    assert not _nix_code_mask(fake)[fake.index('version = "0.1.1"')]
+    assert not _nix_code_mask(fake)[fake.index(f'version = "{CURRENT_NIX_VERSION}"')]
     try:
         _assert_current_nix_product_attributes("nix/package.nix", fake)
     except AssertionError:
@@ -171,11 +181,15 @@ def test_ga_candidate_product_versions_ignore_indented_shell_decoys() -> None:
         raise AssertionError("indented string incorrectly satisfied GA identity")
 
 
-def test_v011_ga_release_note_version_identity_matches_current_packages() -> None:
-    """Release notes must not describe a different Python/Nix release tier."""
+def test_historical_v011_ga_release_notes_remain_intact() -> None:
+    """Published v0.1.1 GA notes remain valid historical evidence."""
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     doc = (ROOT / "docs/releases/v0.1.1.md").read_text()
-    assert project["version"] == "0.1.1"
+    # Frozen, public historical GA source notes are independent of current RC.
+    assert hashlib.sha256((ROOT / "docs/releases/v0.1.1.md").read_bytes()).hexdigest() == (
+        "448f945c655aa3b5d6280d2bd4f8d3b8c4c152ddcaa7e7f191d292656eff175c"
+    )
+    assert project["version"] == PROJECT_VERSION
     tick = chr(96)
     assert "| Intended GitHub tag | " + tick + "v0.1.1" + tick in doc
     assert "| Python distribution | " + tick + "astrumweaver==0.1.1" + tick + " |" in doc
@@ -190,6 +204,30 @@ def test_v011_ga_release_note_version_identity_matches_current_packages() -> Non
     assert "does not include unmerged upstream-Qwen3.8 packaging [#158]" in doc.replace("**", "")
     assert "000–005 are unchanged" in doc
     assert "4 of 5" in doc
+
+
+def test_v012_rc_and_ga_notes_are_present_and_release_tier_matches_metadata() -> None:
+    rc = (ROOT / "docs/releases/v0.1.2-rc.1.md").read_text()
+    ga = (ROOT / "docs/releases/v0.1.2.md").read_text()
+    assert "v0.1.2-rc.1" in rc
+    assert "astrumweaver==0.1.2rc1" in rc
+    assert "0.1.2pre1" in rc
+    assert "v0.1.2" in ga
+    assert ("astrumweaver==0.1.2" + chr(96)) in ga
+    assert "Nix" in ga and "0.1.2" in ga
+    current_doc = rc if PROJECT_VERSION == "0.1.2rc1" else ga
+    assert f"astrumweaver=={PROJECT_VERSION}" in current_doc
+    assert (chr(96) + CURRENT_NIX_VERSION + chr(96)) in current_doc
+    if PROJECT_VERSION == "0.1.2rc1":
+        assert "| Proposed Git tag" in current_doc
+    else:
+        assert "| Intended GitHub tag" in current_doc
+    for note in (rc, ga):
+        assert "PR #158" in note and "PR #166" in note and "PR #169" in note
+        assert "#168" in note and "#149" in note
+        assert "does not establish publication" in note
+        assert "Stored Completions" in note
+        assert "no" in note.lower() and "Control" in note
 
 
 def test_published_v011_rc_notes_remain_a_distinct_historical_artifact() -> None:
@@ -238,7 +276,14 @@ def test_ga_release_notes_constrain_claims_and_publication() -> None:
             assert phrase in gate, phrase
     assert "Feature Freeze" in readiness
     assert "v0.1.0-rc.1 was" not in readme  # README links to published RC, avoids stale preparation.
-    assert "feature-frozen" in readme
+    # README must reflect the current published stable line and next
+    # maintenance release instead of claiming v0.1.0 is still current.
+    if PROJECT_VERSION == "0.1.2rc1":
+        assert "> **Published stable release:** [v0.1.1]" in readme
+        assert "> **v0.1.2 maintenance candidate:**" in readme
+    else:
+        assert "> **Published stable release:** [v0.1.2]" in readme
+    assert "v0.1.2" in readme
     assert "v0.1.0.md" in readme and "ga-qualification-v0.1.0.md" in readme
 
 def test_ga_scope_does_not_imply_release_or_site_authorization() -> None:

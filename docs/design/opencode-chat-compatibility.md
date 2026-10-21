@@ -127,3 +127,19 @@ remains the established production acceptance baseline until a separate
 real client v2 trial succeeds. The actual Stored Completions API, storage,
 access controls and retention design are future scope tracked by
 [Issue #168](https://github.com/upiscium/TSUMGI/issues/168).
+
+
+## Post-#167 real OpenCode v2.0.32 acceptance (2026-10-21)
+
+The preceding compatibility note was written **before** operational acceptance.
+Issue [#167](https://github.com/upiscium/TSUMGI/issues/167) subsequently
+confirmed the exact first-request `store: false` mismatch, and merged
+[PR #169](https://github.com/upiscium/TSUMGI/pull/169) with explicit false-only
+normalization. A real OpenCode **v2.0.32** synthetic Coding file edit
+**passed** against the installed revised Control, PostgreSQL and Qwen3.8 Worker:
+two completed `read` tool calls, one completed `edit`, 3/3 Python
+checks and CLI exit 0. Legacy v1.18.35 regression also passed 2/2 tasks,
+19/19 assertions. This is **bounded acceptance** with an isolated workspace,
+not an unconditional compatibility or latency claim for arbitrary OpenCode
+v2 clients, plugins or multi-file workloads. No actual Stored Completions
+implementation was introduced (#168 Future Work).
