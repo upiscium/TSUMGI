@@ -374,6 +374,21 @@ def test_stored_completions_unavailable_and_store_type_fails_closed(store, code)
     assert error.value.code == code
 
 
+def test_store_false_does_not_bypass_request_size_limit():
+    with pytest.raises(ChatGatewayError) as error:
+        compile_chat_request(
+            {
+                "model": "local-code-v1",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "store": False,
+            },
+            profile(),
+            request_size_bytes=65537,
+        )
+    assert error.value.code == "request_too_large"
+    assert error.value.status_code == 413
+
+
 def test_streaming_request_compiles_to_same_bounded_job_envelope():
     compiled = compile_chat_request(
         {

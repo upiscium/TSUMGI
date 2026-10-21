@@ -948,7 +948,7 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_r
                 **(
                     {"store": False, "max_completion_tokens": 128}
                     if v2_request else
-                    {"tool_choice": "auto", "max_tokens": 128}
+                    {"tool_choice": "auto"}
                 ),
             },
         )
@@ -1042,7 +1042,7 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_r
                 **(
                     {"store": False, "max_completion_tokens": 128}
                     if v2_request else
-                    {"tool_choice": "auto", "max_tokens": 128}
+                    {"tool_choice": "auto"}
                 ),
             },
         )
@@ -1062,6 +1062,8 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_r
     for job in jobs:
         assert "store" not in job.payload
         assert "store" not in job.payload["request"]
+        if v2_request:
+            assert job.payload["request"]["max_tokens"] == 128
 
 
 class _DisconnectedRequest:
