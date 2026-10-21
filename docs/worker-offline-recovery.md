@@ -9,7 +9,10 @@ remains alive and serves local health diagnostics but cannot claim new Jobs.
 Starting with this change, Control records the reason for a Worker heartbeat
 TTL expiry in the existing metadata key
 _tsumgi_control_offline_reason=heartbeat_timeout (Control-managed only).
-An administrative OFFLINE transition instead sets operator. The metadata
+An administrative OFFLINE transition instead sets operator. An expired
+DRAINING Worker becomes draining_expired, which cannot be automatically
+recovered because the operator's drain intent must survive TTL expiry.
+The metadata
 key is reserved; Worker-submitted registration and heartbeat metadata carrying
 it are rejected.
 
@@ -42,3 +45,15 @@ restart after GPU/lease verification.
 Deploy Control support before installing updated Workers. Validate against
 an isolated PostgreSQL and test Worker before any production service cutover.
 Do not assume that HTTP 200 from /health implies admission readiness.
+
+## Trusted Worker-token boundary
+
+This mechanism is not authorization against an attacker holding the existing
+shared Worker token. As before, a normal fresh Worker registration can return
+an administrative Offline record to Online after a service restart. The scoped
+new automatic path NEVER sends that normal registration after receiving an
+administrative Offline acknowledgement. Stronger token/UID isolation remains
+the separate deferred trust-boundary issue #149.
+
+A claim-time lazy TTL expiry must use a fresh row predicate so it cannot mark
+a newly reconciled Worker Offline based on a stale prior read.

@@ -826,12 +826,15 @@ class PostgresControlRepository:
                 """
                 UPDATE workers
                 SET state = 'offline',
-                    metadata = metadata || %s,
+                    metadata = metadata || jsonb_build_object(
+                        %s::text,
+                        CASE WHEN state = 'online' THEN %s::text ELSE 'draining_expired' END
+                    ),
                     updated_at = %s
                 WHERE state <> 'offline' AND last_seen_at < %s
                 RETURNING *
                 """,
-                (_json({OFFLINE_REASON_KEY: RECOVERABLE_OFFLINE_REASON}), timestamp, cutoff),
+                (OFFLINE_REASON_KEY, RECOVERABLE_OFFLINE_REASON, timestamp, cutoff),
             ).fetchall()
         return [self._worker(row) for row in rows]
 
@@ -1177,10 +1180,19 @@ class PostgresControlRepository:
                 connection.execute(
                     """
                     UPDATE workers
-                    SET state = 'offline', updated_at = %s
-                    WHERE id = %s
+                    SET state = 'offline',
+                        metadata = metadata || jsonb_build_object(
+                            %s::text,
+                            CASE WHEN state = 'online'
+                                 THEN %s::text ELSE 'draining_expired' END
+                        ),
+                        updated_at = %s
+                    WHERE id = %s AND state <> 'offline' AND last_seen_at < %s
                     """,
-                    (timestamp, worker_id),
+                    (
+                        OFFLINE_REASON_KEY, RECOVERABLE_OFFLINE_REASON,
+                        timestamp, worker_id, cutoff,
+                    ),
                 )
                 return None
             if worker.state is not WorkerState.ONLINE:

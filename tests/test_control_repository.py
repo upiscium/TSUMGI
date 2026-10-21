@@ -378,3 +378,40 @@ def test_control_reserved_offline_metadata_cannot_be_forged_via_heartbeat():
         ))
     with pytest.raises(ConflictError, match="Control-owned"):
         repo.register_worker(WorkerRegistration(spec=spec,metadata={OFFLINE_REASON_KEY:"heartbeat_timeout"}))
+
+
+def test_draining_ttl_expiry_does_not_recover_or_revoke_operator_drain():
+    from datetime import timedelta
+    from astrumweaver.control.repository import (
+        InMemoryControlRepository, ConflictError, OFFLINE_REASON_KEY,
+    )
+    from astrumweaver.control.models import WorkerState, WorkerRegistration, utc_now
+    from astrumweaver import WorkerSpec, ResourceShape
+    repo = InMemoryControlRepository(worker_ttl_seconds=1)
+    spec = WorkerSpec(worker_id="draining-expiry",worker_class="gpu",
+        resources=ResourceShape(gpu_count=1,total_vram_mb=100,max_single_gpu_vram_mb=100),
+        gpu_uuids=("GPU-draining",),capabilities=frozenset({"llm.chat"}))
+    registered = WorkerRegistration(spec=spec)
+    repo.register_worker(registered)
+    repo.set_worker_state(spec.worker_id, WorkerState.DRAINING)
+    repo.expire_stale_workers(now=utc_now()+timedelta(seconds=4))
+    expired=repo.get_worker(spec.worker_id)
+    assert expired.state is WorkerState.OFFLINE
+    assert expired.metadata[OFFLINE_REASON_KEY]=="draining_expired"
+    with pytest.raises(ConflictError,match="not eligible"):
+        repo.register_worker(registered,recovery=True)
+
+
+def test_lazy_claim_expiry_marks_only_online_as_recoverable():
+    from datetime import timedelta
+    from astrumweaver.control.repository import InMemoryControlRepository, OFFLINE_REASON_KEY
+    from astrumweaver.control.models import WorkerState, WorkerRegistration, utc_now
+    from astrumweaver import WorkerSpec, ResourceShape
+    repo=InMemoryControlRepository(worker_ttl_seconds=1)
+    spec=WorkerSpec(worker_id="claim-lazy-expiry", worker_class="gpu",
+        resources=ResourceShape(gpu_count=1,total_vram_mb=100,max_single_gpu_vram_mb=100),
+        gpu_uuids=("GPU-lazy",),capabilities=frozenset({"llm.chat"}))
+    repo.register_worker(WorkerRegistration(spec=spec))
+    assert repo.claim_next_job(spec.worker_id,now=utc_now()+timedelta(seconds=3)) is None
+    assert repo.get_worker(spec.worker_id).state is WorkerState.OFFLINE
+    assert repo.get_worker(spec.worker_id).metadata[OFFLINE_REASON_KEY]=="heartbeat_timeout"

@@ -461,7 +461,11 @@ class InMemoryControlRepository:
             for worker_id, worker in list(self._workers.items()):
                 if worker.state is WorkerState.OFFLINE or worker.last_seen_at >= cutoff:
                     continue
-                metadata = {**dict(worker.metadata), OFFLINE_REASON_KEY: RECOVERABLE_OFFLINE_REASON}
+                reason = (
+                    RECOVERABLE_OFFLINE_REASON
+                    if worker.state is WorkerState.ONLINE else "draining_expired"
+                )
+                metadata = {**dict(worker.metadata), OFFLINE_REASON_KEY: reason}
                 updated = replace(worker, state=WorkerState.OFFLINE, metadata=metadata)
                 self._workers[worker_id] = updated
                 expired.append(updated)
@@ -692,7 +696,14 @@ class InMemoryControlRepository:
             worker = self.get_worker(worker_id)
             _assert_worker_epoch(worker, runtime_instance_epoch)
             if timestamp - worker.last_seen_at > timedelta(seconds=self.worker_ttl_seconds):
-                self._workers[worker_id] = replace(worker, state=WorkerState.OFFLINE)
+                reason = (
+                    RECOVERABLE_OFFLINE_REASON
+                    if worker.state is WorkerState.ONLINE else "draining_expired"
+                )
+                metadata = {**dict(worker.metadata), OFFLINE_REASON_KEY: reason}
+                self._workers[worker_id] = replace(
+                    worker, state=WorkerState.OFFLINE, metadata=metadata
+                )
                 return None
             if worker.state is not WorkerState.ONLINE:
                 return None
