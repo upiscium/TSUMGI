@@ -44,3 +44,17 @@ Safe rollback after another Coding Leaf was added: the current production Contro
 - Production cutover is only accepted after running this same model through the actual Nix package and the TSUMGI Control/Worker stack, with preserving the old Qwen3.6 profile and full service rollback.
 
 **Scope:** use `llama-cpp` Provider (runtime flavor `upstream`) with this selected executable. This output does not claim the standard `#runtime-llama-cpp` nixpkgs version works with Qwen3.8; that remains untested. It also does not change Bonsai's PrismML-only PQ2_0 support or resolve #149/#150.
+
+
+## Installed runtime qualification (2026-10-21)
+
+The earlier preparatory gates in this document precede the accepted physical
+deployment. [#157](https://github.com/upiscium/TSUMGI/issues/157) records
+the full Qwen3.8 27B GGUF SHA-256, dual RTX3060 full-GPU load and Tool Call,
+the live PostgreSQL Control/Worker/Gateway path, OpenCode 1.18.35 six bounded
+Code-edit trials (6/6 tasks, 53/53 assertions), and a real
+Qwen3.8→previous-known-good-Qwen3.8→current-Nix Runtime rollback/reapply.
+The accepted Worker remains an **operator-pinned site deployment**, not a
+fleet-wide auto-update or a universal model/hardware quality certification.
+For OpenCode 2.0.32 compatibility and the no-storage `store: false`
+parameter, see [#167](https://github.com/upiscium/TSUMGI/issues/167).

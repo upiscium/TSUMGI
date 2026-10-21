@@ -109,6 +109,7 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
 def test_ga_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "astrumweaver"
+    assert project["version"] in ("0.1.2rc1", "0.1.2")
     assert project["version"] == PROJECT_VERSION
     assert re.fullmatch(r"0\.1\.2(?:rc1)?", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
@@ -184,6 +185,10 @@ def test_historical_v011_ga_release_notes_remain_intact() -> None:
     """Published v0.1.1 GA notes remain valid historical evidence."""
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     doc = (ROOT / "docs/releases/v0.1.1.md").read_text()
+    # Frozen, public historical GA source notes are independent of current RC.
+    assert hashlib.sha256((ROOT / "docs/releases/v0.1.1.md").read_bytes()).hexdigest() == (
+        "448f945c655aa3b5d6280d2bd4f8d3b8c4c152ddcaa7e7f191d292656eff175c"
+    )
     assert project["version"] == PROJECT_VERSION
     tick = chr(96)
     assert "| Intended GitHub tag | " + tick + "v0.1.1" + tick in doc
@@ -208,7 +213,7 @@ def test_v012_rc_and_ga_notes_are_present_and_release_tier_matches_metadata() ->
     assert "astrumweaver==0.1.2rc1" in rc
     assert "0.1.2pre1" in rc
     assert "v0.1.2" in ga
-    assert "astrumweaver==0.1.2" in ga
+    assert ("astrumweaver==0.1.2" + chr(96)) in ga
     assert "Nix" in ga and "0.1.2" in ga
     current_doc = rc if PROJECT_VERSION == "0.1.2rc1" else ga
     assert f"astrumweaver=={PROJECT_VERSION}" in current_doc
@@ -221,7 +226,8 @@ def test_v012_rc_and_ga_notes_are_present_and_release_tier_matches_metadata() ->
         assert "PR #158" in note and "PR #166" in note and "PR #169" in note
         assert "#168" in note and "#149" in note
         assert "does not establish publication" in note
-        assert "not" in note.lower() and "Control" in note
+        assert "Stored Completions" in note
+        assert "no" in note.lower() and "Control" in note
 
 
 def test_published_v011_rc_notes_remain_a_distinct_historical_artifact() -> None:
@@ -272,7 +278,11 @@ def test_ga_release_notes_constrain_claims_and_publication() -> None:
     assert "v0.1.0-rc.1 was" not in readme  # README links to published RC, avoids stale preparation.
     # README must reflect the current published stable line and next
     # maintenance release instead of claiming v0.1.0 is still current.
-    assert "v0.1.1" in readme
+    if PROJECT_VERSION == "0.1.2rc1":
+        assert "> **Published stable release:** [v0.1.1]" in readme
+        assert "> **v0.1.2 maintenance candidate:**" in readme
+    else:
+        assert "> **Published stable release:** [v0.1.2]" in readme
     assert "v0.1.2" in readme
     assert "v0.1.0.md" in readme and "ga-qualification-v0.1.0.md" in readme
 

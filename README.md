@@ -96,7 +96,9 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 - Existing development machines may later participate as drainable/borrowable workers without reprovisioning.
 
 ## Documentation
-- [v0.1.0 GA release notes](docs/releases/v0.1.0.md) and [qualification checklist](docs/ga-qualification-v0.1.0.md) — frozen functionality, known limits and pending publication gates.
+- [v0.1.2 RC release notes](docs/releases/v0.1.2-rc.1.md) and [planned GA notes](docs/releases/v0.1.2.md) — maintenance release source scope, version and qualification.
+- [v0.1.1 GA](docs/releases/v0.1.1.md) — previous published stable and optional Bonsai 2 contract.
+- [v0.1.0 GA release notes](docs/releases/v0.1.0.md) and [historical qualification checklist](docs/ga-qualification-v0.1.0.md) — previously frozen scope and acceptance evidence.
 - [Release readiness and deployment decision boundaries](docs/release-readiness.md) — candidate selection, verification and operator gates; not a release authorization.
 - [Operator rollout and recovery gates](docs/operator-rollout-gates.md) — service identity, PostgreSQL restoration, existing-version rollback and site go/no-go; production use requires explicit approval.
 - [Naming and compatibility](docs/naming.md)
