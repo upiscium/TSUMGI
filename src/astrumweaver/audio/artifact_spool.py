@@ -19,14 +19,21 @@ import time
 class ArtifactSpool:
     """Store bounded byte artifacts in a private temporary directory.
 
-    ``max_bytes`` bounds each artifact, not total disk usage. Callers must
-    serialize access to an instance and explicitly delete unneeded artifacts.
-    Expired artifacts remain deletable by their authorized scope.
+    ``max_bytes`` bounds each artifact. Optional aggregate quotas account for
+    successful creates until verified deletion, including expired artifacts.
+    Callers must serialize access and explicitly delete or reap artifacts.
+    Expired artifacts remain deletable by their authorized scope. Same-effective-
+    UID actors are trusted; this is not protection against their concurrent edits.
     """
 
-    def __init__(self, root, *, max_bytes, ttl_seconds, clock=time.monotonic):
+    def __init__(self, root, *, max_bytes, ttl_seconds, clock=time.monotonic,
+                 max_total_bytes=None, max_artifacts=None):
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
             raise ValueError("max_bytes must be a positive integer")
+        for name, value in (("max_total_bytes", max_total_bytes),
+                            ("max_artifacts", max_artifacts)):
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"{name} must be a positive built-in integer or None")
         if (isinstance(ttl_seconds, bool)
                 or not isinstance(ttl_seconds, (int, float))
                 or ttl_seconds <= 0):
@@ -47,6 +54,9 @@ class ArtifactSpool:
         except TypeError as exc:
             raise ValueError("invalid spool root") from exc
         self._max_bytes = max_bytes
+        self._max_total_bytes = max_total_bytes
+        self._max_artifacts = max_artifacts
+        self._total_bytes = 0
         self._ttl = ttl_seconds
         self._clock = clock
         self._records = {}
@@ -204,6 +214,12 @@ class ArtifactSpool:
         # the hard per-artifact byte ceiling and corrupting receipt metadata.
         if type(data) is not bytes or len(data) > self._max_bytes:
             raise ValueError("artifact must be exact bytes within max_bytes")
+        if (self._max_total_bytes is not None
+                and self._total_bytes + len(data) > self._max_total_bytes):
+            raise ValueError("aggregate artifact byte quota exceeded")
+        if (self._max_artifacts is not None
+                and len(self._records) >= self._max_artifacts):
+            raise ValueError("artifact count quota exceeded")
         digest = hashlib.sha256(data).hexdigest()
         with self._directory() as directory_fd:
             for _ in range(16):
@@ -218,8 +234,10 @@ class ArtifactSpool:
                     continue
             else:
                 raise ValueError("cannot allocate artifact")
+            identity = None
             try:
                 try:
+                    identity = self._identity(os.fstat(fd))
                     os.fchmod(fd, 0o600)
                     remaining = memoryview(data)
                     while remaining:
@@ -232,9 +250,22 @@ class ArtifactSpool:
                     os.close(fd)
                 created = self._now()
                 self._records[artifact_id] = (scope, created, digest, len(data), identity)
-            except BaseException:
-                os.unlink(artifact_id, dir_fd=directory_fd)
+            except BaseException as exc:
+                # Failed creates never consume quota or produce receipts. If
+                # cleanup fails, retain the original storage error and leave
+                # any orphan to the caller-owned root lifecycle, not the reaper.
+                try:
+                    info = os.stat(artifact_id, dir_fd=directory_fd,
+                                   follow_symlinks=False)
+                    if (identity is None or not stat.S_ISREG(info.st_mode)
+                            or info.st_nlink != 1 or info.st_uid != os.geteuid()
+                            or self._identity(info) != identity):
+                        raise ValueError("unsafe failed-artifact cleanup")
+                    self._unlink_verified(artifact_id, directory_fd)
+                except (OSError, ValueError) as cleanup_error:
+                    exc.add_note(f"artifact cleanup failed: {cleanup_error!s}")
                 raise
+            self._total_bytes += len(data)
         return {"artifact_id": artifact_id, "sha256": digest, "size": len(data)}
 
     def _check_file(self, info, record):
@@ -282,10 +313,45 @@ class ArtifactSpool:
         """
         record = self._record(artifact_id, scope)
         with self._directory() as directory_fd:
-            info = os.stat(artifact_id, dir_fd=directory_fd, follow_symlinks=False)
-            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                    or stat.S_IMODE(info.st_mode) != 0o600
-                    or self._identity(info) != record[4]):
-                raise ValueError("unsafe artifact reclamation")
-            os.unlink(artifact_id, dir_fd=directory_fd)
-            del self._records[artifact_id]
+            self._remove_record(artifact_id, record, directory_fd)
+
+    @staticmethod
+    def _unlink_verified(artifact_id, directory_fd):
+        os.unlink(artifact_id, dir_fd=directory_fd)
+        try:
+            os.stat(artifact_id, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        raise ValueError("artifact removal not verified")
+
+    def _remove_record(self, artifact_id, record, directory_fd):
+        info = os.stat(artifact_id, dir_fd=directory_fd, follow_symlinks=False)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_uid != os.geteuid()
+                or self._identity(info) != record[4]):
+            raise ValueError("unsafe artifact reclamation")
+        self._unlink_verified(artifact_id, directory_fd)
+        del self._records[artifact_id]
+        self._total_bytes -= record[3]
+
+    def reap_expired(self):
+        """Make one bounded pass over recorded entries; return removals only.
+
+        Expiry is inclusive, evaluated once for this call. Never scan the disk
+        for unrecorded files. Unsafe, missing, or failed removals retain their
+        records and quota charges; other expired entries can still be reclaimed.
+        Root/directory validation failures propagate rather than redirect cleanup.
+        """
+        now = self._now()
+        removed = 0
+        with self._directory() as directory_fd:
+            for artifact_id, record in tuple(self._records.items()):
+                if now - record[1] < self._ttl:
+                    continue
+                try:
+                    self._remove_record(artifact_id, record, directory_fd)
+                except (OSError, ValueError):
+                    continue
+                removed += 1
+        return removed
