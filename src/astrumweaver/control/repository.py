@@ -17,7 +17,11 @@ from uuid import uuid4
 
 from ..execution import JobResult
 from ..scheduling import worker_matches
-from ..serving import worker_serving_accepts_job
+from ..serving import (
+    ServingJobBinding,
+    WorkerServingAdvertisement,
+    worker_serving_accepts_job,
+)
 from .models import (
     JobEventRecord,
     JobRecord,
@@ -227,6 +231,61 @@ def _assert_worker_epoch(
         raise ConflictError("worker runtime instance is stale")
 
 
+def _validate_audio_attempt_arguments(
+    job_id: str, worker_id: str, attempt: int, lease_token: str,
+    runtime_instance_epoch: str,
+) -> None:
+    if (
+        any(type(value) is not str or not value.strip() or "\x00" in value
+            for value in (job_id, worker_id, lease_token, runtime_instance_epoch))
+        or type(attempt) is not int
+        or attempt < 1
+    ):
+        raise ConflictError("audio artifact authority rejected")
+
+
+def _assert_audio_artifact_attempt(
+    job: JobRecord | None, worker: WorkerRecord | None, *,
+    job_id: str, worker_id: str, attempt: int, lease_token: str,
+    runtime_instance_epoch: str, now: datetime,
+) -> None:
+    """Check locked authoritative records, never produce a reusable grant."""
+    try:
+        valid = (
+            isinstance(job, JobRecord)
+            and isinstance(worker, WorkerRecord)
+            and job.job_id == job_id
+            and job.status is JobStatus.RUNNING
+            and job.capability in ("audio.synthesize", "audio.transcribe")
+            and isinstance(job.serving, ServingJobBinding)
+            and replace(job.serving) == job.serving
+            and worker.worker_id == worker_id == job.assigned_worker_id
+            and (worker.state is WorkerState.ONLINE
+                 or worker.state is WorkerState.DRAINING)
+            and type(job.attempts) is int
+            and job.attempts == attempt
+            and job.lease_token == lease_token
+            and isinstance(job.lease_expires_at, datetime)
+            and job.lease_expires_at.tzinfo is not None
+            and job.lease_expires_at > now
+            and isinstance(job.deadline_at, datetime)
+            and job.deadline_at.tzinfo is not None
+            and job.deadline_at > now
+            and isinstance(worker.serving, WorkerServingAdvertisement)
+            and runtime_instance_epoch == job.claimed_runtime_instance_epoch
+            and runtime_instance_epoch == worker.serving.runtime_instance.epoch
+            and job.claimed_deployment_revision == job.serving.deployment_revision
+            and job.claimed_serving_contract_revision == job.serving.serving_contract_revision
+            and job.capability in worker.spec.capabilities
+            and worker_matches(worker.spec, job.requirements)
+            and worker_serving_accepts_job(worker.serving, job.capability, job.serving)
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        raise ConflictError("audio artifact authority rejected") from None
+    if not valid:
+        raise ConflictError("audio artifact authority rejected")
+
+
 def _submission_matches(record: JobRecord, submission: JobSubmission) -> bool:
     if record.capability != submission.capability:
         return False
@@ -289,6 +348,26 @@ class InMemoryControlRepository:
 
     def check_storage(self) -> None:
         return None
+
+    def _authorize_audio_artifact_attempt(
+        self, job_id: str, *, worker_id: str, attempt: int, lease_token: str,
+        runtime_instance_epoch: str,
+    ) -> None:
+        """Call-time authority only; future transfer/publication must revalidate.
+
+        The shared Worker Bearer establishes role, not per-Worker identity.
+        No artifact metadata or client payload contributes authority here.
+        """
+        _validate_audio_attempt_arguments(
+            job_id, worker_id, attempt, lease_token, runtime_instance_epoch
+        )
+        with self._lock:
+            _assert_audio_artifact_attempt(
+                self._jobs.get(job_id), self._workers.get(worker_id),
+                job_id=job_id, worker_id=worker_id, attempt=attempt,
+                lease_token=lease_token, runtime_instance_epoch=runtime_instance_epoch,
+                now=utc_now(),
+            )
 
     def _active_job_count(self, worker_id: str) -> int:
         return sum(
