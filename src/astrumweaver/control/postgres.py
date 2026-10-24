@@ -42,12 +42,14 @@ from .repository import (
     StorageUnavailable,
     OFFLINE_REASON_KEY,
     RECOVERABLE_OFFLINE_REASON,
+    _assert_audio_artifact_attempt,
     _assert_worker_epoch,
     _aware,
     _event_size,
     _failure_payload,
     _lease_expiry,
     _submission_matches,
+    _validate_audio_attempt_arguments,
 )
 from .serde import (
     job_result_from_dict,
@@ -1030,6 +1032,41 @@ class PostgresControlRepository:
         if row is None:
             raise NotFoundError(f"job not found: {job_id}")
         return self._job(row)
+
+    def _authorize_audio_artifact_attempt(
+        self, job_id: str, *, worker_id: str, attempt: int, lease_token: str,
+        runtime_instance_epoch: str,
+    ) -> None:
+        """Call-time check, not a grant or per-Worker Bearer authentication.
+
+        Future binary transfer/publication must revalidate current authority.
+        """
+        _validate_audio_attempt_arguments(
+            job_id, worker_id, attempt, lease_token, runtime_instance_epoch
+        )
+        with self._transaction() as connection:
+            # Preserve the global Job -> Worker lock order. Neither lookup
+            # mutates state, and the clock is sampled only after lock waits.
+            job_row = connection.execute(
+                "SELECT * FROM jobs WHERE id::text = %s FOR UPDATE", (job_id,)
+            ).fetchone()
+            if job_row is None:
+                raise ConflictError("audio artifact authority rejected")
+            worker_row = connection.execute(
+                "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
+            ).fetchone()
+            if worker_row is None:
+                raise ConflictError("audio artifact authority rejected")
+            try:
+                job = self._job(job_row)
+                worker = self._worker(worker_row)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                raise ConflictError("audio artifact authority rejected") from None
+            _assert_audio_artifact_attempt(
+                job, worker, job_id=job_id, worker_id=worker_id, attempt=attempt,
+                lease_token=lease_token, runtime_instance_epoch=runtime_instance_epoch,
+                now=utc_now(),
+            )
 
     def get_job_by_idempotency_key(
         self, key: str, *, admission_deadline_at: datetime | None = None
