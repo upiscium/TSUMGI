@@ -1,6 +1,7 @@
 """Issue #174 narrow staging/admission component tests."""
 
 from types import SimpleNamespace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -9,6 +10,16 @@ from astrumweaver.audio.input_channel import AudioInputChannel
 from astrumweaver.control.models import JobSubmission
 from astrumweaver.control.repository import ConflictError, NotFoundError
 from test_audio_artifact_authority_postgres import isolated_database
+from test_audio_artifact_authority import serving_values
+
+
+def transcribe_submission(idempotency_key="input-r1"):
+    binding, _ = serving_values("audio.transcribe")
+    return JobSubmission(
+        capability="audio.transcribe", serving=binding,
+        deadline_at=datetime.now(UTC) + timedelta(seconds=120),
+        idempotency_key=idempotency_key,
+    )
 
 
 WAV = b"RIFF" + (12).to_bytes(4, "little") + b"WAVE" + b"abcd"
@@ -41,15 +52,13 @@ def test_stage_and_submit_keeps_only_reference_metadata(tmp_path):
     assert ref["uri"].startswith("tsumgi-audio-input:")
     assert ref["size_bytes"] == len(WAV)
     assert WAV not in repr(ref).encode()
-    job = channel.submit(JobSubmission(capability="audio.transcribe"),
+    job = channel.submit(transcribe_submission(),
                          artifact_uri=ref["uri"])
     assert job.job_id == "job-staged"
     submitted = repo.submissions[0]
     assert submitted.payload["audio_input"] == ref
     assert WAV not in repr(submitted.payload).encode()
-    with pytest.raises(ConflictError):
-        channel.submit(JobSubmission(capability="audio.transcribe"),
-                       artifact_uri=ref["uri"])
+    assert channel.submit(transcribe_submission(), artifact_uri=ref["uri"]).job_id == job.job_id
 
 
 @pytest.mark.parametrize("body", [b"", b"broken", b"RIFFxxxxbad!"])
@@ -61,11 +70,11 @@ def test_invalid_audio_does_not_allocate(tmp_path, body):
 
 
 def test_failed_job_admission_removes_staging_and_releases_quota(tmp_path):
-    repo = FakeRepository(RuntimeError("admission failed"))
+    repo = FakeRepository(ValueError("admission failed"))
     channel = make_channel(tmp_path, repo)
     ref = channel.stage(WAV)
-    with pytest.raises(RuntimeError, match="admission failed"):
-        channel.submit(JobSubmission(capability="audio.transcribe"),
+    with pytest.raises(ValueError, match="admission failed"):
+        channel.submit(transcribe_submission(),
                        artifact_uri=ref["uri"])
     assert channel._inputs == {}
     assert channel.spool._records == {}
@@ -130,6 +139,7 @@ async def test_authenticated_input_api_and_current_worker_download(tmp_path):
             "capability": "audio.transcribe",
             "serving": claimed.serving.to_dict(),
             "deadline_at": (datetime.now(UTC) + timedelta(seconds=120)).isoformat(),
+            "idempotency_key": "transcribe-input-api-r1",
             "audio_input_uri": reference["uri"],
         }
         admitted = await http.post(
@@ -172,6 +182,7 @@ def test_postgres_input_admission_and_failure_cleanup(tmp_path, isolated_databas
         capability="audio.transcribe",
         serving=existing.serving,
         deadline_at=datetime.now(UTC) + timedelta(seconds=120),
+        idempotency_key="pg-audio-input-r1",
     )
     job = channel.submit(submission, artifact_uri=ref["uri"])
     stored = repo.get_job(job.job_id)
@@ -196,7 +207,41 @@ def test_postgres_input_admission_and_failure_cleanup(tmp_path, isolated_databas
         capability="audio.transcribe",
         serving=existing.serving,
         deadline_at=datetime.now(UTC) - timedelta(seconds=1),
+        idempotency_key="pg-invalid-audio-r1",
     )
     with pytest.raises(Exception):
         channel.submit(invalid, artifact_uri=second["uri"])
     assert second["uri"].removeprefix("tsumgi-audio-input:") not in channel._inputs
+
+
+def test_ambiguous_commit_preserves_input_for_idempotent_retry(tmp_path):
+    from astrumweaver.control.repository import StorageUnavailable
+    repo = FakeRepository(StorageUnavailable("commit outcome unknown"))
+    channel = make_channel(tmp_path, repo)
+    ref = channel.stage(WAV)
+    request = transcribe_submission("stable-commit-retry")
+    with pytest.raises(StorageUnavailable):
+        channel.submit(request, artifact_uri=ref["uri"])
+    ident = ref["uri"].removeprefix("tsumgi-audio-input:")
+    assert ident in channel._inputs
+    assert channel._inputs[ident].job_id is None
+    assert ident in channel.spool._records
+
+    # Reconciliation through the repository's existing idempotency identity.
+    repo.error = None
+    assert channel.submit(request, artifact_uri=ref["uri"]).job_id == "job-staged"
+    assert channel._inputs[ident].job_id == "job-staged"
+
+
+def test_nonserving_or_nonidempotent_submission_fails_before_consuming_input(tmp_path):
+    channel = make_channel(tmp_path, FakeRepository())
+    ref = channel.stage(WAV)
+    for submission in (
+        JobSubmission(capability="audio.transcribe"),
+        JobSubmission(capability="audio.transcribe",
+                      serving=transcribe_submission().serving,
+                      deadline_at=datetime.now(UTC) + timedelta(seconds=120)),
+    ):
+        with pytest.raises(ConflictError):
+            channel.submit(submission, artifact_uri=ref["uri"])
+    assert len(channel._inputs) == 1

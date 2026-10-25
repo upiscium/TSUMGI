@@ -12,7 +12,10 @@ from threading import RLock
 import secrets
 
 from ..control.models import JobSubmission, JobStatus
-from ..control.repository import ConflictError, NotFoundError
+from ..control.repository import (
+    ConflictError, DeadlineExceededError, NoCompatibleDeployment,
+    NotFoundError, OverloadedError, StorageUnavailable,
+)
 from .artifact_spool import ArtifactSpool
 
 
@@ -74,14 +77,16 @@ class AudioInputChannel:
         post-admission local filesystem failure must not roll back the DB Job:
         the caller must handle it explicitly, not claim atomicity.
         """
-        if submission.capability != "audio.transcribe":
+        if (submission.capability != "audio.transcribe"
+                or submission.serving is None or submission.deadline_at is None
+                or not submission.idempotency_key):
             raise ConflictError("audio input binding rejected")
         if type(artifact_uri) is not str or not artifact_uri.startswith("tsumgi-audio-input:"):
             raise ConflictError("audio input binding rejected")
         ident = artifact_uri[len("tsumgi-audio-input:"):]
         with self._lock:
             staged = self._inputs.get(ident)
-            if staged is None or staged.job_id is not None:
+            if staged is None:
                 raise ConflictError("audio input binding rejected")
             try:
                 self.spool.read(ident, scope=staged.scope)
@@ -97,7 +102,14 @@ class AudioInputChannel:
                 recorded = self.repository.submit_job(
                     replace(submission, payload=payload)
                 )
-            except BaseException:
+                if staged.job_id is not None and recorded.job_id != staged.job_id:
+                    raise ConflictError("audio input binding rejected")
+            except StorageUnavailable:
+                # A lost COMMIT acknowledgement is not proof of rollback.
+                # Preserve input for the same idempotency key to reconcile.
+                raise
+            except (ConflictError, DeadlineExceededError, NoCompatibleDeployment,
+                    OverloadedError, ValueError, TypeError, KeyError):
                 # The staged input is not usable after an admission failure.
                 # If verified unlink fails, retain the record for later cleanup.
                 try:
