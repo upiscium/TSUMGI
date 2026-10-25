@@ -27,9 +27,12 @@ class ArtifactSpool:
     """
 
     def __init__(self, root, *, max_bytes, ttl_seconds, clock=time.monotonic,
-                 max_total_bytes=None, max_artifacts=None):
+                 max_total_bytes=None, max_artifacts=None,
+                 recover_on_startup=False):
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
             raise ValueError("max_bytes must be a positive integer")
+        if type(recover_on_startup) is not bool:
+            raise ValueError("recover_on_startup must be boolean")
         for name, value in (("max_total_bytes", max_total_bytes),
                             ("max_artifacts", max_artifacts)):
             if value is not None and (type(value) is not int or value <= 0):
@@ -66,6 +69,8 @@ class ArtifactSpool:
             created_name = None
             try:
                 self._root_identity = self._identity(os.fstat(root_fd))
+                if recover_on_startup:
+                    self._reclaim_crashed_directories(root_fd)
                 # Random temporary names, with a bounded exclusive-creation retry.
                 for _ in range(16):
                     name = "artifact-spool-" + secrets.token_hex(16)
@@ -153,6 +158,55 @@ class ArtifactSpool:
         except BaseException:
             os.close(fd)
             raise
+
+    def _reclaim_crashed_directories(self, root_fd):
+        """Optional cold-start cleanup for an exclusively owned Control root.
+
+        The caller MUST ensure no other Control/Spool instance uses this root.
+        Only our exact private directory/file naming and ownership are accepted;
+        unfamiliar or tampered entries are left for operator inspection.
+        There is no attempt to recover lost in-memory artifact receipts.
+        """
+        names = os.listdir(root_fd)
+        if len(names) > 256:
+            raise ValueError("too many spool startup recovery entries")
+        for name in names:
+            if not re.fullmatch(r"artifact-spool-[0-9a-f]{32}", name):
+                continue
+            try:
+                info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if (not stat.S_ISDIR(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o700):
+                continue
+            fd = os.open(name, self._directory_flags(), dir_fd=root_fd)
+            try:
+                if self._identity(os.fstat(fd)) != self._identity(info):
+                    continue
+                files = os.listdir(fd)
+                if len(files) > 512:
+                    continue
+                safe = True
+                for artifact_id in files:
+                    if not re.fullmatch(r"[0-9a-f]{64}", artifact_id):
+                        safe = False
+                        break
+                    item = os.stat(artifact_id, dir_fd=fd, follow_symlinks=False)
+                    if (not stat.S_ISREG(item.st_mode)
+                            or item.st_uid != os.geteuid()
+                            or stat.S_IMODE(item.st_mode) != 0o600
+                            or item.st_nlink != 1):
+                        safe = False
+                        break
+                if not safe:
+                    continue
+                for artifact_id in files:
+                    os.unlink(artifact_id, dir_fd=fd)
+                os.rmdir(name, dir_fd=root_fd)
+            finally:
+                os.close(fd)
 
     @contextmanager
     def _directory(self):

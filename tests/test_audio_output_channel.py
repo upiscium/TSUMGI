@@ -353,3 +353,170 @@ async def test_real_postgres_terminal_output_round_trip(tmp_path, isolated_datab
         assert durable.result.artifacts[0].uri == ref["uri"]
         assert WAV not in json.dumps(done.json()).encode()
         assert (await client.get(get_url(env.claim, ref), headers=CLIENT)).content == WAV
+
+# Wave2D: reclaim no-longer-authorized attempts without waiting for TTL.
+@pytest.mark.asyncio
+async def test_cancelled_output_is_reaped_and_quota_reused(tmp_path):
+    env = new_env(tmp_path, max_artifacts=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app), base_url="http://control",
+    ) as client:
+        previous = await client.post(
+            output_url(env.claim), content=WAV, headers=worker_headers(env.claim),
+        )
+        assert previous.status_code == 201
+        ref = previous.json()
+        env.repo.cancel_job(env.claim.job_id)
+        assert env.channel.reap_abandoned() == 1
+        assert env.channel.reap_abandoned() == 0
+        assert not env.channel._staged
+        assert (await client.get(get_url(env.claim, ref), headers=CLIENT)).status_code == 404
+
+        now = datetime.now(UTC)
+        queued = env.repo.submit_job(JobSubmission(
+            capability="audio.synthesize", serving=env.claim.serving,
+            deadline_at=now + timedelta(seconds=120),
+        ), now=now)
+        other = env.repo.claim_next_job(
+            "other", runtime_instance_epoch=EPOCH, now=now,
+        )
+        assert other and other.job_id == queued.job_id
+        stage = await client.post(
+            output_url(other, worker="other"), content=WAV,
+            headers=worker_headers(other),
+        )
+        assert stage.status_code == 201, stage.text
+        assert stage.json()["uri"] != ref["uri"]
+
+
+@pytest.mark.asyncio
+async def test_retry_reclaims_previous_attempt_without_renewing_old_output(tmp_path):
+    env = new_env(tmp_path, max_artifacts=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app), base_url="http://control",
+    ) as client:
+        first = await client.post(
+            output_url(env.claim), content=WAV, headers=worker_headers(env.claim),
+        )
+        assert first.status_code == 201
+        env.repo.fail_job(
+            env.claim.job_id, "retry", retryable=True,
+            worker_id="owner", lease_token=env.claim.lease_token,
+            runtime_instance_epoch=EPOCH,
+        )
+        next_claim = env.repo.claim_next_job(
+            "owner", runtime_instance_epoch=EPOCH,
+        )
+        assert next_claim is not None and next_claim.attempts == 2
+        assert env.channel.reap_abandoned() == 1
+        assert (await client.get(get_url(env.claim, first.json()),
+                                 headers=CLIENT)).status_code == 404
+        second = await client.post(
+            output_url(next_claim), content=WAV,
+            headers=worker_headers(next_claim),
+        )
+        assert second.status_code == 201, second.text
+        assert second.json()["uri"] != first.json()["uri"]
+
+
+@pytest.mark.asyncio
+async def test_successful_output_kept_and_unused_output_reaped(tmp_path):
+    env = new_env(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app), base_url="http://control",
+    ) as client:
+        result = await client.post(
+            output_url(env.claim), content=WAV, headers=worker_headers(env.claim),
+        )
+        assert result.status_code == 201
+        ref = result.json()
+        done = await client.post(
+            f"/v1/workers/owner/jobs/{env.claim.job_id}/complete",
+            json=completion_body(env.claim, [ref]), headers=WORKER,
+        )
+        assert done.status_code == 200
+        assert env.channel.reap_abandoned() == 0
+        download = await client.get(get_url(env.claim, ref), headers=CLIENT)
+        assert download.status_code == 200 and download.content == WAV
+
+    unused_root = tmp_path / "next"
+    unused_root.mkdir()
+    unused = new_env(unused_root)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=unused.app), base_url="http://control",
+    ) as client:
+        stage = await client.post(
+            output_url(unused.claim), content=WAV, headers=worker_headers(unused.claim),
+        )
+        assert stage.status_code == 201
+        done = await client.post(
+            f"/v1/workers/owner/jobs/{unused.claim.job_id}/complete",
+            json=completion_body(unused.claim, []), headers=WORKER,
+        )
+        assert done.status_code == 200
+        assert unused.channel.reap_abandoned() == 1
+        assert not unused.channel._staged
+
+
+def test_abandoned_cleanup_retains_receipt_after_failed_disk_delete(tmp_path, monkeypatch):
+    import errno
+    env = new_env(tmp_path, max_artifacts=1)
+    ref = env.channel.stage(
+        env.claim.job_id, worker_id="owner", attempt=env.claim.attempts,
+        lease_token=env.claim.lease_token, runtime_instance_epoch=EPOCH, data=WAV,
+    )
+    env.repo.cancel_job(env.claim.job_id)
+    original = env.channel._spool.delete
+
+    def fail(*args, **kwargs):
+        raise OSError(errno.EIO, "simulated delete failure")
+
+    monkeypatch.setattr(env.channel._spool, "delete", fail)
+    assert env.channel.reap_abandoned() == 0
+    assert ref.uri.removeprefix("tsumgi-audio:") in env.channel._staged
+    monkeypatch.setattr(env.channel._spool, "delete", original)
+    assert env.channel.reap_abandoned() == 1
+    assert not env.channel._staged
+
+
+def test_abandoned_cleanup_does_not_delete_on_repository_outage(tmp_path, monkeypatch):
+    from astrumweaver.control import StorageUnavailable
+    env = new_env(tmp_path, max_artifacts=1)
+    ref = env.channel.stage(
+        env.claim.job_id, worker_id="owner", attempt=env.claim.attempts,
+        lease_token=env.claim.lease_token, runtime_instance_epoch=EPOCH, data=WAV,
+    )
+    original = env.repo.get_job
+
+    def unavailable(*args, **kwargs):
+        raise StorageUnavailable("temporary outage")
+
+    monkeypatch.setattr(env.repo, "get_job", unavailable)
+    assert env.channel.reap_abandoned() == 0
+    assert ref.uri.removeprefix("tsumgi-audio:") in env.channel._staged
+    monkeypatch.setattr(env.repo, "get_job", original)
+    assert env.channel.reap_abandoned() == 0
+    assert env.channel._spool.read(
+        ref.uri.removeprefix("tsumgi-audio:"),
+        scope=next(iter(env.channel._staged.values())).scope,
+    ) == WAV
+
+
+def test_postgres_terminal_attempt_cleanup_releases_disk_and_receipt(
+    tmp_path, isolated_database,
+):
+    repo = PostgresControlRepository(isolated_database, lease_seconds=60)
+    env = new_env(tmp_path, repository=repo, max_artifacts=1)
+    ref = env.channel.stage(
+        env.claim.job_id, worker_id="owner", attempt=env.claim.attempts,
+        lease_token=env.claim.lease_token, runtime_instance_epoch=EPOCH, data=WAV,
+    )
+    artifact_id = ref.uri.removeprefix("tsumgi-audio:")
+    scope = env.channel._staged[artifact_id].scope
+    repo.cancel_job(env.claim.job_id)
+    assert repo.get_job(env.claim.job_id).status is JobStatus.CANCELLED
+    assert env.channel.reap_abandoned() == 1
+    assert artifact_id not in env.channel._staged
+    with pytest.raises(ValueError):
+        env.channel._spool.read(artifact_id, scope=scope)
+    assert env.channel.reap_abandoned() == 0
