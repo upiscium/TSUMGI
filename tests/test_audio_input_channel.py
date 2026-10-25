@@ -606,3 +606,121 @@ def test_pending_input_does_not_rebind_to_job_with_only_matching_artifact_ref(tm
             lease_token=claim.lease_token, runtime_instance_epoch=EPOCH,
         )
     assert channel._inputs[ref["uri"].removeprefix("tsumgi-audio-input:")].job_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("capability", "payload"), [
+    ("audio.transcribe", {}),
+    ("audio.transcribe", {"audio_input": {"uri": "tsumgi-audio-input:forged"}}),
+    ("audio.synthesize", {"audio_input": {"uri": "tsumgi-audio-input:forged"}}),
+])
+async def test_opted_in_generic_job_route_rejects_unstaged_audio(
+    tmp_path, capability, payload,
+):
+    import httpx
+    from astrumweaver.control import InMemoryControlRepository
+    from astrumweaver.control.api import create_app
+
+    repo = InMemoryControlRepository()
+    channel = make_channel(tmp_path, repo)
+    app = create_app(
+        repo, client_token="client-secret", worker_token="worker-secret",
+        audio_input_channel=channel,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://control",
+    ) as client:
+        result = await client.post(
+            "/v1/jobs",
+            json={"protocol_version": "v1", "capability": capability,
+                  "payload": payload},
+            headers={"authorization": "Bearer client-secret"},
+        )
+        assert result.status_code == 422, result.text
+        assert result.json()["detail"] == "use staged audio input admission"
+    assert repo.list_jobs() == []
+    assert channel._inputs == {}
+    assert channel.spool._records == {}
+
+
+@pytest.mark.asyncio
+async def test_opted_in_generic_job_route_preserves_unrelated_jobs(tmp_path):
+    import httpx
+    from astrumweaver.control import InMemoryControlRepository
+    from astrumweaver.control.api import create_app
+
+    repo = InMemoryControlRepository()
+    channel = make_channel(tmp_path, repo)
+    app = create_app(
+        repo, client_token="client-secret", worker_token="worker-secret",
+        audio_input_channel=channel,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://control",
+    ) as client:
+        result = await client.post(
+            "/v1/jobs",
+            json={"protocol_version": "v1", "capability": "audio.synthesize",
+                  "payload": {"text": "safe nonbinary input"}},
+            headers={"authorization": "Bearer client-secret"},
+        )
+        assert result.status_code == 201, result.text
+    assert len(repo.list_jobs()) == 1
+
+
+@pytest.mark.asyncio
+async def test_generic_job_route_unchanged_when_audio_input_not_enabled():
+    import httpx
+    from astrumweaver.control import InMemoryControlRepository
+    from astrumweaver.control.api import create_app
+
+    repo = InMemoryControlRepository()
+    app = create_app(
+        repo, client_token="client-secret", worker_token="worker-secret",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://control",
+    ) as client:
+        for capability, payload in (
+            ("audio.transcribe", {}),
+            ("audio.synthesize", {"audio_input": {"uri": "legacy-json-field"}}),
+        ):
+            result = await client.post(
+                "/v1/jobs",
+                json={"protocol_version": "v1", "capability": capability,
+                      "payload": payload},
+                headers={"authorization": "Bearer client-secret"},
+            )
+            assert result.status_code == 201, result.text
+    assert len(repo.list_jobs()) == 2
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_rejects_generic_unstaged_audio_before_database_write(
+    tmp_path, isolated_database,
+):
+    import httpx
+    import psycopg
+    from astrumweaver.control import PostgresControlRepository
+    from astrumweaver.control.api import create_app
+
+    repo = PostgresControlRepository(isolated_database, lease_seconds=60)
+    channel = make_channel(tmp_path, repo)
+    app = create_app(
+        repo, client_token="client-secret", worker_token="worker-secret",
+        audio_input_channel=channel,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://control",
+    ) as client:
+        for capability in ("audio.transcribe", "audio.synthesize"):
+            response = await client.post(
+                "/v1/jobs",
+                json={"protocol_version": "v1", "capability": capability,
+                      "payload": {"audio_input": {"uri": "unverified-metadata"}}},
+                headers={"authorization": "Bearer client-secret"},
+            )
+            assert response.status_code == 422, response.text
+    with psycopg.connect(isolated_database) as connection:
+        count = connection.execute("SELECT count(*) FROM jobs").fetchone()[0]
+    assert count == 0
