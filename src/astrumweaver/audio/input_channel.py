@@ -114,7 +114,9 @@ class AudioInputChannel:
             until_deadline = (
                 submission.deadline_at.astimezone(UTC) - datetime.now(UTC)
             ).total_seconds()
-            if until_deadline <= 0 or until_deadline >= remaining:
+            if staged.submission is None and (
+                until_deadline <= 0 or until_deadline >= remaining
+            ):
                 # A definitely rejected first admission cannot retain this
                 # pre-admission input indefinitely. Pending/bound work is
                 # never destroyed by an invalid retry.
@@ -192,7 +194,8 @@ class AudioInputChannel:
         ident = artifact_uri.removeprefix("tsumgi-audio-input:")
         with self._lock:
             staged = self._inputs.get(ident)
-            if staged is None or staged.job_id is not None:
+            if (staged is None or staged.job_id is not None
+                    or staged.submission is not None):
                 raise NotFoundError("staged audio input unavailable")
             self.spool.delete(ident, scope=staged.scope)
             del self._inputs[ident]

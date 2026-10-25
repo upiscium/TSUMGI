@@ -303,3 +303,38 @@ def test_input_ttl_must_cover_admitted_job_deadline(tmp_path):
     fresh = channel.stage(WAV)
     assert channel.submit(transcribe_submission("short-enough"),
                           artifact_uri=fresh["uri"]).job_id == "job-staged"
+
+
+def test_pending_ambiguous_admission_cannot_be_discarded(tmp_path):
+    from astrumweaver.control.repository import StorageUnavailable
+    repo = FakeRepository(StorageUnavailable("unknown outcome"))
+    channel = make_channel(tmp_path, repo)
+    ref = channel.stage(WAV)
+    request = transcribe_submission("pending-immutable")
+    with pytest.raises(StorageUnavailable):
+        channel.submit(request, artifact_uri=ref["uri"])
+    with pytest.raises(NotFoundError):
+        channel.discard(ref["uri"])
+    ident = ref["uri"].removeprefix("tsumgi-audio-input:")
+    assert ident in channel._inputs
+    assert ident in channel.spool._records
+    repo.error = None
+    assert channel.submit(request, artifact_uri=ref["uri"]).job_id == "job-staged"
+
+
+def test_identical_idempotent_replay_after_job_deadline(tmp_path, monkeypatch):
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from astrumweaver.audio import input_channel as module
+
+    repo = FakeRepository()
+    channel = make_channel(tmp_path, repo)
+    ref = channel.stage(WAV)
+    request = transcribe_submission("late-idempotent-response")
+    original_job = channel.submit(request, artifact_uri=ref["uri"])
+    assert original_job.job_id == "job-staged"
+    # Only the wall clock advances beyond deadline. The temporary artifact
+    # itself remains within its independent monotonic 300-second TTL.
+    later = request.deadline_at + timedelta(seconds=5)
+    monkeypatch.setattr(module, "datetime", SimpleNamespace(now=lambda tz: later))
+    assert channel.submit(request, artifact_uri=ref["uri"]).job_id == original_job.job_id
