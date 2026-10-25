@@ -184,6 +184,73 @@ async def test_expired_spool_is_unavailable_even_when_job_succeeded(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_expired_output_releases_quota_and_allows_reuse(tmp_path):
+    clock = SimpleNamespace(value=10.0)
+    env = new_env(tmp_path, ttl=5, clock=lambda: clock.value)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app), base_url="http://control",
+    ) as client:
+        refs = []
+        for _ in range(2):
+            staged = await client.post(
+                output_url(env.claim), content=WAV,
+                headers=worker_headers(env.claim),
+            )
+            assert staged.status_code == 201
+            refs.append(staged.json())
+        # At the configured two-object ceiling, further staging is rejected.
+        full = await client.post(
+            output_url(env.claim), content=WAV,
+            headers=worker_headers(env.claim),
+        )
+        assert full.status_code == 422
+
+        clock.value = 15.0
+        assert env.channel.reap_expired() == 2
+        assert env.channel.reap_expired() == 0
+        assert not env.channel._staged
+        for ref in refs:
+            assert (await client.get(get_url(env.claim, ref),
+                                     headers=CLIENT)).status_code == 404
+        reused = await client.post(
+            output_url(env.claim), content=WAV,
+            headers=worker_headers(env.claim),
+        )
+        assert reused.status_code == 201, reused.text
+        assert reused.json()["uri"] not in {ref["uri"] for ref in refs}
+
+
+@pytest.mark.asyncio
+async def test_incomplete_content_length_fails_before_artifact_staging():
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    from astrumweaver.control.api import _bounded_audio_body
+
+    scope = {
+        "type": "http", "method": "POST", "path": "/audio",
+        "headers": [(b"content-length", str(len(WAV) + 3).encode())],
+        "query_string": b"",
+    }
+    async def receive():
+        return {"type": "http.request", "body": WAV, "more_body": False}
+
+    with pytest.raises(HTTPException) as exc:
+        await _bounded_audio_body(Request(scope, receive), 256)
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "incomplete audio output"
+
+
+def test_audio_output_requires_authentication_even_with_opt_in(tmp_path):
+    from astrumweaver.control.auth import ClientAuthMode
+    env = new_env(tmp_path)
+    with pytest.raises(ValueError, match="client bearer authentication"):
+        create_app(
+            env.repo, client_token=None, worker_token="worker-secret",
+            client_auth=ClientAuthMode.NONE, audio_output_channel=env.channel,
+        )
+
+
+@pytest.mark.asyncio
 async def test_disabled_audio_routes_do_not_change_standard_api(tmp_path):
     repo = InMemoryControlRepository()
     app = create_app(repo, client_token="client-secret", worker_token="worker-secret")

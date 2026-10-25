@@ -105,11 +105,13 @@ def _audio_claim_headers(request: Request) -> tuple[int, str, str]:
 
 async def _bounded_audio_body(request: Request, max_bytes: int) -> bytes:
     declared = request.headers.get("content-length")
+    expected = None
     if declared is not None:
         if (len(declared) > 20
                 or not declared.isascii() or not declared.isdecimal()):
             raise HTTPException(status_code=422, detail="invalid audio content length")
-        if int(declared) > max_bytes:
+        expected = int(declared)
+        if expected > max_bytes:
             raise HTTPException(status_code=413, detail="audio output too large")
     payload = bytearray()
     try:
@@ -119,6 +121,8 @@ async def _bounded_audio_body(request: Request, max_bytes: int) -> bytes:
             payload.extend(chunk)
     except ClientDisconnect as exc:
         raise HTTPException(status_code=400, detail="incomplete audio output") from exc
+    if expected is not None and len(payload) != expected:
+        raise HTTPException(status_code=400, detail="incomplete audio output")
     return bytes(payload)
 
 
@@ -136,6 +140,8 @@ def create_app(
         if (not isinstance(audio_output_channel, AudioOutputChannel)
                 or audio_output_channel.repository is not repository):
             raise ValueError("audio channel must belong to this Control repository")
+        if mode is not ClientAuthMode.BEARER:
+            raise ValueError("audio output requires client bearer authentication")
     if not worker_token:
         raise ValueError("worker_token is required")
     if mode is ClientAuthMode.BEARER:
@@ -155,6 +161,8 @@ def create_app(
                 await asyncio.to_thread(repository.expire_stale_workers)
                 await asyncio.to_thread(repository.expire_deadline_jobs)
                 await asyncio.to_thread(repository.recover_expired_jobs)
+                if audio_output_channel is not None:
+                    await asyncio.to_thread(audio_output_channel.reap_expired)
             except Exception:
                 # Repository/API calls still expose current storage failures.
                 # Maintenance must not terminate the server process.

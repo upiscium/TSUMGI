@@ -51,6 +51,20 @@ class AudioOutputChannel:
         self._lock = RLock()
         self._staged: dict[str, _StagedOutput] = {}
 
+    def _reap_locked(self) -> int:
+        removed = self._spool.reap_expired()
+        # Both stores are process-local and serialized by this owner. The spool
+        # retains failed deletions, so discard only receipts it actually freed.
+        for artifact_id in tuple(self._staged):
+            if artifact_id not in self._spool._records:
+                del self._staged[artifact_id]
+        return removed
+
+    def reap_expired(self) -> int:
+        """Reclaim TTL-expired quota and orphaned in-memory output receipts."""
+        with self._lock:
+            return self._reap_locked()
+
     def authorize(
         self, job_id: str, *, worker_id: str, attempt: int,
         lease_token: str, runtime_instance_epoch: str,
@@ -76,6 +90,7 @@ class AudioOutputChannel:
                 lease_token=lease_token,
                 runtime_instance_epoch=runtime_instance_epoch,
             )
+            self._reap_locked()
             if (type(data) is not bytes or not 12 <= len(data) <= self.max_bytes
                     or data[:4] != b"RIFF" or data[8:12] != b"WAVE"):
                 raise ValueError("audio output must be a bounded RIFF/WAVE file")
@@ -114,6 +129,7 @@ class AudioOutputChannel:
         lock/transaction. This is not a cross-DB/filesystem transaction.
         """
         with self._lock:
+            self._reap_locked()
             current = self.repository.get_job(job_id)
             if current.capability in _AUDIO_CAPABILITIES and result.artifacts:
                 if len(result.artifacts) != 1:
@@ -148,6 +164,7 @@ class AudioOutputChannel:
     def read_published(self, job_id: str, artifact_id: str) -> bytes:
         """Only expose an intact output referenced by a SUCCEEDED Job."""
         with self._lock:
+            self._reap_locked()
             staged = self._staged.get(artifact_id)
             if staged is None or staged.job_id != job_id:
                 raise NotFoundError("audio output unavailable")
