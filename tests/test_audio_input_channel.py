@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
+import wave
 
 import pytest
 
@@ -22,7 +24,18 @@ def transcribe_submission(idempotency_key="input-r1"):
     )
 
 
-WAV = b"RIFF" + (12).to_bytes(4, "little") + b"WAVE" + b"abcd"
+def pcm16_wav(*, rate=8000, channels=1, sample_width=2, frames=8):
+    """Minimal decodable PCM WAV for input validation and integration tests."""
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(channels)
+        writer.setsampwidth(sample_width)
+        writer.setframerate(rate)
+        writer.writeframes(bytes([1]) * (frames * channels * sample_width))
+    return buffer.getvalue()
+
+
+WAV = pcm16_wav()
 
 
 class FakeRepository:
@@ -37,12 +50,90 @@ class FakeRepository:
         return SimpleNamespace(job_id="job-staged")
 
 
-def make_channel(tmp_path, repo):
+def make_channel(
+    tmp_path, repo, *, max_wire_bytes=64, max_decoded_bytes=None,
+    max_duration_seconds=60,
+):
     root = tmp_path / "input"
     root.mkdir(mode=0o700)
-    spool = ArtifactSpool(root, max_bytes=64, ttl_seconds=300,
-                          max_total_bytes=128, max_artifacts=2)
-    return AudioInputChannel(repo, spool, max_bytes=64)
+    spool = ArtifactSpool(root, max_bytes=max_wire_bytes, ttl_seconds=300,
+                          max_total_bytes=max_wire_bytes * 2, max_artifacts=2)
+    return AudioInputChannel(
+        repo, spool, max_bytes=max_wire_bytes,
+        max_decoded_bytes=max_decoded_bytes,
+        max_duration_seconds=max_duration_seconds,
+    )
+
+
+@pytest.mark.parametrize("malformed", [
+    pcm16_wav(sample_width=1),
+    pcm16_wav(channels=3),
+    pcm16_wav(rate=7999),
+    pcm16_wav(rate=48001),
+    pcm16_wav(frames=0),
+    pcm16_wav()[:-1],
+    pcm16_wav() + b"extra",
+    WAV[:4] + (0).to_bytes(4, "little") + WAV[8:],
+])
+def test_pcm16_rejects_invalid_codec_and_truncated_headers(tmp_path, malformed):
+    channel = make_channel(tmp_path, FakeRepository(), max_wire_bytes=256)
+    with pytest.raises(ValueError, match="PCM16"):
+        channel.stage(malformed)
+    assert channel._inputs == {}
+    assert channel.spool._records == {}
+    assert channel.spool._total_bytes == 0
+
+
+def test_pcm16_independent_decoded_byte_limit(tmp_path):
+    channel = make_channel(
+        tmp_path, FakeRepository(), max_wire_bytes=256, max_decoded_bytes=14,
+    )
+    assert len(WAV) < 256
+    with pytest.raises(ValueError, match="PCM16"):
+        channel.stage(WAV)
+    assert not channel.spool._records
+
+
+def test_pcm16_independent_duration_limit(tmp_path):
+    too_long = pcm16_wav(rate=8000, frames=8001)
+    channel = make_channel(
+        tmp_path, FakeRepository(), max_wire_bytes=17000,
+        max_decoded_bytes=17000, max_duration_seconds=1,
+    )
+    assert len(too_long) < channel.max_bytes
+    with pytest.raises(ValueError, match="PCM16"):
+        channel.stage(too_long)
+    assert not channel.spool._records
+
+
+def test_pcm16_stereo_48khz_valid_and_exactly_stored(tmp_path):
+    channel = make_channel(tmp_path, FakeRepository())
+    valid = pcm16_wav(rate=48000, channels=2, frames=4)
+    ref = channel.stage(valid)
+    ident = ref["uri"].removeprefix("tsumgi-audio-input:")
+    assert channel.spool.read(ident, scope=channel._inputs[ident].scope) == valid
+
+
+def test_pcm16_validator_configuration_is_bounded(tmp_path):
+    repo = FakeRepository()
+    root = tmp_path / "validator"
+    root.mkdir(mode=0o700)
+    spool = ArtifactSpool(
+        root, max_bytes=128, max_artifacts=2,
+        max_total_bytes=256, ttl_seconds=60,
+    )
+    for options in (
+        {"max_bytes": 43},
+        {"max_bytes": 129},
+        {"max_decoded_bytes": 1},
+        {"max_decoded_bytes": True},
+        {"max_duration_seconds": 0},
+        {"max_duration_seconds": 1.5},
+    ):
+        config = {"max_bytes": 128}
+        config.update(options)
+        with pytest.raises(ValueError):
+            AudioInputChannel(repo, spool, **config)
 
 
 def test_stage_and_submit_keeps_only_reference_metadata(tmp_path):
@@ -127,6 +218,13 @@ async def test_authenticated_input_api_and_current_worker_download(tmp_path):
         assert (await http.post(
             "/v1/audio/inputs", content=WAV, headers=worker_headers,
         )).status_code == 401
+        rejected_pcm = await http.post(
+            "/v1/audio/inputs", content=pcm16_wav(sample_width=1),
+            headers={**client_headers, "content-type": "audio/wav"},
+        )
+        assert rejected_pcm.status_code == 422
+        assert not channel._inputs
+        assert not channel.spool._records
         staged = await http.post(
             "/v1/audio/inputs", content=WAV,
             headers={**client_headers, "content-type": "audio/wav"},

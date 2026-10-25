@@ -15,7 +15,7 @@ from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
 from test_audio_artifact_authority import EPOCH, setup_claim
 from test_audio_artifact_authority_postgres import isolated_database
 
-IN_WAV = b"RIFF" + (25).to_bytes(4, "little") + b"WAVE" + b"fmt " + b"private-input-wave"
+from test_audio_input_channel import WAV as IN_WAV
 OUT_WAV = b"RIFF" + (28).to_bytes(4, "little") + b"WAVE" + b"fmt " + b"private-output-wave"
 
 @pytest.mark.asyncio
