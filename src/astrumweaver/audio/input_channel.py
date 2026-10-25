@@ -147,6 +147,8 @@ class AudioInputChannel:
             try:
                 if submission.capability != "audio.transcribe":
                     raise ValueError("staged input requires audio.transcribe")
+                if submission.serving is None or submission.deadline_at is None:
+                    raise ValueError("staged input requires a serving-bound Job")
                 if "audio_input" in submission.payload:
                     raise ValueError("audio_input is assigned by Control")
                 # A staged token must still point at valid, unexpired bytes.

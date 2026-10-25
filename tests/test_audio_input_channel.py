@@ -241,6 +241,29 @@ async def test_wrong_protocol_aborts_staged_input_before_admission(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_unbound_legacy_transcription_job_is_rejected_before_admission(tmp_path):
+    env = make_env(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app), base_url="http://control",
+    ) as client:
+        ref = (await stage(client)).json()
+        reply = await client.post(
+            f"/v1/audio/input/{token(ref)}/jobs",
+            json={
+                "protocol_version": PROTOCOL_VERSION,
+                "capability": "audio.transcribe",
+                "payload": {"language": "ja"},
+            },
+            headers=CLIENT,
+        )
+        assert reply.status_code == 422, reply.text
+        assert "serving-bound" in reply.text
+        assert not env.channel._inputs
+        assert not env.channel._spool._records
+        assert (await admit(client, env, ref)).status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_cancel_and_retry_fence_old_claim_but_preserve_input(tmp_path):
     env = make_env(tmp_path)
     async with httpx.AsyncClient(
