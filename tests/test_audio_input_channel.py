@@ -65,7 +65,59 @@ def make_channel(
     )
 
 
+def _declared_bits(bits):
+    data = bytearray(WAV)
+    data[34:36] = bits.to_bytes(2, "little")
+    return bytes(data)
+
+
+def _partial_stereo_frame():
+    data = bytearray(pcm16_wav(channels=2, frames=4))
+    del data[-2:]  # one sample remains where an entire stereo frame is required
+    data[40:44] = (len(data) - 44).to_bytes(4, "little")
+    data[4:8] = (len(data) - 8).to_bytes(4, "little")
+    return bytes(data)
+
+
+def _malformed_fmt_chunk():
+    data = bytearray(WAV)
+    data[16:20] = (0xFFFFFFFF).to_bytes(4, "little")
+    return bytes(data)
+
+
+def _declared_data_overrun():
+    data = bytearray(WAV)
+    data[40:44] = (len(data) - 44 + 1).to_bytes(4, "little")
+    return bytes(data)
+
+
+def _padded_junk_chunk():
+    base = WAV
+    extra = b"JUNK" + (3).to_bytes(4, "little") + b"abc" + bytes([0])
+    data = bytearray(base[:12] + extra + base[12:])
+    data[4:8] = (len(data) - 8).to_bytes(4, "little")
+    return bytes(data)
+
+
+def _extensible_pcm16():
+    base = bytearray(WAV)
+    base[20:22] = (0xFFFE).to_bytes(2, "little")
+    pcm_guid = bytes.fromhex("0100000000001000800000aa00389b71")
+    extra = ((22).to_bytes(2, "little") + (16).to_bytes(2, "little")
+             + (0).to_bytes(4, "little") + pcm_guid)
+    data = bytearray(
+        base[:16] + (40).to_bytes(4, "little") + base[20:36]
+        + extra + base[36:]
+    )
+    data[4:8] = (len(data) - 8).to_bytes(4, "little")
+    return bytes(data)
+
+
 @pytest.mark.parametrize("malformed", [
+    _declared_bits(12),
+    _partial_stereo_frame(),
+    _malformed_fmt_chunk(),
+    _declared_data_overrun(),
     pcm16_wav(sample_width=1),
     pcm16_wav(channels=3),
     pcm16_wav(rate=7999),
@@ -94,6 +146,20 @@ def test_pcm16_independent_decoded_byte_limit(tmp_path):
     assert not channel.spool._records
 
 
+def test_pcm16_rejects_size_limit_before_sample_read(tmp_path, monkeypatch):
+    import astrumweaver.audio.pcm16 as parser
+
+    channel = make_channel(
+        tmp_path, FakeRepository(), max_wire_bytes=256, max_decoded_bytes=14,
+    )
+    def unexpected_reader(*args, **kwargs):
+        raise AssertionError("sample reader called before decoded limit")
+    monkeypatch.setattr(parser.wave, "open", unexpected_reader)
+    with pytest.raises(ValueError, match="PCM16"):
+        channel.stage(WAV)
+    assert not channel.spool._records
+
+
 def test_pcm16_independent_duration_limit(tmp_path):
     too_long = pcm16_wav(rate=8000, frames=8001)
     channel = make_channel(
@@ -106,9 +172,13 @@ def test_pcm16_independent_duration_limit(tmp_path):
     assert not channel.spool._records
 
 
-def test_pcm16_stereo_48khz_valid_and_exactly_stored(tmp_path):
-    channel = make_channel(tmp_path, FakeRepository())
-    valid = pcm16_wav(rate=48000, channels=2, frames=4)
+@pytest.mark.parametrize("valid", [
+    pcm16_wav(rate=48000, channels=2, frames=4),
+    _padded_junk_chunk(),
+    _extensible_pcm16(),
+])
+def test_pcm16_valid_variants_and_padded_chunks_are_stored(tmp_path, valid):
+    channel = make_channel(tmp_path, FakeRepository(), max_wire_bytes=128)
     ref = channel.stage(valid)
     ident = ref["uri"].removeprefix("tsumgi-audio-input:")
     assert channel.spool.read(ident, scope=channel._inputs[ident].scope) == valid
@@ -223,6 +293,11 @@ async def test_authenticated_input_api_and_current_worker_download(tmp_path):
             headers={**client_headers, "content-type": "audio/wav"},
         )
         assert rejected_pcm.status_code == 422
+        rejected_chunk = await http.post(
+            "/v1/audio/inputs", content=_malformed_fmt_chunk(),
+            headers={**client_headers, "content-type": "audio/wav"},
+        )
+        assert rejected_chunk.status_code == 422
         assert not channel._inputs
         assert not channel.spool._records
         staged = await http.post(
