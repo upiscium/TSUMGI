@@ -824,3 +824,64 @@ def test_reap_refuses_foreign_owner_without_releasing_quota(quota_env):
     assert not entry.exists()
     assert spool.reap_expired() == 0
     assert spool.stage(b"abcdefgh", scope="owner")["size"] == 8
+
+# Wave2D: cold-start recovery is opt-in for an exclusive single-Control root.
+def test_crash_recovery_reclaims_prior_spool_but_not_unrelated_data(tmp_path):
+    root = tmp_path / "private-wav-root"
+    root.mkdir(mode=0o700)
+    old = ArtifactSpool(root, max_bytes=64, ttl_seconds=60)
+    old.stage(b"orphan-wav", scope="job:old")
+    old_directory, = tuple(root.iterdir())
+    assert old_directory.name.startswith("artifact-spool-")
+    partial = old_directory / ("f" * 64)
+    partial.write_bytes(b"partial")
+    partial.chmod(0o600)
+
+    sentinel = root / "operator-metadata"
+    sentinel.write_bytes(b"must survive")
+    # Simulate loss of all old in-memory receipts after Control crash.
+    del old
+    new = ArtifactSpool(
+        root, max_bytes=64, ttl_seconds=60, recover_on_startup=True,
+        max_total_bytes=128, max_artifacts=2,
+    )
+    assert not old_directory.exists()
+    assert sentinel.read_bytes() == b"must survive"
+    assert new.stage(b"next-wav", scope="job:new")["size"] == 8
+    assert tuple(root.glob("artifact-spool-*"))
+
+
+def test_crash_recovery_skips_tampered_and_foreign_roots(tmp_path):
+    root = tmp_path / "private-root"
+    root.mkdir(mode=0o700)
+    old = ArtifactSpool(root, max_bytes=64, ttl_seconds=60)
+    old.stage(b"was-a-record", scope="job:old")
+    old_directory, = tuple(root.iterdir())
+    file, = tuple(old_directory.iterdir())
+    file.unlink()
+    outside = tmp_path / "protected"
+    outside.write_bytes(b"protected-content")
+    file.symlink_to(outside)
+    unrelated = root / "ordinary-directory"
+    unrelated.mkdir(mode=0o700)
+    (unrelated / "sentinel").write_bytes(b"preserved")
+
+    del old
+    new = ArtifactSpool(
+        root, max_bytes=64, ttl_seconds=60, recover_on_startup=True,
+    )
+    assert old_directory.exists()
+    assert file.is_symlink()
+    assert outside.read_bytes() == b"protected-content"
+    assert (unrelated / "sentinel").read_bytes() == b"preserved"
+    assert new.stage(b"safe", scope="job:new")["size"] == 4
+
+
+def test_crash_recovery_requires_explicit_boolean_opt_in(tmp_path):
+    root = tmp_path / "private-root"
+    root.mkdir(mode=0o700)
+    with pytest.raises(ValueError, match="recover_on_startup must be boolean"):
+        ArtifactSpool(
+            root, max_bytes=64, ttl_seconds=60, recover_on_startup="yes",
+        )
+    assert tuple(root.iterdir()) == ()

@@ -163,6 +163,7 @@ def create_app(
                 await asyncio.to_thread(repository.recover_expired_jobs)
                 if audio_output_channel is not None:
                     await asyncio.to_thread(audio_output_channel.reap_expired)
+                    await asyncio.to_thread(audio_output_channel.reap_abandoned)
             except Exception:
                 # Repository/API calls still expose current storage failures.
                 # Maintenance must not terminate the server process.

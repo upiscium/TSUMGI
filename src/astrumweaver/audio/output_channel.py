@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from threading import RLock
 
 from ..control.models import JobStatus
-from ..control.repository import ConflictError, NotFoundError
+from ..control.repository import ConflictError, NotFoundError, RepositoryError
 from ..execution import ArtifactRef, JobResult
 from .artifact_spool import ArtifactSpool
 
@@ -67,6 +67,53 @@ class AudioOutputChannel:
         with self._lock:
             return self._reap_locked()
 
+    def _reap_abandoned_locked(self) -> int:
+        """Release outputs abandoned by a terminal or superseded Job attempt.
+
+        On repository/storage uncertainty, retain files and quota rather than
+        risk deleting an output still authorized by durable state.
+        """
+        removed = 0
+        for artifact_id, staged in tuple(self._staged.items()):
+            try:
+                job = self.repository.get_job(staged.job_id)
+            except NotFoundError:
+                abandoned = True
+            except RepositoryError:
+                continue
+            else:
+                if job.status is JobStatus.SUCCEEDED:
+                    abandoned = (
+                        job.result is None
+                        or staged.reference not in job.result.artifacts
+                    )
+                else:
+                    abandoned = (
+                        job.status is not JobStatus.RUNNING
+                        or job.attempts != staged.attempt
+                        or job.assigned_worker_id != staged.worker_id
+                        or job.claimed_runtime_instance_epoch != staged.epoch
+                        # Do not delete a RUNNING claim on time alone: an
+                        # uncommitted heartbeat may already be renewing it.
+                        # Durable Job recovery/terminal changes settle expiry.
+                    )
+            if not abandoned:
+                continue
+            try:
+                self._spool.delete(artifact_id, scope=staged.scope)
+            except (OSError, ValueError):
+                # Keep its quota and receipt until deletion can be verified.
+                continue
+            del self._staged[artifact_id]
+            removed += 1
+        return removed
+
+    def reap_abandoned(self) -> int:
+        """Release no-longer-owned attempts; preserve completed outputs."""
+        with self._lock:
+            self._reap_locked()
+            return self._reap_abandoned_locked()
+
     def authorize(
         self, job_id: str, *, worker_id: str, attempt: int,
         lease_token: str, runtime_instance_epoch: str,
@@ -93,6 +140,7 @@ class AudioOutputChannel:
                 runtime_instance_epoch=runtime_instance_epoch,
             )
             self._reap_locked()
+            self._reap_abandoned_locked()
             if (type(data) is not bytes or not 12 <= len(data) <= self.max_bytes
                     or data[:4] != b"RIFF" or data[8:12] != b"WAVE"):
                 raise ValueError("audio output must be a bounded RIFF/WAVE file")
