@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 from types import SimpleNamespace
 
@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from astrumweaver.audio import ArtifactSpool, AudioOutputChannel
-from astrumweaver.control import InMemoryControlRepository, JobStatus
+from astrumweaver.control import InMemoryControlRepository, JobStatus, JobSubmission
 from astrumweaver.control.api import create_app
 from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
 from test_audio_artifact_authority import EPOCH, setup_claim
@@ -23,14 +23,16 @@ WORKER = {"authorization": "Bearer worker-secret"}
 CLIENT = {"authorization": "Bearer client-secret"}
 
 
-def new_env(tmp_path, repository=None, *, ttl=90, clock=None):
+def new_env(tmp_path, repository=None, *, ttl=90, clock=None,
+            max_artifacts=2, max_total_bytes=512):
     root = tmp_path / "audio-root"
     root.mkdir(mode=0o700)
     repo = repository or InMemoryControlRepository(lease_seconds=60)
     claim = setup_claim(repo, datetime.now(UTC))
     spool = ArtifactSpool(
-        root, max_bytes=256, max_total_bytes=512,
-        max_artifacts=2, ttl_seconds=ttl, **({"clock": clock} if clock else {}),
+        root, max_bytes=256, max_total_bytes=max_total_bytes,
+        max_artifacts=max_artifacts, ttl_seconds=ttl,
+        **({"clock": clock} if clock else {}),
     )
     channel = AudioOutputChannel(repo, spool, max_bytes=256)
     app = create_app(
@@ -184,40 +186,104 @@ async def test_expired_spool_is_unavailable_even_when_job_succeeded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_expired_output_releases_quota_and_allows_reuse(tmp_path):
-    clock = SimpleNamespace(value=10.0)
-    env = new_env(tmp_path, ttl=5, clock=lambda: clock.value)
+async def test_one_live_output_per_attempt_idempotent_retry_preserves_other_job_quota(tmp_path):
+    env = new_env(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=env.app), base_url="http://control",
     ) as client:
-        refs = []
-        for _ in range(2):
-            staged = await client.post(
-                output_url(env.claim), content=WAV,
-                headers=worker_headers(env.claim),
-            )
-            assert staged.status_code == 201
-            refs.append(staged.json())
-        # At the configured two-object ceiling, further staging is rejected.
-        full = await client.post(
+        first = await client.post(
+            output_url(env.claim), content=WAV, headers=worker_headers(env.claim),
+        )
+        assert first.status_code == 201, first.text
+
+        same = await client.post(
+            output_url(env.claim), content=WAV, headers=worker_headers(env.claim),
+        )
+        assert same.status_code == 201, same.text
+        assert same.json() == first.json()
+        assert len(env.channel._staged) == 1
+
+        different = await client.post(
+            output_url(env.claim), content=WAV + b"different",
+            headers=worker_headers(env.claim),
+        )
+        assert different.status_code == 409, different.text
+        assert len(env.channel._staged) == 1
+
+        now = datetime.now(UTC)
+        queued = env.repo.submit_job(JobSubmission(
+            capability="audio.synthesize", serving=env.claim.serving,
+            deadline_at=now + timedelta(seconds=120),
+        ), now=now)
+        other = env.repo.claim_next_job(
+            "other", runtime_instance_epoch=EPOCH, now=now,
+        )
+        assert other is not None and other.job_id == queued.job_id
+        second = await client.post(
+            output_url(other, worker="other"), content=WAV,
+            headers=worker_headers(other),
+        )
+        assert second.status_code == 201, second.text
+        assert second.json()["uri"] != first.json()["uri"]
+        assert len(env.channel._staged) == 2
+
+
+@pytest.mark.parametrize("limits", [
+    {}, {"max_artifacts": 2}, {"max_total_bytes": 512},
+])
+def test_audio_output_requires_finite_spool_quotas(tmp_path, limits):
+    root = tmp_path / "private-spool"
+    root.mkdir(mode=0o700)
+    spool = ArtifactSpool(
+        root, max_bytes=256, ttl_seconds=30, **limits,
+    )
+    with pytest.raises(ValueError, match="finite aggregate spool quotas"):
+        AudioOutputChannel(InMemoryControlRepository(), spool, max_bytes=256)
+
+
+@pytest.mark.asyncio
+async def test_expired_output_releases_quota_and_allows_reuse(tmp_path):
+    clock = SimpleNamespace(value=10.0)
+    env = new_env(tmp_path, ttl=5, clock=lambda: clock.value,
+                  max_artifacts=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app), base_url="http://control",
+    ) as client:
+        staged = await client.post(
             output_url(env.claim), content=WAV,
             headers=worker_headers(env.claim),
+        )
+        assert staged.status_code == 201
+        ref = staged.json()
+        now = datetime.now(UTC)
+        queued = env.repo.submit_job(JobSubmission(
+            capability="audio.synthesize", serving=env.claim.serving,
+            deadline_at=now + timedelta(seconds=120),
+        ), now=now)
+        other = env.repo.claim_next_job(
+            "other", runtime_instance_epoch=EPOCH, now=now,
+        )
+        assert other is not None and other.job_id == queued.job_id
+
+        # Distinct live claims compete for the bounded shared spool quota.
+        full = await client.post(
+            output_url(other, worker="other"), content=WAV,
+            headers=worker_headers(other),
         )
         assert full.status_code == 422
 
         clock.value = 15.0
-        assert env.channel.reap_expired() == 2
+        assert env.channel.reap_expired() == 1
         assert env.channel.reap_expired() == 0
         assert not env.channel._staged
-        for ref in refs:
-            assert (await client.get(get_url(env.claim, ref),
-                                     headers=CLIENT)).status_code == 404
+        assert (await client.get(get_url(env.claim, ref),
+                                 headers=CLIENT)).status_code == 404
         reused = await client.post(
-            output_url(env.claim), content=WAV,
-            headers=worker_headers(env.claim),
+            output_url(other, worker="other"), content=WAV,
+            headers=worker_headers(other),
         )
         assert reused.status_code == 201, reused.text
-        assert reused.json()["uri"] not in {ref["uri"] for ref in refs}
+        assert reused.json()["uri"] != ref["uri"]
 
 
 @pytest.mark.asyncio

@@ -43,6 +43,8 @@ class AudioOutputChannel:
             raise ValueError("max_bytes must be an integer >= 12")
         if not isinstance(spool, ArtifactSpool):
             raise TypeError("spool must be ArtifactSpool")
+        if spool._max_total_bytes is None or spool._max_artifacts is None:
+            raise ValueError("audio output requires finite aggregate spool quotas")
         if not callable(getattr(repository, "_authorize_audio_artifact_attempt", None)):
             raise ValueError("audio artifact attempt authority is required")
         self.repository = repository
@@ -94,6 +96,30 @@ class AudioOutputChannel:
             if (type(data) is not bytes or not 12 <= len(data) <= self.max_bytes
                     or data[:4] != b"RIFF" or data[8:12] != b"WAVE"):
                 raise ValueError("audio output must be a bounded RIFF/WAVE file")
+
+            # Exactly one live WAV per Job attempt. An identical retry is
+            # idempotent; a different payload must not allocate another object.
+            # Both checks and all Spool I/O use this channel's lock.
+            for staged in self._staged.values():
+                if (staged.job_id == job_id and staged.worker_id == worker_id
+                        and staged.attempt == attempt
+                        and staged.epoch == runtime_instance_epoch):
+                    try:
+                        same_content = (
+                            self._spool.read(staged.artifact_id, scope=staged.scope)
+                            == data
+                        )
+                    except ValueError as exc:
+                        raise ConflictError(_ERROR) from exc
+                    if not same_content:
+                        raise ConflictError(_ERROR)
+                    self.authorize(
+                        job_id, worker_id=worker_id, attempt=attempt,
+                        lease_token=lease_token,
+                        runtime_instance_epoch=runtime_instance_epoch,
+                    )
+                    return staged.reference
+
             scope = self._scope(job_id, worker_id, attempt, runtime_instance_epoch)
             receipt = self._spool.stage(data, scope=scope)
             artifact_id = receipt["artifact_id"]
