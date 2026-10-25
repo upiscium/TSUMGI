@@ -19,6 +19,7 @@ from ..control.repository import (
     NotFoundError, OverloadedError, StorageUnavailable,
 )
 from .artifact_spool import ArtifactSpool
+from .pcm16 import validate_pcm16_wav
 
 
 @dataclass(frozen=True)
@@ -33,16 +34,28 @@ class _Input:
 class AudioInputChannel:
     """Single-Control staged WAV owner; caller supplies an exclusive spool."""
 
-    def __init__(self, repository, spool: ArtifactSpool, *, max_bytes: int):
-        if type(max_bytes) is not int or max_bytes < 12:
-            raise ValueError("invalid maximum audio input bytes")
+    def __init__(
+        self, repository, spool: ArtifactSpool, *, max_bytes: int,
+        max_decoded_bytes: int | None = None, max_duration_seconds: int = 60,
+    ):
         if not isinstance(spool, ArtifactSpool):
             raise TypeError("expected an ArtifactSpool")
+        if (type(max_bytes) is not int or max_bytes < 44
+                or max_bytes > spool._max_bytes):
+            raise ValueError("invalid maximum audio input bytes")
+        if max_decoded_bytes is None:
+            max_decoded_bytes = max_bytes
+        if type(max_decoded_bytes) is not int or max_decoded_bytes < 2:
+            raise ValueError("invalid decoded PCM16 size limit")
+        if type(max_duration_seconds) is not int or max_duration_seconds < 1:
+            raise ValueError("invalid PCM16 duration limit")
         if spool._max_total_bytes is None or spool._max_artifacts is None:
             raise ValueError("finite audio input aggregate quotas required")
         self.repository = repository
         self.spool = spool
         self.max_bytes = max_bytes
+        self.max_decoded_bytes = max_decoded_bytes
+        self.max_duration_seconds = max_duration_seconds
         self._lock = RLock()
         self._inputs: dict[str, _Input] = {}
 
@@ -59,9 +72,11 @@ class AudioInputChannel:
         """Receive verified bounded WAV bytes under an unguessable local ID."""
         with self._lock:
             self.reap_expired()
-            if (type(data) is not bytes or not 12 <= len(data) <= self.max_bytes
-                    or data[:4] != b"RIFF" or data[8:12] != b"WAVE"):
-                raise ValueError("bounded RIFF/WAVE input required")
+            validate_pcm16_wav(
+                data, max_wire_bytes=self.max_bytes,
+                max_decoded_bytes=self.max_decoded_bytes,
+                max_duration_seconds=self.max_duration_seconds,
+            )
             scope = "input-stage:" + secrets.token_hex(16)
             receipt = self.spool.stage(data, scope=scope)
             aid = receipt["artifact_id"]

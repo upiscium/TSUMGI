@@ -19,6 +19,8 @@ from test_audio_artifact_authority import EPOCH, setup_claim
 from test_audio_artifact_authority_postgres import isolated_database
 
 
+from test_audio_input_channel import WAV as INPUT_WAV
+
 WAV = b"RIFF" + (24).to_bytes(4, "little") + b"WAVE" + b"fmt " + b"fault-test-wave"
 CLIENT = {"authorization": "Bearer client-secret"}
 WORKER = {"authorization": "Bearer worker-secret"}
@@ -60,9 +62,9 @@ async def test_truncated_http_input_is_not_staged_or_admitted(
         transport=httpx.ASGITransport(app=app), base_url="http://control",
     ) as client:
         response = await client.post(
-            "/v1/audio/inputs", content=WAV,
+            "/v1/audio/inputs", content=INPUT_WAV,
             headers={**CLIENT, "content-type": "audio/wav",
-                     "content-length": str(len(WAV) + 7)},
+                     "content-length": str(len(INPUT_WAV) + 7)},
         )
         assert response.status_code == 400, response.text
         assert "incomplete audio output" in response.text
@@ -132,7 +134,7 @@ def test_single_control_cold_restart_reclaims_orphan_but_does_not_restore_input(
     repo = PostgresControlRepository(isolated_database, lease_seconds=60)
     existing = setup_claim(repo, datetime.now(UTC), capability="audio.transcribe")
     root, old_spool, old_channel = new_input(tmp_path, repo)
-    ref = old_channel.stage(WAV)
+    ref = old_channel.stage(INPUT_WAV)
     job = old_channel.submit(
         JobSubmission(
             capability="audio.transcribe", serving=existing.serving,
@@ -146,7 +148,7 @@ def test_single_control_cold_restart_reclaims_orphan_but_does_not_restore_input(
     assert old_channel.read_for_worker(
         job.job_id, worker_id="other", attempt=claim.attempts,
         lease_token=claim.lease_token, runtime_instance_epoch=EPOCH,
-    ) == WAV
+    ) == INPUT_WAV
     old_directory = root / old_spool._name
     assert old_directory.is_dir()
 
