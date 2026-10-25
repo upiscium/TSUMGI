@@ -314,6 +314,15 @@ def create_app(
             submission = job_submission_from_dict(await _json_v1(request))
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if audio_input_channel is not None and (
+            submission.capability == "audio.transcribe"
+            or "audio_input" in submission.payload
+        ):
+            # Opted-in audio jobs must pass trusted staged-input admission.
+            # A client-supplied JSON reference cannot establish file ownership.
+            raise HTTPException(
+                status_code=422, detail="use staged audio input admission",
+            )
         record = await asyncio.to_thread(repository.submit_job, submission)
         return job_record_to_dict(record)
 
