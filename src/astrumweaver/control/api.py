@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.requests import ClientDisconnect
 
-from ..audio import AudioOutputChannel
+from ..audio import AudioInputChannel, AudioOutputChannel
 
 from ..control.auth import ClientAuthMode
 from ..control.models import WorkerState
@@ -103,7 +103,9 @@ def _audio_claim_headers(request: Request) -> tuple[int, str, str]:
     return int(raw_attempt), lease, epoch
 
 
-async def _bounded_audio_body(request: Request, max_bytes: int) -> bytes:
+async def _bounded_audio_body(
+    request: Request, max_bytes: int, *, label: str = "audio output",
+) -> bytes:
     declared = request.headers.get("content-length")
     expected = None
     if declared is not None:
@@ -112,17 +114,17 @@ async def _bounded_audio_body(request: Request, max_bytes: int) -> bytes:
             raise HTTPException(status_code=422, detail="invalid audio content length")
         expected = int(declared)
         if expected > max_bytes:
-            raise HTTPException(status_code=413, detail="audio output too large")
+            raise HTTPException(status_code=413, detail=f"{label} too large")
     payload = bytearray()
     try:
         async for chunk in request.stream():
             if len(payload) + len(chunk) > max_bytes:
-                raise HTTPException(status_code=413, detail="audio output too large")
+                raise HTTPException(status_code=413, detail=f"{label} too large")
             payload.extend(chunk)
     except ClientDisconnect as exc:
-        raise HTTPException(status_code=400, detail="incomplete audio output") from exc
+        raise HTTPException(status_code=400, detail=f"incomplete {label}") from exc
     if expected is not None and len(payload) != expected:
-        raise HTTPException(status_code=400, detail="incomplete audio output")
+        raise HTTPException(status_code=400, detail=f"incomplete {label}")
     return bytes(payload)
 
 
@@ -134,8 +136,15 @@ def create_app(
     client_auth: ClientAuthMode | str = ClientAuthMode.BEARER,
     maintenance_interval_seconds: float = 5.0,
     audio_output_channel: AudioOutputChannel | None = None,
+    audio_input_channel: AudioInputChannel | None = None,
 ) -> FastAPI:
     mode = ClientAuthMode(client_auth)
+    if audio_input_channel is not None:
+        if (not isinstance(audio_input_channel, AudioInputChannel)
+                or audio_input_channel.repository is not repository):
+            raise ValueError("audio input channel must belong to Control repository")
+        if mode is not ClientAuthMode.BEARER:
+            raise ValueError("audio input requires client bearer authentication")
     if audio_output_channel is not None:
         if (not isinstance(audio_output_channel, AudioOutputChannel)
                 or audio_output_channel.repository is not repository):
@@ -164,6 +173,8 @@ def create_app(
                 if audio_output_channel is not None:
                     await asyncio.to_thread(audio_output_channel.reap_expired)
                     await asyncio.to_thread(audio_output_channel.reap_abandoned)
+                if audio_input_channel is not None:
+                    await asyncio.to_thread(audio_input_channel.reap)
             except Exception:
                 # Repository/API calls still expose current storage failures.
                 # Maintenance must not terminate the server process.
@@ -257,8 +268,74 @@ def create_app(
             submission = job_submission_from_dict(await _json_v1(request))
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if audio_input_channel is not None and (
+            submission.capability == "audio.transcribe"
+            or "audio_input" in submission.payload
+        ):
+            raise HTTPException(status_code=422, detail="use staged audio input admission")
         record = await asyncio.to_thread(repository.submit_job, submission)
         return job_record_to_dict(record)
+
+    if audio_input_channel is not None:
+        @app.post(
+            "/v1/audio/input/stage", status_code=201,
+            dependencies=[Depends(require_client)],
+        )
+        async def stage_audio_input(request: Request) -> dict[str, Any]:
+            if request.headers.get("content-type", "").strip().lower() != "audio/wav":
+                raise HTTPException(status_code=415, detail="audio/wav required")
+            data = await _bounded_audio_body(
+                request, audio_input_channel.max_bytes, label="audio input",
+            )
+            try:
+                ref = await asyncio.to_thread(audio_input_channel.stage, data)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return {
+                "uri": ref.uri, "media_type": ref.media_type,
+                "digest": ref.digest, "size_bytes": ref.size_bytes,
+            }
+
+        @app.post(
+            "/v1/audio/input/{artifact_id}/jobs", status_code=201,
+            dependencies=[Depends(require_client)],
+        )
+        async def admit_audio_input_job(
+            artifact_id: str, request: Request,
+        ) -> dict[str, Any]:
+            try:
+                submission = job_submission_from_dict(await _json_v1(request))
+            except HTTPException:
+                await asyncio.to_thread(audio_input_channel.abort_unbound, artifact_id)
+                raise
+            except (KeyError, TypeError, ValueError) as exc:
+                await asyncio.to_thread(audio_input_channel.abort_unbound, artifact_id)
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            try:
+                job = await asyncio.to_thread(
+                    audio_input_channel.admit, artifact_id, submission,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return job_record_to_dict(job)
+
+        @app.get(
+            "/v1/workers/{worker_id}/jobs/{job_id}/audio/input/{artifact_id}",
+            dependencies=[Depends(require_worker)],
+        )
+        async def read_audio_input(
+            worker_id: str, job_id: str, artifact_id: str, request: Request,
+        ) -> Response:
+            attempt, lease, epoch = _audio_claim_headers(request)
+            data = await asyncio.to_thread(
+                audio_input_channel.read_for_worker, job_id, artifact_id,
+                worker_id=worker_id, attempt=attempt, lease_token=lease,
+                runtime_instance_epoch=epoch,
+            )
+            return Response(
+                content=data, media_type="audio/wav",
+                headers={"cache-control": "no-store"},
+            )
 
     @app.get("/v1/jobs/{job_id}", dependencies=[Depends(require_client)])
     async def get_job(job_id: str) -> dict[str, Any]:
