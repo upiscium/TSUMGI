@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from starlette.requests import ClientDisconnect
 
 from ..audio import AudioOutputChannel
+from ..audio.input_channel import AudioInputChannel
 
 from ..control.auth import ClientAuthMode
 from ..control.models import WorkerState
@@ -134,6 +135,7 @@ def create_app(
     client_auth: ClientAuthMode | str = ClientAuthMode.BEARER,
     maintenance_interval_seconds: float = 5.0,
     audio_output_channel: AudioOutputChannel | None = None,
+    audio_input_channel: AudioInputChannel | None = None,
 ) -> FastAPI:
     mode = ClientAuthMode(client_auth)
     if audio_output_channel is not None:
@@ -142,6 +144,11 @@ def create_app(
             raise ValueError("audio channel must belong to this Control repository")
         if mode is not ClientAuthMode.BEARER:
             raise ValueError("audio output requires client bearer authentication")
+    if audio_input_channel is not None:
+        if (not isinstance(audio_input_channel, AudioInputChannel)
+                or audio_input_channel.repository is not repository
+                or mode is not ClientAuthMode.BEARER):
+            raise ValueError("input channel must use this repository and client bearer")
     if not worker_token:
         raise ValueError("worker_token is required")
     if mode is ClientAuthMode.BEARER:
@@ -164,6 +171,8 @@ def create_app(
                 if audio_output_channel is not None:
                     await asyncio.to_thread(audio_output_channel.reap_expired)
                     await asyncio.to_thread(audio_output_channel.reap_abandoned)
+                if audio_input_channel is not None:
+                    await asyncio.to_thread(audio_input_channel.reap_expired)
             except Exception:
                 # Repository/API calls still expose current storage failures.
                 # Maintenance must not terminate the server process.
@@ -250,6 +259,54 @@ def create_app(
             "protocol_version": PROTOCOL_VERSION,
             "extensions": [SERVING_EXTENSION, JOB_EVENTS_EXTENSION],
         }
+
+    if audio_input_channel is not None:
+        @app.post(
+            "/v1/audio/inputs", status_code=201,
+            dependencies=[Depends(require_client)],
+        )
+        async def stage_audio_input(request: Request) -> dict[str, Any]:
+            if request.headers.get("content-type", "").strip().lower() != "audio/wav":
+                raise HTTPException(status_code=415, detail="audio/wav required")
+            content = await _bounded_audio_body(request, audio_input_channel.max_bytes)
+            try:
+                return await asyncio.to_thread(audio_input_channel.stage, content)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        @app.post(
+            "/v1/audio/inputs/jobs", status_code=201,
+            dependencies=[Depends(require_client)],
+        )
+        async def submit_audio_input_job(request: Request) -> dict[str, Any]:
+            try:
+                body = await _json_v1(request)
+                input_uri = body.pop("audio_input_uri")
+                submission = job_submission_from_dict(body)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail="invalid audio input submission") from exc
+            record = await asyncio.to_thread(
+                audio_input_channel.submit, submission, artifact_uri=input_uri,
+            )
+            return job_record_to_dict(record)
+
+        @app.get(
+            "/v1/workers/{worker_id}/jobs/{job_id}/audio/input",
+            dependencies=[Depends(require_worker)],
+        )
+        async def download_audio_input(
+            worker_id: str, job_id: str, request: Request,
+        ) -> Response:
+            attempt, lease, epoch = _audio_claim_headers(request)
+            content = await asyncio.to_thread(
+                audio_input_channel.read_for_worker,
+                job_id, worker_id=worker_id, attempt=attempt,
+                lease_token=lease, runtime_instance_epoch=epoch,
+            )
+            return Response(
+                content=content, media_type="audio/wav",
+                headers={"cache-control": "no-store"},
+            )
 
     @app.post("/v1/jobs", status_code=201, dependencies=[Depends(require_client)])
     async def submit_job(request: Request) -> dict[str, Any]:
