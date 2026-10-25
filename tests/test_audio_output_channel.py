@@ -520,3 +520,49 @@ def test_postgres_terminal_attempt_cleanup_releases_disk_and_receipt(
     with pytest.raises(ValueError):
         env.channel._spool.read(artifact_id, scope=scope)
     assert env.channel.reap_abandoned() == 0
+
+
+def test_postgres_uncommitted_heartbeat_does_not_reap_live_output(
+    tmp_path, isolated_database,
+):
+    """A stale nonlocking SELECT must not destroy a heartbeat-renewed WAV."""
+    import psycopg
+    from astrumweaver.execution import JobResult
+
+    repo = PostgresControlRepository(isolated_database, lease_seconds=60)
+    env = new_env(tmp_path, repository=repo, max_artifacts=1)
+    ref = env.channel.stage(
+        env.claim.job_id, worker_id="owner", attempt=env.claim.attempts,
+        lease_token=env.claim.lease_token, runtime_instance_epoch=EPOCH, data=WAV,
+    )
+    artifact_id = ref.uri.removeprefix("tsumgi-audio:")
+    scope = env.channel._staged[artifact_id].scope
+    now = datetime.now(UTC)
+    with psycopg.connect(isolated_database, autocommit=True) as connection:
+        connection.execute(
+            "UPDATE jobs SET lease_expires_at = %s WHERE id::text = %s",
+            (now - timedelta(seconds=1), env.claim.job_id),
+        )
+    # A heartbeat holds the Job row lock and renews its lease uncommitted.
+    # Other repository readers still observe the OLD expired lease.
+    with psycopg.connect(isolated_database) as heartbeat:
+        heartbeat.execute(
+            "SELECT id FROM jobs WHERE id::text = %s FOR UPDATE",
+            (env.claim.job_id,),
+        )
+        heartbeat.execute(
+            "UPDATE jobs SET lease_expires_at = %s WHERE id::text = %s",
+            (now + timedelta(seconds=120), env.claim.job_id),
+        )
+        assert repo.get_job(env.claim.job_id).lease_expires_at < now
+        assert env.channel.reap_abandoned() == 0
+        assert env.channel._spool.read(artifact_id, scope=scope) == WAV
+    # The durable heartbeat commits and the original reference can complete.
+    completed = env.channel.complete_job(
+        env.claim.job_id, JobResult(artifacts=(ref,)),
+        worker_id="owner", lease_token=env.claim.lease_token,
+        runtime_instance_epoch=EPOCH,
+    )
+    assert completed.status is JobStatus.SUCCEEDED
+    assert env.channel.reap_abandoned() == 0
+    assert env.channel.read_published(env.claim.job_id, artifact_id) == WAV

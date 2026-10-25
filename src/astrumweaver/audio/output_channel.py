@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import RLock
 
-from ..control.models import JobStatus, utc_now
+from ..control.models import JobStatus
 from ..control.repository import ConflictError, NotFoundError, RepositoryError
 from ..execution import ArtifactRef, JobResult
 from .artifact_spool import ArtifactSpool
@@ -74,7 +74,6 @@ class AudioOutputChannel:
         risk deleting an output still authorized by durable state.
         """
         removed = 0
-        now = utc_now()
         for artifact_id, staged in tuple(self._staged.items()):
             try:
                 job = self.repository.get_job(staged.job_id)
@@ -94,10 +93,9 @@ class AudioOutputChannel:
                         or job.attempts != staged.attempt
                         or job.assigned_worker_id != staged.worker_id
                         or job.claimed_runtime_instance_epoch != staged.epoch
-                        or job.lease_expires_at is None
-                        or job.lease_expires_at <= now
-                        or job.deadline_at is None
-                        or job.deadline_at <= now
+                        # Do not delete a RUNNING claim on time alone: an
+                        # uncommitted heartbeat may already be renewing it.
+                        # Durable Job recovery/terminal changes settle expiry.
                     )
             if not abandoned:
                 continue
