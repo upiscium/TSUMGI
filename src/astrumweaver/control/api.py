@@ -10,6 +10,9 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
+from starlette.requests import ClientDisconnect
+
+from ..audio import AudioOutputChannel
 
 from ..control.auth import ClientAuthMode
 from ..control.models import WorkerState
@@ -88,6 +91,41 @@ def _serving_epoch(body: dict[str, Any]) -> str | None:
     return epoch
 
 
+def _audio_claim_headers(request: Request) -> tuple[int, str, str]:
+    """Request metadata only; raw WAV bytes never enter a JSON envelope."""
+    raw_attempt = request.headers.get("x-audio-attempt", "")
+    lease = request.headers.get("x-audio-lease-token", "")
+    epoch = request.headers.get("x-audio-runtime-epoch", "")
+    if (not raw_attempt or len(raw_attempt) > 10
+            or not raw_attempt.isascii() or not raw_attempt.isdecimal()
+            or not lease.strip() or not epoch.strip()):
+        raise HTTPException(status_code=422, detail="audio claim headers required")
+    return int(raw_attempt), lease, epoch
+
+
+async def _bounded_audio_body(request: Request, max_bytes: int) -> bytes:
+    declared = request.headers.get("content-length")
+    expected = None
+    if declared is not None:
+        if (len(declared) > 20
+                or not declared.isascii() or not declared.isdecimal()):
+            raise HTTPException(status_code=422, detail="invalid audio content length")
+        expected = int(declared)
+        if expected > max_bytes:
+            raise HTTPException(status_code=413, detail="audio output too large")
+    payload = bytearray()
+    try:
+        async for chunk in request.stream():
+            if len(payload) + len(chunk) > max_bytes:
+                raise HTTPException(status_code=413, detail="audio output too large")
+            payload.extend(chunk)
+    except ClientDisconnect as exc:
+        raise HTTPException(status_code=400, detail="incomplete audio output") from exc
+    if expected is not None and len(payload) != expected:
+        raise HTTPException(status_code=400, detail="incomplete audio output")
+    return bytes(payload)
+
+
 def create_app(
     repository: ControlRepository,
     *,
@@ -95,8 +133,15 @@ def create_app(
     worker_token: str,
     client_auth: ClientAuthMode | str = ClientAuthMode.BEARER,
     maintenance_interval_seconds: float = 5.0,
+    audio_output_channel: AudioOutputChannel | None = None,
 ) -> FastAPI:
     mode = ClientAuthMode(client_auth)
+    if audio_output_channel is not None:
+        if (not isinstance(audio_output_channel, AudioOutputChannel)
+                or audio_output_channel.repository is not repository):
+            raise ValueError("audio channel must belong to this Control repository")
+        if mode is not ClientAuthMode.BEARER:
+            raise ValueError("audio output requires client bearer authentication")
     if not worker_token:
         raise ValueError("worker_token is required")
     if mode is ClientAuthMode.BEARER:
@@ -116,6 +161,8 @@ def create_app(
                 await asyncio.to_thread(repository.expire_stale_workers)
                 await asyncio.to_thread(repository.expire_deadline_jobs)
                 await asyncio.to_thread(repository.recover_expired_jobs)
+                if audio_output_channel is not None:
+                    await asyncio.to_thread(audio_output_channel.reap_expired)
             except Exception:
                 # Repository/API calls still expose current storage failures.
                 # Maintenance must not terminate the server process.
@@ -348,8 +395,13 @@ def create_app(
                 raise ValueError("result is required")
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        complete = (
+            repository.complete_job
+            if audio_output_channel is None
+            else audio_output_channel.complete_job
+        )
         record = await asyncio.to_thread(
-            repository.complete_job,
+            complete,
             job_id,
             result,
             worker_id=worker_id,
@@ -383,6 +435,53 @@ def create_app(
             runtime_instance_epoch=runtime_instance_epoch,
         )
         return job_record_to_dict(record)
+
+    if audio_output_channel is not None:
+        @app.post(
+            "/v1/workers/{worker_id}/jobs/{job_id}/audio/output",
+            status_code=201,
+            dependencies=[Depends(require_worker)],
+        )
+        async def stage_audio_output(
+            worker_id: str, job_id: str, request: Request,
+        ) -> dict[str, Any]:
+            if request.headers.get("content-type", "").strip().lower() != "audio/wav":
+                raise HTTPException(status_code=415, detail="audio/wav required")
+            attempt, lease, epoch = _audio_claim_headers(request)
+            # Reject invalid attempts before receiving large request bodies.
+            await asyncio.to_thread(
+                audio_output_channel.authorize, job_id, worker_id=worker_id,
+                attempt=attempt, lease_token=lease,
+                runtime_instance_epoch=epoch,
+            )
+            content = await _bounded_audio_body(request, audio_output_channel.max_bytes)
+            try:
+                ref = await asyncio.to_thread(
+                    audio_output_channel.stage,
+                    job_id, worker_id=worker_id, attempt=attempt,
+                    lease_token=lease, runtime_instance_epoch=epoch,
+                    data=content,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return {
+                "uri": ref.uri, "media_type": ref.media_type,
+                "digest": ref.digest, "size_bytes": ref.size_bytes,
+                "name": ref.name, "metadata": dict(ref.metadata),
+            }
+
+        @app.get(
+            "/v1/jobs/{job_id}/audio/output/{artifact_id}",
+            dependencies=[Depends(require_client)],
+        )
+        async def read_audio_output(job_id: str, artifact_id: str) -> Response:
+            content = await asyncio.to_thread(
+                audio_output_channel.read_published, job_id, artifact_id,
+            )
+            return Response(
+                content=content, media_type="audio/wav",
+                headers={"cache-control": "no-store"},
+            )
 
     return app
 
