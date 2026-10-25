@@ -141,9 +141,32 @@ class AudioInputChannel:
         with self._lock:
             self._reap_expired_locked()
             pending = self._inputs.get(artifact_id)
-            if (pending is None or pending.failed_admission
-                    or pending.job_id is not None):
+            if pending is None or pending.failed_admission:
                 raise ConflictError(_ERROR)
+
+            # A committed Job may have succeeded while its HTTP 201 response
+            # was lost. Replaying exactly the same keyed request must use the
+            # durable repository's idempotency check without rebinding/deleting
+            # the input or creating a second Job.
+            if pending.job_id is not None:
+                if (not submission.idempotency_key
+                        or submission.capability != "audio.transcribe"
+                        or submission.serving is None
+                        or submission.deadline_at is None
+                        or "audio_input" in submission.payload):
+                    raise ConflictError(_ERROR)
+                previous = self.repository.get_job(pending.job_id)
+                if previous.idempotency_key != submission.idempotency_key:
+                    raise ConflictError(_ERROR)
+                replay_payload = dict(submission.payload)
+                replay_payload["audio_input"] = _reference_dict(pending.reference)
+                replay = self.repository.submit_job(
+                    replace(submission, payload=replay_payload)
+                )
+                if replay.job_id != pending.job_id:
+                    raise ConflictError(_ERROR)
+                return replay
+
             try:
                 if submission.capability != "audio.transcribe":
                     raise ValueError("staged input requires audio.transcribe")

@@ -190,6 +190,44 @@ async def test_client_stage_admit_worker_lease_read_and_terminal_cleanup(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_keyed_admission_retry_recovers_same_job_without_rebinding(tmp_path):
+    env = make_env(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app), base_url="http://control",
+    ) as client:
+        ref = (await stage(client)).json()
+        url = f"/v1/audio/input/{token(ref)}/jobs"
+        body = submission(env, idempotency_key="audio-input-replay")
+        first = await client.post(url, json=body, headers=CLIENT)
+        assert first.status_code == 201, first.text
+        again = await client.post(url, json=body, headers=CLIENT)
+        assert again.status_code == 201, again.text
+        assert again.json()["job_id"] == first.json()["job_id"]
+        assert len(env.channel._inputs) == 1
+        assert len(env.channel._spool._records) == 1
+
+        altered = await client.post(
+            url,
+            json={**body, "payload": {"language": "en"}},
+            headers=CLIENT,
+        )
+        assert altered.status_code == 409
+        changed_key = await client.post(
+            url, json={**body, "idempotency_key": "different"}, headers=CLIENT,
+        )
+        assert changed_key.status_code == 409
+        unkeyed = await client.post(
+            url, json={**body, "idempotency_key": None}, headers=CLIENT,
+        )
+        assert unkeyed.status_code == 409
+        assert len(env.channel._inputs) == 1
+        claimed = (await claim(client)).json()
+        assert claimed["job_id"] == first.json()["job_id"]
+        result = await client.get(input_url(claimed, ref), headers=claim_headers(claimed))
+        assert result.status_code == 200 and result.content == WAV
+
+
+@pytest.mark.asyncio
 async def test_admission_failure_discards_staged_bytes_and_prevents_reuse(tmp_path):
     env = make_env(tmp_path, register=False)
     async with httpx.AsyncClient(
@@ -379,8 +417,13 @@ async def test_real_postgres_audio_input_job_record_and_worker_read(tmp_path, is
         transport=httpx.ASGITransport(app=env.app), base_url="http://control",
     ) as client:
         ref = (await stage(client)).json()
-        admitted = await admit(client, env, ref)
+        url = f"/v1/audio/input/{token(ref)}/jobs"
+        body = submission(env, idempotency_key="pg-stage-replay")
+        admitted = await client.post(url, json=body, headers=CLIENT)
         assert admitted.status_code == 201, admitted.text
+        replay = await client.post(url, json=body, headers=CLIENT)
+        assert replay.status_code == 201, replay.text
+        assert replay.json()["job_id"] == admitted.json()["job_id"]
         job = admitted.json()
         durable = repo.get_job(job["job_id"])
         assert durable.payload["audio_input"] == ref
