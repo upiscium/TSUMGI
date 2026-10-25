@@ -40,7 +40,7 @@ class FakeRepository:
 def make_channel(tmp_path, repo):
     root = tmp_path / "input"
     root.mkdir(mode=0o700)
-    spool = ArtifactSpool(root, max_bytes=64, ttl_seconds=30,
+    spool = ArtifactSpool(root, max_bytes=64, ttl_seconds=300,
                           max_total_bytes=128, max_artifacts=2)
     return AudioInputChannel(repo, spool, max_bytes=64)
 
@@ -52,13 +52,13 @@ def test_stage_and_submit_keeps_only_reference_metadata(tmp_path):
     assert ref["uri"].startswith("tsumgi-audio-input:")
     assert ref["size_bytes"] == len(WAV)
     assert WAV not in repr(ref).encode()
-    job = channel.submit(transcribe_submission(),
-                         artifact_uri=ref["uri"])
+    request = transcribe_submission()
+    job = channel.submit(request, artifact_uri=ref["uri"])
     assert job.job_id == "job-staged"
     submitted = repo.submissions[0]
     assert submitted.payload["audio_input"] == ref
     assert WAV not in repr(submitted.payload).encode()
-    assert channel.submit(transcribe_submission(), artifact_uri=ref["uri"]).job_id == job.job_id
+    assert channel.submit(request, artifact_uri=ref["uri"]).job_id == job.job_id
 
 
 @pytest.mark.parametrize("body", [b"", b"broken", b"RIFFxxxxbad!"])
@@ -225,6 +225,8 @@ def test_ambiguous_commit_preserves_input_for_idempotent_retry(tmp_path):
     ident = ref["uri"].removeprefix("tsumgi-audio-input:")
     assert ident in channel._inputs
     assert channel._inputs[ident].job_id is None
+    assert channel._inputs[ident].submission.idempotency_key == request.idempotency_key
+    assert channel._inputs[ident].submission.payload["audio_input"] == ref
     assert ident in channel.spool._records
 
     # Reconciliation through the repository's existing idempotency identity.
@@ -245,3 +247,59 @@ def test_nonserving_or_nonidempotent_submission_fails_before_consuming_input(tmp
         with pytest.raises(ConflictError):
             channel.submit(submission, artifact_uri=ref["uri"])
     assert len(channel._inputs) == 1
+
+
+def test_bound_input_cannot_be_destroyed_or_rebound_by_bad_retry(tmp_path):
+    from dataclasses import replace
+    repo = FakeRepository()
+    channel = make_channel(tmp_path, repo)
+    ref = channel.stage(WAV)
+    first = transcribe_submission("job-a-key")
+    assert channel.submit(first, artifact_uri=ref["uri"]).job_id == "job-staged"
+    ident = ref["uri"].removeprefix("tsumgi-audio-input:")
+    before_calls = len(repo.submissions)
+    for invalid in (
+        transcribe_submission("job-b-key"),
+        replace(first, payload={"changed": "request"}),
+        replace(first, priority=5),
+    ):
+        with pytest.raises(ConflictError):
+            channel.submit(invalid, artifact_uri=ref["uri"])
+        assert len(repo.submissions) == before_calls
+        assert channel.spool._records[ident][2] == ref["digest"].removeprefix("sha256:")
+        assert channel._inputs[ident].job_id == "job-staged"
+    assert channel.submit(first, artifact_uri=ref["uri"]).job_id == "job-staged"
+
+
+def test_ambiguous_result_protects_receipt_from_mismatched_retry(tmp_path):
+    from astrumweaver.control.repository import StorageUnavailable
+    repo = FakeRepository(StorageUnavailable("unknown commit outcome"))
+    channel = make_channel(tmp_path, repo)
+    ref = channel.stage(WAV)
+    first = transcribe_submission("maybe-committed-key")
+    with pytest.raises(StorageUnavailable):
+        channel.submit(first, artifact_uri=ref["uri"])
+    calls = len(repo.submissions)
+    with pytest.raises(ConflictError):
+        channel.submit(transcribe_submission("different-key"), artifact_uri=ref["uri"])
+    assert len(repo.submissions) == calls
+    assert ref["uri"].removeprefix("tsumgi-audio-input:") in channel._inputs
+    repo.error = None
+    assert channel.submit(first, artifact_uri=ref["uri"]).job_id == "job-staged"
+
+
+def test_input_ttl_must_cover_admitted_job_deadline(tmp_path):
+    from dataclasses import replace
+    repo = FakeRepository()
+    channel = make_channel(tmp_path, repo)
+    ref = channel.stage(WAV)
+    request = transcribe_submission("too-long")
+    late = replace(request, deadline_at=datetime.now(UTC) + timedelta(seconds=400))
+    with pytest.raises(ConflictError, match="lifetime insufficient"):
+        channel.submit(late, artifact_uri=ref["uri"])
+    assert repo.submissions == []
+    assert ref["uri"].removeprefix("tsumgi-audio-input:") not in channel._inputs
+    # New inputs remain admissible when the deadline is inside the TTL.
+    fresh = channel.stage(WAV)
+    assert channel.submit(transcribe_submission("short-enough"),
+                          artifact_uri=fresh["uri"]).job_id == "job-staged"

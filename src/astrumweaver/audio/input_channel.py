@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import UTC, datetime
 from threading import RLock
 import secrets
 
@@ -25,6 +26,7 @@ class _Input:
     scope: str
     receipt: dict
     job_id: str | None = None
+    submission: JobSubmission | None = None
 
 
 class AudioInputChannel:
@@ -88,20 +90,49 @@ class AudioInputChannel:
             staged = self._inputs.get(ident)
             if staged is None:
                 raise ConflictError("audio input binding rejected")
+            # Persist first request identity before any outcome-uncertain call.
+            # A different key/payload cannot commit another Job for this input.
+            if "audio_input" in submission.payload:
+                raise ConflictError("audio input binding rejected")
+            payload = dict(submission.payload)
+            payload["audio_input"] = {
+                "uri": artifact_uri,
+                "media_type": "audio/wav",
+                "digest": "sha256:" + staged.receipt["sha256"],
+                "size_bytes": staged.receipt["size"],
+            }
+            bound = replace(submission, payload=payload)
+            if staged.submission is not None and staged.submission != bound:
+                raise ConflictError("audio input binding rejected")
+
+            self.spool.read(ident, scope=staged.scope)
+            # The spool's monotonic TTL must cover the full advertised Job
+            # deadline, not just the immediate admission. Future available_at
+            # remains bounded because it must precede deadline_at.
+            created = self.spool._records[ident][1]
+            remaining = self.spool._ttl - (self.spool._now() - created)
+            until_deadline = (
+                submission.deadline_at.astimezone(UTC) - datetime.now(UTC)
+            ).total_seconds()
+            if until_deadline <= 0 or until_deadline >= remaining:
+                # A definitely rejected first admission cannot retain this
+                # pre-admission input indefinitely. Pending/bound work is
+                # never destroyed by an invalid retry.
+                if staged.submission is None:
+                    try:
+                        self.spool.delete(ident, scope=staged.scope)
+                    except (OSError, ValueError):
+                        pass
+                    else:
+                        del self._inputs[ident]
+                raise ConflictError("audio input lifetime insufficient")
+
+            first_attempt = staged.submission is None
+            if first_attempt:
+                staged = replace(staged, submission=bound)
+                self._inputs[ident] = staged
             try:
-                self.spool.read(ident, scope=staged.scope)
-                if "audio_input" in submission.payload:
-                    raise ConflictError("audio input binding rejected")
-                payload = dict(submission.payload)
-                payload["audio_input"] = {
-                    "uri": artifact_uri,
-                    "media_type": "audio/wav",
-                    "digest": "sha256:" + staged.receipt["sha256"],
-                    "size_bytes": staged.receipt["size"],
-                }
-                recorded = self.repository.submit_job(
-                    replace(submission, payload=payload)
-                )
+                recorded = self.repository.submit_job(bound)
                 if staged.job_id is not None and recorded.job_id != staged.job_id:
                     raise ConflictError("audio input binding rejected")
             except StorageUnavailable:
@@ -110,14 +141,15 @@ class AudioInputChannel:
                 raise
             except (ConflictError, DeadlineExceededError, NoCompatibleDeployment,
                     OverloadedError, ValueError, TypeError, KeyError):
-                # The staged input is not usable after an admission failure.
-                # If verified unlink fails, retain the record for later cleanup.
-                try:
-                    self.spool.delete(ident, scope=staged.scope)
-                except (OSError, ValueError):
-                    pass
-                else:
-                    del self._inputs[ident]
+                # Only a definitely rejected *first* request can be cleaned.
+                # Existing/pending admissions may already have committed.
+                if first_attempt:
+                    try:
+                        self.spool.delete(ident, scope=staged.scope)
+                    except (OSError, ValueError):
+                        pass
+                    else:
+                        del self._inputs[ident]
                 raise
             self._inputs[ident] = replace(staged, job_id=recorded.job_id)
             return recorded
