@@ -14,6 +14,7 @@ import secrets
 
 from ..control.models import JobSubmission, JobStatus
 from ..control.repository import (
+    _submission_matches,
     ConflictError, DeadlineExceededError, NoCompatibleDeployment,
     NotFoundError, OverloadedError, StorageUnavailable,
 )
@@ -176,11 +177,26 @@ class AudioInputChannel:
                 raise NotFoundError("audio input unavailable")
             ident = uri.removeprefix("tsumgi-audio-input:")
             staged = self._inputs.get(ident)
-            if (staged is None or staged.job_id != job_id
+            if (staged is None
+                    or (staged.job_id is not None and staged.job_id != job_id)
                     or binding.get("size_bytes") != staged.receipt["size"]
                     or binding.get("digest") != "sha256:" + staged.receipt["sha256"]
                     or binding.get("media_type") != "audio/wav"):
                 raise NotFoundError("audio input unavailable")
+
+            if staged.job_id is None:
+                # PostgreSQL may commit admission but lose its acknowledgement.
+                # Rebind only to the authoritative, current Worker-owned Job
+                # whose complete request matches the previously pinned request,
+                # using the SAME comparison as repository idempotency handling.
+                # Matching URI/digest alone is insufficient.
+                if (staged.submission is None
+                        or job.idempotency_key != staged.submission.idempotency_key
+                        or not _submission_matches(job, staged.submission)):
+                    raise NotFoundError("audio input unavailable")
+                staged = replace(staged, job_id=job_id)
+                self._inputs[ident] = staged
+
             content = self.spool.read(ident, scope=staged.scope)
             # Do not reuse an authorization granted before disk I/O.
             self.repository._authorize_audio_artifact_attempt(

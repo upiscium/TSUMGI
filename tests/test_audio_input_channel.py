@@ -338,3 +338,98 @@ def test_identical_idempotent_replay_after_job_deadline(tmp_path, monkeypatch):
     later = request.deadline_at + timedelta(seconds=5)
     monkeypatch.setattr(module, "datetime", SimpleNamespace(now=lambda tz: later))
     assert channel.submit(request, artifact_uri=ref["uri"]).job_id == original_job.job_id
+
+def test_ambiguous_committed_postgres_input_is_worker_readable_without_client_retry(
+    tmp_path, isolated_database,
+):
+    from astrumweaver.control import PostgresControlRepository
+    from astrumweaver.control.repository import StorageUnavailable
+    from test_audio_artifact_authority import EPOCH, setup_claim
+
+    backing = PostgresControlRepository(isolated_database, lease_seconds=60)
+    existing = setup_claim(backing, datetime.now(UTC), capability="audio.transcribe")
+
+    class LostAcknowledgement:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.committed = None
+        def __getattr__(self, attr):
+            return getattr(self.delegate, attr)
+        def submit_job(self, submission):
+            self.committed = self.delegate.submit_job(submission)
+            raise StorageUnavailable("simulated committed-but-acknowledgement-lost")
+
+    repo = LostAcknowledgement(backing)
+    channel = make_channel(tmp_path, repo)
+    ref = channel.stage(WAV)
+    original = JobSubmission(
+        capability="audio.transcribe", serving=existing.serving,
+        deadline_at=datetime.now(UTC) + timedelta(seconds=120),
+        idempotency_key="pg-committed-ack-lost-r6",
+    )
+    with pytest.raises(StorageUnavailable):
+        channel.submit(original, artifact_uri=ref["uri"])
+    ident = ref["uri"].removeprefix("tsumgi-audio-input:")
+    assert channel._inputs[ident].job_id is None
+    assert channel._inputs[ident].submission is not None
+
+    # The client never replays its POST. A Worker claims the durable Job.
+    claim = backing.claim_next_job("other", runtime_instance_epoch=EPOCH)
+    assert claim and claim.job_id == repo.committed.job_id
+    content = channel.read_for_worker(
+        claim.job_id, worker_id="other", attempt=claim.attempts,
+        lease_token=claim.lease_token, runtime_instance_epoch=EPOCH,
+    )
+    assert content == WAV
+    assert channel._inputs[ident].job_id == claim.job_id
+    with pytest.raises(NotFoundError):
+        channel.discard(ref["uri"])
+    backing.cancel_job(claim.job_id)
+    with pytest.raises(ConflictError):
+        channel.read_for_worker(
+            claim.job_id, worker_id="other", attempt=claim.attempts,
+            lease_token=claim.lease_token, runtime_instance_epoch=EPOCH,
+        )
+
+
+def test_pending_input_does_not_rebind_to_job_with_only_matching_artifact_ref(tmp_path):
+    from astrumweaver.control import InMemoryControlRepository
+    from astrumweaver.control.repository import StorageUnavailable
+    from test_audio_artifact_authority import EPOCH, setup_claim
+    from dataclasses import replace
+
+    backing = InMemoryControlRepository(lease_seconds=60)
+    existing = setup_claim(backing, datetime.now(UTC), capability="audio.transcribe")
+
+    class RejectBeforeCommit:
+        def __init__(self, delegate):
+            self.delegate = delegate
+        def __getattr__(self, attr):
+            return getattr(self.delegate, attr)
+        def submit_job(self, submission):
+            raise StorageUnavailable("simulated unknown admission")
+
+    channel = make_channel(tmp_path, RejectBeforeCommit(backing))
+    ref = channel.stage(WAV)
+    first = JobSubmission(
+        capability="audio.transcribe", serving=existing.serving,
+        deadline_at=datetime.now(UTC) + timedelta(seconds=120),
+        idempotency_key="only-the-real-request",
+    )
+    with pytest.raises(StorageUnavailable):
+        channel.submit(first, artifact_uri=ref["uri"])
+
+    # Another caller who knows the input URI can copy its metadata into a
+    # different Job; that must NOT resurrect this pending binding.
+    other = backing.submit_job(replace(
+        first, idempotency_key="a-different-job",
+        payload={"audio_input": ref},
+    ))
+    claim = backing.claim_next_job("other", runtime_instance_epoch=EPOCH)
+    assert claim and claim.job_id == other.job_id
+    with pytest.raises(NotFoundError):
+        channel.read_for_worker(
+            other.job_id, worker_id="other", attempt=claim.attempts,
+            lease_token=claim.lease_token, runtime_instance_epoch=EPOCH,
+        )
+    assert channel._inputs[ref["uri"].removeprefix("tsumgi-audio-input:")].job_id is None
