@@ -4,9 +4,10 @@ Status: **AC-AUDIO-05/06 final acceptance pending**. This is an evidence
 inventory for Issue [#174](https://github.com/upiscium/TSUMGI/issues/174),
 not a declaration of release or production readiness.
 
-Source baseline: `main` merge `16f25698e4ce9594fded3b756a987c0298bdd53a`
-(PR #192). Subsequent focused admission-route guard and test evidence are
-tracked in the PR that adds this document.
+Source baseline: `main` merge `a62d026c3a38c47125f9d48133f15fbc782a5429`
+(PR #193, including the accepted generic admission-route guard). The
+additional loopback transport-fault tests in this change add evidence without
+changing production code.
 
 ## The supported boundary
 
@@ -63,10 +64,10 @@ deliberately separate.
 | Output published only after terminal success | **Verified in test scope.** See `test_audio_artifact_end_to_end.py` and output-channel tests with real PostgreSQL and private files. |
 | Opaque refs, digest, size, filesystem safety | **Verified in test scope.** Job JSON uses URI/digest/MIME/size metadata. Spool checks digest, ownership, inode/permissions and symlink/path safety. `test_audio_artifact_spool.py`. |
 | Bounded quotas, TTL, reaper, stale/failed cleanup | **Verified in test scope** for per-file and aggregate quotas; expiry and abandoned output reaping; failed unlink retains quota. Input is reclaimed at TTL; it is not guaranteed to be immediately deleted at every malformed admission request. |
-| Upload interruption | **Partially verified.** Truncated `Content-Length` over in-process ASGI is rejected with no staged file. An actual TCP peer disconnect has **not** been exercised. |
+| Upload interruption | **Verified on test-owned loopback TCP.** `test_audio_real_transport_faults.py` starts a real localhost Uvicorn HTTP/1.1 server, sends part of a declared WAV body over a socket, then closes the peer; ASGI observes `http.disconnect` and no bytes, receipt or quota remain. A fresh full upload succeeds afterward. This does not establish behavior behind an external load balancer, TLS proxy or production Gateway. |
 | Filesystem faults | **Partially verified.** Partial `os.write` followed by injected `ENOSPC` leaves no visible output receipt or quota charge, and healthy retry can stage. Physical disk/power failure is **not** tested. |
 | Post-crash orphan cleanup | **Verified for exclusive-root Spool lifecycle.** A separately hard-exited Spool process leaves a file that a new owner can reclaim. Simulated state loss refuses to restore private bytes from durable Job metadata. Full Control process restart with live job recovery is **not** tested. |
-| Commit-response uncertainty | **Partially verified.** Real PostgreSQL can commit before a deliberately injected `StorageUnavailable`; receipt survives, idempotent client replay and a current Worker can reconcile from canonical durable request metadata. Actual network COMMIT ACK loss is **not** tested. |
+| Commit-response uncertainty | **Verified on test-owned localhost protocol proxy and real PostgreSQL.** `test_audio_real_transport_faults.py` suppresses the backend's successful `CommandComplete COMMIT` and following `ReadyForQuery` over a real TCP connection, then closes the client socket. A separate direct connection to the same isolated database (Unix socket locally, TCP in CI) independently finds exactly one committed Job; the caller raises `StorageUnavailable`, but its original input receipt is retained and can be read by the current Worker **without replay**, and identical replay creates no duplicate. This is a deterministic loopback response-loss test, not a general proof for arbitrary network partitions. |
 | AC-AUDIO-06 no binary in persistent JSON/logs/metrics | **Narrowly verified, not universally proven.** Audio endpoints persist only opaque ref metadata; tests compare Job payload/result against raw test WAV. Generic JSON Job payloads outside the opted-in contract and downstream text/transcripts remain caller-dependent. Log/metric/backups-wide binary and sensitive-data absence has **not** been exhaustively audited. |
 
 ## Operational invariants and known limits
@@ -75,6 +76,11 @@ deliberately separate.
   concurrently active Control instances. Startup orphan reclamation is an
   explicit exclusive-root operation; no HA/replication or persistent receipt
   recovery is offered.
+- **Transport-fault test containment:** the PostgreSQL fault proxy is limited
+  to a test-owned loopback TCP listener. Before allocating its disposable
+  database, the test rejects nonlocal host/hostaddr and service or environment
+  redirection; both proxy-side host and hostaddr are pinned to 127.0.0.1.
+  This remains a test harness, not a deployable PostgreSQL proxy.
 - **Expiry and crash:** PostgreSQL metadata is durable, but input/output bytes
   and their scope/receipt maps are process-local. After restart, a Job may
   retain a reference whose WAV is no longer readable. Correct behavior is to
@@ -95,14 +101,17 @@ deliberately separate.
 
 ## Final decision gate
 
-A maintainer must explicitly decide whether the **partially verified items**
-above are acceptable as documented MVI constraints or require a narrow
-additional acceptance test, especially actual socket disconnection,
-full-Control restart, and logs/metrics retention. **Do not close #174 or claim
-full AC-AUDIO-05/06 PASS solely from this inventory.** Deployment and release
-also require a separate operational decision.
+A maintainer must explicitly decide whether the **remaining partially
+verified items** above are acceptable documented MVI constraints or require
+narrow further tests, particularly full-Control service restart with running
+Jobs, physical power failure and logs/metrics/backups retention. The actual
+localhost TCP disconnect and a successful PostgreSQL COMMIT with a withheld
+wire-level response are now covered as isolated tests; they do not certify an
+external TLS/production Gateway or arbitrary network failures. **Do not close
+#174 or claim full AC-AUDIO-05/06 PASS solely from this inventory.** Deployment
+and release also require a separate operational decision.
 
-Related merges: #183–#187, #189–#192. Older Draft
-[#188](https://github.com/upiscium/TSUMGI/pull/188) implements an alternate
-overlapping input API; its distinct PCM16 validation was extracted into merged
-#192. The duplicate Draft must not be merged as-is.
+Related merges: #183–#187, #189–#193. Older
+[#188](https://github.com/upiscium/TSUMGI/pull/188) was CLOSED/NOT MERGED
+as superseded: its distinct PCM16 validation was extracted into #192 and
+its alternate input API should not be merged over the accepted contract.
