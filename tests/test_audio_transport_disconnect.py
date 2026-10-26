@@ -115,8 +115,8 @@ def test_pg_commit_ack_socket_dropped_after_actual_commit(
 ):
     """Drop a real libpq socket after transmitting COMMIT; prove DB durability.
 
-    The loopback TCP proxy uses a private PostgreSQL unix-socket database as
-    its only upstream. It drops the backend acknowledgement for the COMMIT
+    The loopback TCP proxy connects to the configured isolated PostgreSQL
+    over a Unix-domain socket (local fixture) or loopback TCP (CI fixture). It drops the backend acknowledgement for the COMMIT
     command, leaving the client with an ambiguous result, then the durable
     Job is re-read through a distinct direct PostgreSQL connection.
     """
@@ -160,8 +160,18 @@ def test_pg_commit_ack_socket_dropped_after_actual_commit(
     def proxy():
         try:
             client, _ = listener.accept()
-            with client, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-                server.connect(f"{upstream_directory}/.s.PGSQL.{upstream_port}")
+            family = (
+                socket.AF_UNIX if upstream_directory.startswith("/")
+                else socket.AF_INET
+            )
+            with client, socket.socket(family, socket.SOCK_STREAM) as server:
+                if family == socket.AF_UNIX:
+                    server.connect(f"{upstream_directory}/.s.PGSQL.{upstream_port}")
+                else:
+                    # GitHub Actions supplies its disposable PostgreSQL as
+                    # loopback TCP rather than a Unix-domain socket.
+                    assert upstream_directory in ("127.0.0.1", "localhost")
+                    server.connect((upstream_directory, upstream_port))
                 client.settimeout(8)
                 server.settimeout(8)
                 commit_tail = b""
