@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import os
 import socket
 import struct
 from threading import Event, Thread
@@ -274,34 +275,83 @@ class _DropCommitAckProxy:
                 forwarder.join(timeout=2)
 
 
+def _require_local_pg_destination(source):
+    """Preflight the effective host before creating the disposable DB.
+
+    libpq's hostaddr can override host, and PGHOSTADDR or PGSERVICE can
+    redirect a connection despite its visible host label. We deliberately
+    reject such ambiguity rather than altering any host or DB configuration.
+    """
+    pytest.importorskip("psycopg", reason="NOT_VERIFIED: PostgreSQL unavailable")
+    from psycopg.conninfo import conninfo_to_dict
+
+    if not source:
+        pytest.skip("NOT_VERIFIED: dedicated PostgreSQL test DSN absent")
+    config = conninfo_to_dict(source)
+    if (config.get("service") or os.environ.get("PGSERVICE")
+            or os.environ.get("PGHOSTADDR")):
+        pytest.skip("NOT_VERIFIED: libpq destination not explicitly local")
+    backend_host = config.get("host")
+    backend_port = config.get("port")
+    if (not backend_host or not backend_port
+            or not config.get("dbname") or not config.get("user")):
+        pytest.skip("NOT_VERIFIED: explicit local PG host, port, db, user required")
+    if backend_host.startswith("/"):
+        if config.get("hostaddr"):
+            pytest.skip("NOT_VERIFIED: unexpected Unix socket hostaddr")
+        if not (Path(backend_host) / f".s.PGSQL.{backend_port}").is_socket():
+            pytest.skip("NOT_VERIFIED: explicit local PG Unix socket not present")
+    elif (backend_host != "127.0.0.1"
+            or config.get("hostaddr") not in (None, "127.0.0.1")):
+        pytest.skip("NOT_VERIFIED: non-loopback PostgreSQL destination")
+    return backend_host, int(backend_port)
+
+
+@pytest.mark.parametrize("unsafe_dsn", [
+    "host=127.0.0.1 hostaddr=203.0.113.7 port=55464 dbname=test user=test",
+    "host=203.0.113.7 port=55464 dbname=test user=test",
+    "port=55464 dbname=test user=test",
+    "host=127.0.0.1 service=remote port=55464 dbname=test user=test",
+])
+def test_pg_fault_proxy_rejects_nonlocal_destination_before_db_fixture(
+    monkeypatch, unsafe_dsn,
+):
+    monkeypatch.delenv("PGHOSTADDR", raising=False)
+    monkeypatch.delenv("PGSERVICE", raising=False)
+    with pytest.raises(pytest.skip.Exception, match="NOT_VERIFIED"):
+        _require_local_pg_destination(unsafe_dsn)
+
+
+def test_pg_fault_proxy_rejects_hostaddr_environment(monkeypatch):
+    monkeypatch.setenv("PGHOSTADDR", "203.0.113.7")
+    with pytest.raises(pytest.skip.Exception, match="NOT_VERIFIED"):
+        _require_local_pg_destination(
+            "host=127.0.0.1 port=55464 dbname=test user=test",
+        )
+
+
 def test_real_postgres_commit_ack_lost_after_successful_commit(
-    tmp_path, isolated_database,
+    tmp_path, request,
 ):
     psycopg = pytest.importorskip(
         "psycopg", reason="NOT_VERIFIED: PostgreSQL driver unavailable",
     )
-    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    from psycopg.conninfo import make_conninfo
 
-    # Every other connection uses the real isolated PostgreSQL backend,
-    # bypassing the fault proxy. Migrations and workers exist beforehand.
+    # Guard runs before the fixture creates/migrates ANY database.
+    backend_host, backend_port = _require_local_pg_destination(
+        os.environ.get("ASTRUMWEAVER_TEST_DATABASE_URL"),
+    )
+    isolated_database = request.getfixturevalue("isolated_database")
     direct_repo = PostgresControlRepository(isolated_database, lease_seconds=60)
     ready = setup_claim(
         direct_repo, datetime.now(UTC), capability="audio.transcribe",
     )
-    cfg = conninfo_to_dict(isolated_database)
-    backend_host = cfg.get("host") or "127.0.0.1"
-    backend_port = int(cfg.get("port") or "5432")
-    # Do not proxy a non-local database. The CI target is the isolated
-    # PostgreSQL 17 service on 127.0.0.1; local tests use a Unix socket.
-    if not backend_host.startswith("/") and backend_host != "127.0.0.1":
-        pytest.skip("NOT_VERIFIED: local isolated PostgreSQL required")
-    if backend_host.startswith("/"):
-        assert (Path(backend_host) / f".s.PGSQL.{backend_port}").is_socket()
 
     with _DropCommitAckProxy(backend_host, backend_port) as proxy:
         fault_dsn = make_conninfo(
-            isolated_database, host="127.0.0.1", port=proxy.port,
-            sslmode="disable", connect_timeout=4,
+            isolated_database, host="127.0.0.1", hostaddr="127.0.0.1",
+            port=proxy.port, sslmode="disable", connect_timeout=4,
         )
         fault_repo = PostgresControlRepository(fault_dsn, lease_seconds=60)
         channel = _input_channel(tmp_path, fault_repo)

@@ -67,7 +67,7 @@ deliberately separate.
 | Upload interruption | **Verified on test-owned loopback TCP.** `test_audio_real_transport_faults.py` starts a real localhost Uvicorn HTTP/1.1 server, sends part of a declared WAV body over a socket, then closes the peer; ASGI observes `http.disconnect` and no bytes, receipt or quota remain. A fresh full upload succeeds afterward. This does not establish behavior behind an external load balancer, TLS proxy or production Gateway. |
 | Filesystem faults | **Partially verified.** Partial `os.write` followed by injected `ENOSPC` leaves no visible output receipt or quota charge, and healthy retry can stage. Physical disk/power failure is **not** tested. |
 | Post-crash orphan cleanup | **Verified for exclusive-root Spool lifecycle.** A separately hard-exited Spool process leaves a file that a new owner can reclaim. Simulated state loss refuses to restore private bytes from durable Job metadata. Full Control process restart with live job recovery is **not** tested. |
-| Commit-response uncertainty | **Verified on test-owned localhost protocol proxy and real PostgreSQL.** `test_audio_real_transport_faults.py` suppresses the backend's successful `CommandComplete COMMIT` and following `ReadyForQuery` over a real TCP connection, then closes the client socket. A separate Unix-socket query independently finds exactly one committed Job; the caller raises `StorageUnavailable`, but its original input receipt is retained and can be read by the current Worker **without replay**, and identical replay creates no duplicate. This is a deterministic loopback response-loss test, not a general proof for arbitrary network partitions. |
+| Commit-response uncertainty | **Verified on test-owned localhost protocol proxy and real PostgreSQL.** `test_audio_real_transport_faults.py` suppresses the backend's successful `CommandComplete COMMIT` and following `ReadyForQuery` over a real TCP connection, then closes the client socket. A separate direct connection to the same isolated database (Unix socket locally, TCP in CI) independently finds exactly one committed Job; the caller raises `StorageUnavailable`, but its original input receipt is retained and can be read by the current Worker **without replay**, and identical replay creates no duplicate. This is a deterministic loopback response-loss test, not a general proof for arbitrary network partitions. |
 | AC-AUDIO-06 no binary in persistent JSON/logs/metrics | **Narrowly verified, not universally proven.** Audio endpoints persist only opaque ref metadata; tests compare Job payload/result against raw test WAV. Generic JSON Job payloads outside the opted-in contract and downstream text/transcripts remain caller-dependent. Log/metric/backups-wide binary and sensitive-data absence has **not** been exhaustively audited. |
 
 ## Operational invariants and known limits
@@ -76,6 +76,11 @@ deliberately separate.
   concurrently active Control instances. Startup orphan reclamation is an
   explicit exclusive-root operation; no HA/replication or persistent receipt
   recovery is offered.
+- **Transport-fault test containment:** the PostgreSQL fault proxy is limited
+  to a test-owned loopback TCP listener. Before allocating its disposable
+  database, the test rejects nonlocal host/hostaddr and service or environment
+  redirection; both proxy-side host and hostaddr are pinned to 127.0.0.1.
+  This remains a test harness, not a deployable PostgreSQL proxy.
 - **Expiry and crash:** PostgreSQL metadata is durable, but input/output bytes
   and their scope/receipt maps are process-local. After restart, a Job may
   retain a reference whose WAV is no longer readable. Correct behavior is to
