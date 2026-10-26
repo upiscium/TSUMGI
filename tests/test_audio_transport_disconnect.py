@@ -121,7 +121,6 @@ def test_pg_commit_ack_socket_dropped_after_actual_commit(
     Job is re-read through a distinct direct PostgreSQL connection.
     """
     import select
-    import time
     import psycopg
     from datetime import UTC, datetime, timedelta
     from astrumweaver.control import PostgresControlRepository, JobSubmission
@@ -165,6 +164,7 @@ def test_pg_commit_ack_socket_dropped_after_actual_commit(
                 server.connect(f"{upstream_directory}/.s.PGSQL.{upstream_port}")
                 client.settimeout(8)
                 server.settimeout(8)
+                commit_tail = b""
                 while True:
                     ready, _, _ = select.select([client, server], [], [], 8)
                     if not ready:
@@ -174,8 +174,13 @@ def test_pg_commit_ack_socket_dropped_after_actual_commit(
                         if not data:
                             return
                         if src is client:
-                            if b"COMMIT\x00" in data.upper():
+                            # TCP recv() does not preserve PostgreSQL message
+                            # or SQL command boundaries. Retain enough trailing
+                            # bytes to recognize COMMIT split across reads.
+                            combined = commit_tail + data.upper()
+                            if b"COMMIT\x00" in combined:
                                 commit_seen.set()
+                            commit_tail = combined[-6:]
                             server.sendall(data)
                         elif commit_seen.is_set():
                             # The backend sent the COMMIT completion packet.
