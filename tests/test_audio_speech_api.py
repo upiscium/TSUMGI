@@ -643,6 +643,74 @@ async def test_late_poll_cannot_read_output_after_abort(env, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("winner", ["completion", "cancellation"])
+async def test_running_completion_cancellation_race_fences_late_output(env, monkeypatch, winner):
+    """Real RUNNING attempt: race winner is durable; late completion is fenced."""
+    entered, release = Event(), Event()
+    claimed_state = {}
+    original_get = env.repo.get_job
+    original_submit = env.repo.submit_job
+    reads = []
+
+    def staged_submission(*args, **kwargs):
+        record = original_submit(*args, **kwargs)
+        claimed = claim(env, record)
+        credentials = dict(worker_id=worker_id(env, record),
+                           lease_token=claimed.lease_token, runtime_instance_epoch=EPOCH)
+        ref = env.channel.stage(record.job_id, attempt=claimed.attempts,
+                                data=WAV, **credentials)
+        claimed_state.update(record=record, ref=ref, credentials=credentials)
+        return record
+
+    def held_get(job_id):
+        entered.set()
+        if not release.wait(5):
+            raise RuntimeError("poll was not released")
+        return original_get(job_id)
+
+    monkeypatch.setattr(env.repo, "submit_job", staged_submission)
+    monkeypatch.setattr(env.repo, "get_job", held_get)
+    original_read = env.channel.read_published
+
+    def observed_read(*args):
+        reads.append(args)
+        return original_read(*args)
+
+    monkeypatch.setattr(env.channel, "read_published", observed_read)
+    disconnect = asyncio.Event()
+    service = AudioSpeechService(env.repo, env.channel, replace(LIMITS, request_timeout_seconds=1.5))
+    pending = asyncio.create_task(service.complete(raw_request(disconnect=disconnect), env.catalog, INGRESS))
+    try:
+        await wait_until(entered.is_set)
+        record = claimed_state["record"]
+        credentials = claimed_state["credentials"]
+        if winner == "completion":
+            # Completion commits before the client disconnect, but HTTP must not leak bytes.
+            monkeypatch.setattr(env.repo, "get_job", original_get)
+            env.channel.complete_job(record.job_id,
+                JobResult(artifacts=(claimed_state["ref"],)), **credentials)
+            monkeypatch.setattr(env.repo, "get_job", held_get)
+        disconnect.set()
+        with pytest.raises(AudioGatewayError, match="client_disconnected"):
+            await pending
+        assert service.in_flight == 1
+    finally:
+        release.set()
+        await asyncio.gather(pending, return_exceptions=True)
+        await drain(service)
+    durable = original_get(claimed_state["record"].job_id)
+    assert durable.status is (JobStatus.SUCCEEDED if winner == "completion" else JobStatus.CANCELLED)
+    assert service.unresolved_outcomes == 0
+    assert reads == []
+    assert env.repo._workers[worker_id(env, durable)].active_jobs == 0
+    if winner == "cancellation":
+        with pytest.raises(ConflictError):
+            env.channel.complete_job(durable.job_id,
+                JobResult(artifacts=(claimed_state["ref"],)), **claimed_state["credentials"])
+        assert original_get(durable.job_id).status is JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
 async def test_finite_cancellation_retries_preserve_unresolved_evidence(env, monkeypatch):
     def unavailable(job_id, **kwargs):
         env.repo.cancellations.append((job_id, kwargs))
