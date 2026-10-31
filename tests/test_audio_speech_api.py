@@ -481,6 +481,33 @@ async def test_channel_return_type_and_size_are_rechecked(env, monkeypatch, data
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("variant,expected", [
+    ("at-limit", 200),
+    ("over-limit", 502),
+    ("bad-data-length", 502),
+    ("bad-riff-length", 502),
+])
+async def test_staged_wav_response_boundaries(env, variant, expected):
+    # Actual staged channel bytes, not only forged size metadata.
+    pcm = b"\x00" * (LIMITS.output_bytes - 44)
+    raw = WAV[:4] + struct.pack("<I", len(pcm) + 36) + WAV[8:40] + struct.pack("<I", len(pcm)) + pcm
+    assert len(raw) == LIMITS.output_bytes
+    if variant == "over-limit":
+        raw = raw[:40] + struct.pack("<I", len(pcm) + 2) + pcm + b"\x00\x00"
+    elif variant == "bad-data-length":
+        raw = raw[:40] + struct.pack("<I", len(pcm) - 2) + pcm
+    elif variant == "bad-riff-length":
+        raw = raw[:4] + struct.pack("<I", len(raw) - 9) + raw[8:]
+    env.repo.after_submit = lambda record: publish(env, record, data=raw)
+    response = await post(app(env))
+    assert response.status_code == expected, response.text
+    if expected == 200:
+        assert response.content == raw
+    else:
+        assert_error(response, 502, "invalid_audio_output")
+
+
+@pytest.mark.asyncio
 async def test_staged_output_is_never_polled_before_durable_success(env, monkeypatch):
     staged = Event()
 
