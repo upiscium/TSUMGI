@@ -493,7 +493,11 @@ async def test_staged_wav_response_boundaries(env, variant, expected):
     raw = WAV[:4] + struct.pack("<I", len(pcm) + 36) + WAV[8:40] + struct.pack("<I", len(pcm)) + pcm
     assert len(raw) == LIMITS.output_bytes
     if variant == "over-limit":
-        raw = raw[:40] + struct.pack("<I", len(pcm) + 2) + pcm + b"\x00\x00"
+        raw = raw[:4] + struct.pack("<I", len(pcm) + 38) + raw[8:40] + struct.pack("<I", len(pcm) + 2) + pcm + b"\x00\x00"
+        # Oversized payload remains a structurally valid WAV: limit alone must reject it.
+        assert len(raw) == LIMITS.output_bytes + 2
+        assert int.from_bytes(raw[4:8], "little") == len(raw) - 8
+        assert int.from_bytes(raw[40:44], "little") == len(raw) - 44
     elif variant == "bad-data-length":
         raw = raw[:40] + struct.pack("<I", len(pcm) - 2) + pcm
     elif variant == "bad-riff-length":
