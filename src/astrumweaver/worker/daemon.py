@@ -19,6 +19,7 @@ from ..serving import (
     ServingDeploymentDeclaration,
     WorkerServingAdvertisement,
 )
+from ..gateway.audio import SPEECH_OPERATION_SCHEMA, TRANSCRIPTION_OPERATION_SCHEMA
 from ..gateway.embedding import EMBEDDING_OPERATION_SCHEMA
 from ..gateway.decision import DECISION_OPERATION_SCHEMA
 from ..runtime.providers.dual_llama_cpp import (
@@ -192,6 +193,29 @@ def _run_gpu_preflight(
     )
 
 
+def _require_audio_serving_contracts(
+    spec: WorkerSpec,
+    declaration: ServingDeploymentDeclaration | None,
+) -> None:
+    """Require reviewed configuration, not provider qualification or readiness."""
+    for capability, operation_schema in (
+        ("audio.synthesize", SPEECH_OPERATION_SCHEMA),
+        ("audio.transcribe", TRANSCRIPTION_OPERATION_SCHEMA),
+    ):
+        if capability not in spec.capabilities:
+            continue
+        if declaration is None:
+            raise RuntimeError("audio capabilities require a reviewed serving manifest")
+        contracts = tuple(
+            contract for contract in declaration.contracts
+            if contract.capability == capability
+        )
+        if len(contracts) != 1 or contracts[0].operation_schema != operation_schema:
+            raise RuntimeError(
+                "audio capability requires exactly one matching serving operation contract"
+            )
+
+
 def _require_dual_serving_manifest(
     deployment: RuntimeDeploymentSpec,
     declaration: ServingDeploymentDeclaration | None,
@@ -253,6 +277,7 @@ async def run_worker(
 
     spec = _build_spec(worker_section)
 
+    _require_audio_serving_contracts(spec, serving_declaration)
     _run_gpu_preflight(spec, worker_section)
 
     client = ControlClient(
