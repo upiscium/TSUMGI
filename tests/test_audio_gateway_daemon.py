@@ -486,3 +486,113 @@ async def test_audio_transport_uses_base_control_and_worker_authority(env):
         assert (await client.get(published, headers={
             "Authorization": "Bearer control-test-token",
         })).status_code == 404
+
+
+def test_second_spool_constructor_failure_rolls_back_first_empty_directory(env, monkeypatch):
+    original = audio_config.ArtifactSpool
+    count = 0
+
+    def second_fails(*args, **kwargs):
+        nonlocal count
+        count += 1
+        if count == 2:
+            raise OSError("private-data unavailable output root")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(audio_config, "ArtifactSpool", second_fails)
+    _invalid(env)
+    assert count == 2
+
+
+def test_router_construction_failure_rolls_back_both_spools(env, monkeypatch):
+    def fail_after_allocation(*args, **kwargs):
+        raise ValueError("private-data router failure")
+
+    monkeypatch.setattr(audio_config, "create_audio_speech_router", fail_after_allocation)
+    _invalid(env)
+
+
+def test_later_non_audio_gateway_failure_rolls_back_audio_spools(env):
+    with pytest.raises(RuntimeError, match="chat_gateway.catalog is required"):
+        env.build(extra={"chat_gateway": {"enabled": True}})
+    _no_spools(env)
+
+
+def test_base_app_factory_failure_rolls_back_audio_spools(env, monkeypatch):
+    def fail_after_allocating_channels(*args, **kwargs):
+        assert kwargs["audio_input_channel"] is not None
+        assert kwargs["audio_output_channel"] is not None
+        raise ValueError("private-data synthetic app failure")
+
+    monkeypatch.setattr(daemon, "create_app", fail_after_allocating_channels)
+    with pytest.raises(ValueError, match="private-data synthetic app failure"):
+        env.build()
+    _no_spools(env)
+
+
+@pytest.mark.asyncio
+async def test_non_audio_worker_completion_does_not_touch_failed_audio_spool(env, monkeypatch):
+    from astrumweaver import ResourceShape, WorkerSpec
+    from astrumweaver.control import JobStatus, JobSubmission, WorkerRegistration
+    from astrumweaver.audio.artifact_spool import ArtifactSpool
+    from astrumweaver.transport import PROTOCOL_VERSION
+
+    app = env.build()
+    env.repository.register_worker(WorkerRegistration(spec=WorkerSpec(
+        worker_id="echo-worker", worker_class="cpu-test", resources=ResourceShape(),
+        capabilities=frozenset({"debug.echo"}),
+    )))
+    queued = env.repository.submit_job(JobSubmission(capability="debug.echo", payload={"value": 7}))
+    claimed = env.repository.claim_next_job("echo-worker")
+    assert claimed is not None and claimed.job_id == queued.job_id
+
+    def disk_failure(*args, **kwargs):
+        raise OSError("private-data audio spool is unavailable")
+
+    # Running Control has a broken audio spool, but non-audio Job completion
+    # still uses Repository authority and never consults this optional medium.
+    monkeypatch.setattr(ArtifactSpool, "reap_expired", disk_failure)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://test") as client:
+        response = await client.post(
+            f"/v1/workers/echo-worker/jobs/{queued.job_id}/complete",
+            headers={"Authorization": "Bearer worker-test-token"},
+            json={"protocol_version": PROTOCOL_VERSION,
+                  "lease_token": claimed.lease_token,
+                  "result": {"outputs": {"value": 7}, "text": None,
+                             "artifacts": [], "metrics": {}, "metadata": {}}},
+        )
+    assert response.status_code == 200, response.text
+    assert env.repository.get_job(queued.job_id).status is JobStatus.SUCCEEDED
+    assert env.repository.get_worker("echo-worker").active_jobs == 0
+
+
+@pytest.mark.asyncio
+async def test_audio_worker_completion_still_fails_closed_when_spool_is_broken(env, monkeypatch):
+    from astrumweaver.audio.artifact_spool import ArtifactSpool
+    from astrumweaver.control import JobStatus
+    from astrumweaver.control.models import utc_now
+    from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
+    from test_audio_artifact_authority import EPOCH, setup_claim
+
+    app = env.build()
+    claimed = setup_claim(env.repository, utc_now(), capability="audio.synthesize")
+
+    def disk_failure(*args, **kwargs):
+        raise OSError("private-data audio spool inaccessible")
+
+    monkeypatch.setattr(ArtifactSpool, "reap_expired", disk_failure)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(
+        app=app, raise_app_exceptions=False), base_url="http://test",
+    ) as client:
+        response = await client.post(
+            f"/v1/workers/owner/jobs/{claimed.job_id}/complete",
+            headers={"Authorization": "Bearer worker-test-token"},
+            json={"protocol_version": PROTOCOL_VERSION, "extensions": [SERVING_EXTENSION],
+                  "lease_token": claimed.lease_token, "runtime_instance_epoch": EPOCH,
+                  "result": {"outputs": {}, "text": None, "artifacts": [],
+                             "metrics": {}, "metadata": {}}},
+        )
+    assert response.status_code == 500
+    assert "private-data" not in response.text
+    assert env.repository.get_job(claimed.job_id).status is JobStatus.RUNNING

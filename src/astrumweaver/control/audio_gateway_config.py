@@ -121,6 +121,51 @@ class _SpoolConfig:
         )
 
 
+def _discard_new_empty_spools(*spools: ArtifactSpool | None) -> None:
+    """Rollback startup allocations only, with inode-checked empty rmdir.
+
+    Never scan an old spool or delete artifacts. All candidate directories were
+    created by this particular build, before any Control app was served.
+    """
+    failed = False
+    for spool in spools:
+        if spool is None:
+            continue
+        try:
+            if spool._records:
+                raise ValueError("nonempty startup spool")
+            root_fd = spool._open_root()
+            try:
+                root_info = os.fstat(root_fd)
+                info = os.stat(spool._name, dir_fd=root_fd, follow_symlinks=False)
+                if (spool._identity(root_info) != spool._root_identity
+                        or not stat.S_ISDIR(info.st_mode)
+                        or info.st_uid != os.geteuid()
+                        or stat.S_IMODE(info.st_mode) != 0o700
+                        or spool._identity(info) != spool._directory_identity):
+                    raise ValueError("startup spool identity mismatch")
+                # Fail closed on nonempty/replaced occupants; never recursively delete.
+                os.rmdir(spool._name, dir_fd=root_fd)
+            finally:
+                os.close(root_fd)
+        except (OSError, ValueError, AttributeError):
+            failed = True
+    if failed:
+        raise RuntimeError("audio_gateway startup cleanup requires inspection") from None
+
+
+@dataclass(frozen=True)
+class AudioGatewaySetup:
+    """Unpublished channels plus routers; rollback only before app publication."""
+
+    input_channel: AudioInputChannel
+    output_channel: AudioOutputChannel
+    routers: tuple
+
+    def rollback(self) -> None:
+        _discard_new_empty_spools(self.output_channel._spool, self.input_channel.spool)
+
+
 @dataclass(frozen=True)
 class AudioGatewayConfig:
     catalog: AudioProfileCatalog
@@ -133,18 +178,20 @@ class AudioGatewayConfig:
     max_decoded_bytes: int
     max_duration_seconds: int
 
-    def build(self, repository) -> tuple:
-        """Construct shared channels for the Control transport and three public routers."""
+    def build(self, repository) -> AudioGatewaySetup:
+        """Build shared Control/Worker transport and public routers atomically."""
+        input_spool = output_spool = None
         try:
+            input_spool = self.input_spool.create(self.ingress.file_bytes)
             input_channel = AudioInputChannel(
-                repository, self.input_spool.create(self.ingress.file_bytes),
+                repository, input_spool,
                 max_bytes=self.ingress.file_bytes,
                 max_decoded_bytes=self.max_decoded_bytes,
                 max_duration_seconds=self.max_duration_seconds,
             )
+            output_spool = self.output_spool.create(self.speech.output_bytes)
             output_channel = AudioOutputChannel(
-                repository, self.output_spool.create(self.speech.output_bytes),
-                max_bytes=self.speech.output_bytes,
+                repository, output_spool, max_bytes=self.speech.output_bytes,
             )
             auth = {"client_auth": ClientAuthMode.BEARER, "client_token": self.token}
             routers = (
@@ -158,8 +205,9 @@ class AudioGatewayConfig:
                     ingress_limits=self.ingress, limits=self.transcriptions,
                 ),
             )
-            return input_channel, output_channel, routers
-        except (OSError, ValueError, TypeError, OverflowError):
+            return AudioGatewaySetup(input_channel, output_channel, routers)
+        except Exception:
+            _discard_new_empty_spools(output_spool, input_spool)
             raise RuntimeError(_INVALID) from None
 
 

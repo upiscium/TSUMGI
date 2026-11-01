@@ -462,11 +462,14 @@ def create_app(
                 raise ValueError("result is required")
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        complete = (
-            repository.complete_job
-            if audio_output_channel is None
-            else audio_output_channel.complete_job
-        )
+        # Non-audio Jobs must not depend on availability of an optional audio
+        # spool. Capability is immutable; the selected repository completion
+        # still checks Worker/lease/attempt authority atomically at effect time.
+        complete = repository.complete_job
+        if audio_output_channel is not None:
+            existing = await asyncio.to_thread(repository.get_job, job_id)
+            if existing.capability.startswith("audio."):
+                complete = audio_output_channel.complete_job
         record = await asyncio.to_thread(
             complete,
             job_id,
