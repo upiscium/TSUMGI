@@ -38,8 +38,8 @@ A missing, ambiguous or mismatched input raises one fixed, value-redacted
 
 Enabled output is always `review_only_blocked` / `can_apply=False`. It has a
 canonical SHA-256 digest of a bounded, allowlisted JSON representation. It
-contains only the public profile/provider/backend/capability, pinned deployment
-and contract/model digests, NixOS/generic-systemd path type, declared CPU/GPU/RAM
+contains only the public profile/provider/backend/capability, pinned logical-profile, deployment,
+contract and model digests, NixOS/generic-systemd path type, declared CPU/GPU/RAM
 counts, public voice alias IDs and **fixed** remaining review checks. Hostnames,
 GPU UUIDs, raw source config, local file paths, tokens and private recordings
 are excluded. The digest is an immutable *record fingerprint*, not a verified

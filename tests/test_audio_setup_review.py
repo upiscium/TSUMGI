@@ -69,6 +69,7 @@ def test_explicit_single_audio_profile_review_never_authorizes_activation(kind, 
     assert review.declared_host_ram_mb == 16384
     assert review.provider_id == input_args["declaration"].deployment.provider_id
     assert review.serving_contract_revision == input_args["declaration"].contracts[0].revision
+    assert review.profile_revision == input_args["catalog"].profiles[0].resolved.profile_revision
     assert review.capability in input_args["worker"].capabilities
     assert "adapter_implementation_review" in review.blockers
     assert "artifact_digest_verification" in review.blockers
@@ -194,8 +195,26 @@ def test_existing_non_audio_worker_capabilities_are_preserved_but_not_qualified(
         worker, capabilities=frozenset({"audio.synthesize", "llm.chat", "text.embed"}),
     )
     reviewed = review_audio_setup(**p)
-    assert reviewed.advertised_audio_capabilities == ("audio.synthesize",)
+    assert reviewed.declared_audio_capabilities == ("audio.synthesize",)
     assert reviewed.can_apply is False
     assert p["worker"].capabilities == frozenset(
         {"audio.synthesize", "llm.chat", "text.embed"}
     )
+
+
+def test_review_digest_changes_when_same_profile_tightens_limits():
+    before = args("voicevox")
+    original = review_audio_setup(**before)
+    changed_profile = profile("voicevox", profile_limits={"input_bytes": 6})
+    changed = review_audio_setup(**{
+        **before,
+        "catalog": AudioProfileCatalog((changed_profile,)),
+    })
+    assert changed.profile_id == original.profile_id
+    assert changed.provider_id == original.provider_id
+    assert changed.deployment_revision == original.deployment_revision
+    assert changed.serving_contract_revision == original.serving_contract_revision
+    assert changed.profile_revision != original.profile_revision
+    assert changed.digest != original.digest
+    assert changed.status == original.status == "review_only_blocked"
+    assert changed.can_apply is False

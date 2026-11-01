@@ -47,10 +47,11 @@ class AudioSetupReview:
     provider_id: str | None = None
     capability: str | None = None
     deployment_revision: str | None = None
+    profile_revision: str | None = None
     serving_contract_revision: str | None = None
     model_artifact_sha256: str | None = None
     deployment_path: str | None = None
-    advertised_audio_capabilities: tuple[str, ...] = ()
+    declared_audio_capabilities: tuple[str, ...] = ()
     declared_gpu_count: int | None = None
     declared_cpu_count: int | None = None
     declared_host_ram_mb: int | None = None
@@ -78,10 +79,11 @@ class AudioSetupReview:
             "provider_id": self.provider_id,
             "capability": self.capability,
             "deployment_revision": self.deployment_revision,
+            "profile_revision": self.profile_revision,
             "serving_contract_revision": self.serving_contract_revision,
             "model_artifact_sha256": self.model_artifact_sha256,
             "deployment_path": self.deployment_path,
-            "advertised_audio_capabilities": list(self.advertised_audio_capabilities),
+            "declared_audio_capabilities": list(self.declared_audio_capabilities),
             "declared_gpu_count": self.declared_gpu_count,
             "declared_cpu_count": self.declared_cpu_count,
             "declared_host_ram_mb": self.declared_host_ram_mb,
@@ -164,10 +166,11 @@ def review_audio_setup(
         provider_id=resolved.deployment.provider_id,
         capability=resolved.profile.capability,
         deployment_revision=resolved.deployment.revision,
+        profile_revision=resolved.profile_revision,
         serving_contract_revision=resolved.contract.revision,
         model_artifact_sha256=resolved.deployment.model_artifact_sha256,
         deployment_path=snapshot.deployment_path.value,
-        advertised_audio_capabilities=tuple(sorted(advertised)),
+        declared_audio_capabilities=tuple(sorted(advertised)),
         declared_gpu_count=worker.resources.gpu_count,
         declared_cpu_count=snapshot.runtime_host.cpu_count,
         declared_host_ram_mb=snapshot.runtime_host.host_ram_mb,
