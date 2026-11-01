@@ -3,18 +3,39 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import math
+import re
 
 from dataclasses import dataclass
 from typing import Any, Mapping
+from urllib.parse import quote
 
 import httpx
 
 from ..control.models import WorkerState
 from ..control.serde import job_result_to_dict, worker_spec_to_dict
-from ..execution import JobRequest, JobResult
+from ..execution import ArtifactRef, JobRequest, JobResult
 from ..serving import WorkerServingAdvertisement
 from ..transport import JOB_EVENTS_EXTENSION, PROTOCOL_VERSION, SERVING_EXTENSION
+
+
+_AUDIO_ERROR = "audio media transfer failed"
+_AUDIO_RECEIPT_MAX_BYTES = 64 * 1024
+
+
+def _audio_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(_AUDIO_ERROR)
+        result[key] = value
+    return result
+
+
+def _audio_json_constant(_: str) -> Any:
+    raise ValueError(_AUDIO_ERROR)
 
 
 class ControlTransportError(RuntimeError):
@@ -251,6 +272,149 @@ class ControlClient:
             lease_expires_at=body.get("lease_expires_at"),
             attempts=int(body.get("attempts", 0)),
         )
+
+    @staticmethod
+    def _audio_claim(
+        worker_id: str, claimed: ClaimedJob, capability: str, max_bytes: int,
+    ) -> tuple[str, dict[str, str]]:
+        """Validate locally without inventing or normalizing claim authority."""
+        if (type(max_bytes) is not int or not 1 <= max_bytes <= 16 * 1024 * 1024
+                or not isinstance(claimed, ClaimedJob)
+                or claimed.request.capability != capability
+                or type(claimed.attempts) is not int or claimed.attempts <= 0
+                or len(str(claimed.attempts)) > 10):
+            raise ControlTransportError(422, _AUDIO_ERROR)
+        epoch = claimed.request.metadata.get("claimed_runtime_instance_epoch")
+        serving = claimed.request.metadata.get("serving")
+        if not isinstance(serving, Mapping) or not serving:
+            raise ControlTransportError(422, _AUDIO_ERROR)
+        for value in (claimed.lease_token, epoch):
+            if (type(value) is not str or not value.strip()
+                    or not value.isascii()
+                    or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+                raise ControlTransportError(422, _AUDIO_ERROR)
+        for value in (worker_id, claimed.request.job_id):
+            if (type(value) is not str or not value.strip()
+                    or value in {".", ".."} or "/" in value or "\\" in value):
+                raise ControlTransportError(422, _AUDIO_ERROR)
+        path = (
+            f"/v1/workers/{quote(worker_id, safe='')}/jobs/"
+            f"{quote(claimed.request.job_id, safe='')}/audio"
+        )
+        return path, {
+            "x-audio-attempt": str(claimed.attempts),
+            "x-audio-lease-token": claimed.lease_token,
+            "x-audio-runtime-epoch": epoch,
+            "accept-encoding": "identity",
+        }
+
+    @staticmethod
+    def _audio_reference(
+        body: Any, prefix: str, max_bytes: int,
+    ) -> ArtifactRef:
+        fields = {"uri", "media_type", "digest", "size_bytes", "name", "metadata"}
+        if not isinstance(body, Mapping) or set(body) - fields:
+            raise ControlTransportError(502, _AUDIO_ERROR)
+        uri, digest, size = body.get("uri"), body.get("digest"), body.get("size_bytes")
+        name, metadata = body.get("name"), body.get("metadata", {})
+        if (type(uri) is not str or re.fullmatch(re.escape(prefix) + r"[0-9a-f]{64}", uri) is None
+                or body.get("media_type") != "audio/wav"
+                or type(digest) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+                or type(size) is not int or not 0 < size <= max_bytes
+                or (name is not None and (
+                    type(name) is not str or not name or name != name.strip()))
+                or not isinstance(metadata, Mapping)):
+            raise ControlTransportError(502, _AUDIO_ERROR)
+        return ArtifactRef(
+            uri=uri, media_type="audio/wav", digest=digest, size_bytes=size,
+            name=name, metadata=metadata,
+        )
+
+    @staticmethod
+    async def _audio_body(
+        response: httpx.Response, max_bytes: int, *, expected_size: int | None = None,
+    ) -> bytes:
+        # Never decompress a peer-controlled body or buffer an error body.
+        if response.headers.get("content-encoding", "identity") != "identity":
+            raise ControlTransportError(502, _AUDIO_ERROR)
+        declared = response.headers.get("content-length")
+        length = None
+        if declared is not None:
+            if (len(declared) > 20 or not declared.isascii()
+                    or not declared.isdecimal()):
+                raise ControlTransportError(502, _AUDIO_ERROR)
+            length = int(declared)
+            if length > max_bytes or (expected_size is not None and length != expected_size):
+                raise ControlTransportError(502, _AUDIO_ERROR)
+        payload = bytearray()
+        async for chunk in response.aiter_raw():
+            if (len(payload) + len(chunk) > max_bytes
+                    or (expected_size is not None and len(payload) + len(chunk) > expected_size)):
+                raise ControlTransportError(502, _AUDIO_ERROR)
+            payload.extend(chunk)
+        if ((length is not None and len(payload) != length)
+                or (expected_size is not None and len(payload) != expected_size)):
+            raise ControlTransportError(502, _AUDIO_ERROR)
+        return bytes(payload)
+
+    async def download_audio_input(
+        self, worker_id: str, claimed: ClaimedJob, *, max_bytes: int,
+    ) -> bytes:
+        """Retrieve only this serving transcription attempt's bounded WAV input."""
+        try:
+            path, headers = self._audio_claim(worker_id, claimed, "audio.transcribe", max_bytes)
+            reference = self._audio_reference(
+                claimed.request.payload.get("audio_input"), "tsumgi-audio-input:", max_bytes,
+            )
+            async with asyncio.timeout(self.timeout_seconds):
+                async with self._client.stream("GET", path + "/input", headers=headers) as response:
+                    if response.status_code != 200:
+                        raise ControlTransportError(response.status_code, _AUDIO_ERROR)
+                    if response.headers.get("content-type") != "audio/wav":
+                        raise ControlTransportError(502, _AUDIO_ERROR)
+                    data = await self._audio_body(
+                        response, max_bytes, expected_size=reference.size_bytes,
+                    )
+                    if "sha256:" + hashlib.sha256(data).hexdigest() != reference.digest:
+                        raise ControlTransportError(502, _AUDIO_ERROR)
+                    return data
+        except ControlTransportError as exc:
+            raise ControlTransportError(exc.status_code, _AUDIO_ERROR) from None
+        except (httpx.HTTPError, httpx.StreamError, TimeoutError, ValueError, TypeError):
+            raise ControlTransportError(0, _AUDIO_ERROR) from None
+
+    async def stage_audio_output(
+        self, worker_id: str, claimed: ClaimedJob, wav_bytes: bytes, *, max_bytes: int,
+    ) -> ArtifactRef:
+        """Stage one bounded synthesis WAV; never complete a Job or retry a POST."""
+        try:
+            path, headers = self._audio_claim(worker_id, claimed, "audio.synthesize", max_bytes)
+            if (type(wav_bytes) is not bytes or not 12 <= len(wav_bytes) <= max_bytes
+                    or wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE"):
+                raise ControlTransportError(422, _AUDIO_ERROR)
+            headers["content-type"] = "audio/wav"
+            digest = "sha256:" + hashlib.sha256(wav_bytes).hexdigest()
+            async with asyncio.timeout(self.timeout_seconds):
+                async with self._client.stream(
+                    "POST", path + "/output", headers=headers, content=wav_bytes,
+                ) as response:
+                    if response.status_code != 201:
+                        raise ControlTransportError(response.status_code, _AUDIO_ERROR)
+                    if response.headers.get("content-type") != "application/json":
+                        raise ControlTransportError(502, _AUDIO_ERROR)
+                    raw = await self._audio_body(response, _AUDIO_RECEIPT_MAX_BYTES)
+                    body = json.loads(
+                        raw.decode("utf-8"), object_pairs_hook=_audio_json_object,
+                        parse_constant=_audio_json_constant,
+                    )
+                    reference = self._audio_reference(body, "tsumgi-audio:", max_bytes)
+                    if reference.size_bytes != len(wav_bytes) or reference.digest != digest:
+                        raise ControlTransportError(502, _AUDIO_ERROR)
+                    return reference
+        except ControlTransportError as exc:
+            raise ControlTransportError(exc.status_code, _AUDIO_ERROR) from None
+        except (httpx.HTTPError, httpx.StreamError, TimeoutError, ValueError, TypeError, RecursionError):
+            raise ControlTransportError(0, _AUDIO_ERROR) from None
 
     async def publish_event(
         self,
