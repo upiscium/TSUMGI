@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrumweaver.runtime import RuntimeHealth, RuntimeHealthState
 from astrumweaver.gateway.audio import (
     SPEECH_OPERATION_SCHEMA,
     TRANSCRIPTION_OPERATION_SCHEMA,
@@ -207,7 +208,7 @@ async def test_missing_wrong_or_ambiguous_contract_fails_closed(
     (SPEECH,), (TRANSCRIPTION,), (SPEECH, TRANSCRIPTION),
     (SPEECH, TRANSCRIPTION, ECHO),
 ])
-async def test_pinned_contracts_reach_registration_without_provider_invocation(
+async def test_pinned_contracts_never_authorize_unsupervised_audio_factory(
     worker_harness, provider_id, operations,
 ):
     harness = worker_harness
@@ -215,15 +216,14 @@ async def test_pinned_contracts_reach_registration_without_provider_invocation(
     capabilities = frozenset(capability for capability, _schema in operations)
     harness.configure(capabilities, serving)
 
-    with pytest.raises(RegistrationReached):
-        await asyncio.wait_for(daemon.run_worker("unused-worker.toml"), timeout=1)
+    # A reviewed static ServingContract and feature-complete mock executor
+    # are not proof of a running/owned TTS or STT engine. No GPU, client,
+    # provider import, Control I/O, or registration is permitted.
+    with pytest.raises(RuntimeError) as caught:
+        await daemon.run_worker("unused-worker.toml")
 
-    assert harness.events == ["gpu", "client", "executor", "register", "close"]
-    registration, = harness.registrations
-    assert registration["spec"] == daemon._build_spec(harness.config["worker"])
-    assert registration["spec"].capabilities == capabilities
-    assert registration["serving"].deployment_revision == serving.deployment.revision
-    assert registration["serving"].contracts == serving.contracts
+    assert str(caught.value) == daemon._AUDIO_MANAGED_ONLY_ERROR
+    assert harness.events == [] and harness.registrations == []
 
 
 @pytest.mark.asyncio
@@ -250,10 +250,36 @@ async def test_non_audio_registration_is_unchanged(worker_harness, with_serving)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("missing", ["capability", "features"])
 async def test_valid_audio_declaration_does_not_bypass_executor_gates(
-    worker_harness, missing,
+    worker_harness, monkeypatch, missing,
 ):
     harness = worker_harness
-    harness.configure((SPEECH[0],), declaration(SPEECH))
+    harness.configure((SPEECH[0],), declaration(SPEECH), backend="runtime")
+
+    # The executor-capability/serving gates still run AFTER managed readiness.
+    # Fake managed readiness here is source-only, not engine qualification.
+    class ReadyLifecycle:
+        def __init__(self, _managed):
+            pass
+
+        async def ensure_ready(self, **_kwargs):
+            harness.events.append("ensure-ready")
+            return RuntimeHealth(state=RuntimeHealthState.READY, ready=True)
+
+        async def shutdown_owned(self, **_kwargs):
+            harness.events.append("shutdown")
+
+    monkeypatch.setattr(
+        daemon, "_load_runtime_deployment",
+        lambda _: SimpleNamespace(provider_id="synthetic-provider"),
+    )
+    monkeypatch.setattr(daemon, "discover_runtime_host_facts", lambda: object())
+    monkeypatch.setattr(
+        daemon, "managed_runtime_from_deployment",
+        lambda *_args, **_kwargs: SimpleNamespace(executor=lambda: harness.executor),
+    )
+    monkeypatch.setattr(daemon, "RuntimeLifecycleManager", ReadyLifecycle)
+    monkeypatch.setattr(daemon, "RuntimeHealthSupervisor", lambda *_args, **_kwargs: object())
+
     if missing == "capability":
         harness.executor.capabilities = frozenset({ECHO[0]})
         error = "executor does not support advertised capabilities"
@@ -264,7 +290,7 @@ async def test_valid_audio_declaration_does_not_bypass_executor_gates(
     with pytest.raises(RuntimeError, match=error):
         await daemon.run_worker("unused-worker.toml")
 
-    assert harness.events == ["gpu", "client", "executor", "close"]
+    assert harness.events == ["gpu", "client", "ensure-ready", "close", "shutdown"]
     assert harness.registrations == []
 
 
@@ -302,3 +328,139 @@ async def test_valid_audio_declaration_still_requires_runtime_readiness(
 
     assert harness.events == ["gpu", "client", "ensure-ready", "close", "shutdown"]
     assert harness.registrations == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capabilities", [
+    (SPEECH[0],),
+    (TRANSCRIPTION[0],),
+    (SPEECH[0], TRANSCRIPTION[0]),
+    ("other.work", SPEECH[0]),
+])
+async def test_audio_bare_factory_rejected_before_host_and_control_even_with_proven_features(
+    worker_harness, capabilities,
+):
+    harness = worker_harness
+    operations = tuple(
+        (SPEECH if cap == SPEECH[0] else TRANSCRIPTION)
+        for cap in capabilities if cap in (SPEECH[0], TRANSCRIPTION[0])
+    )
+    harness.configure(capabilities, declaration(*operations))
+    harness.config["worker"].update({
+        "gpu_preflight": True, "control_url": "http://private-secret-host/token",
+    })
+    harness.config["executor"]["factory"] = "dangerous:side_effect_if_loaded"
+    with pytest.raises(RuntimeError) as caught:
+        await daemon.run_worker("unused-worker.toml")
+    assert str(caught.value) == daemon._AUDIO_MANAGED_ONLY_ERROR
+    assert harness.events == [] and harness.registrations == []
+    assert "private-secret" not in str(caught.value)
+    assert "dangerous:side_effect" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("health", [
+    RuntimeHealth(state=RuntimeHealthState.STOPPED, ready=True),
+    RuntimeHealth(state=RuntimeHealthState.STARTING, ready=True),
+    RuntimeHealth(state=RuntimeHealthState.DEGRADED, ready=True),
+    RuntimeHealth(state=RuntimeHealthState.FAILED, ready=True),
+    RuntimeHealth(state=RuntimeHealthState.READY, ready=False),
+    RuntimeHealth(state=RuntimeHealthState.READY, ready=1),
+    None,
+    {"state": "ready", "ready": True},
+])
+async def test_audio_managed_runtime_rejects_inconsistent_or_fabricated_ready_before_executor(
+    worker_harness, monkeypatch, health,
+):
+    harness = worker_harness
+    harness.configure((SPEECH[0],), declaration(SPEECH), backend="runtime")
+
+    class UnreliableLifecycle:
+        def __init__(self, runtime):
+            self.runtime = runtime
+
+        async def ensure_ready(self, **_kwargs):
+            harness.events.append("ensure-ready")
+            return health
+
+        async def shutdown_owned(self, **_kwargs):
+            harness.events.append("shutdown")
+
+    class MockManaged:
+        def executor(self):
+            pytest.fail("inconsistent READY must not expose the audio executor")
+
+    monkeypatch.setattr(
+        daemon, "_load_runtime_deployment",
+        lambda _path: SimpleNamespace(provider_id="synthetic-provider"),
+    )
+    monkeypatch.setattr(daemon, "discover_runtime_host_facts", lambda: object())
+    monkeypatch.setattr(
+        daemon, "managed_runtime_from_deployment", lambda *_args, **_kwargs: MockManaged(),
+    )
+    monkeypatch.setattr(daemon, "RuntimeLifecycleManager", UnreliableLifecycle)
+
+    with pytest.raises(RuntimeError) as caught:
+        await daemon.run_worker("unused-worker.toml")
+    assert str(caught.value) == daemon._AUDIO_READY_ERROR
+    assert harness.events == ["gpu", "client", "ensure-ready", "close", "shutdown"]
+    assert harness.registrations == []
+
+
+@pytest.mark.asyncio
+async def test_valid_managed_audio_runtime_passes_existing_supervisor_before_registration(
+    worker_harness, monkeypatch,
+):
+    """Real lifecycle/supervisor + fake owned runtime, no process/network/GPU."""
+    from astrumweaver.runtime import RuntimeLifecycleManager
+    from astrumweaver.execution import ResidencyReport
+    from astrumweaver.worker.supervision import RuntimeHealthSupervisor
+
+    harness = worker_harness
+    harness.configure((SPEECH[0],), declaration(SPEECH), backend="runtime")
+
+    class MockManaged:
+        provider_id = "synthetic-provider"
+
+        def __init__(self):
+            self.stops = 0
+            self.releases = 0
+            self.health_probes = 0
+
+        async def start(self):
+            pytest.fail("already READY synthetic runtime should not be started")
+
+        async def health(self):
+            self.health_probes += 1
+            return RuntimeHealth(state=RuntimeHealthState.READY, ready=True)
+
+        def executor(self):
+            return harness.executor
+
+        async def stop(self):
+            self.stops += 1
+
+        async def release(self):
+            self.releases += 1
+
+        async def residency(self):
+            return ResidencyReport()
+
+    mock = MockManaged()
+    monkeypatch.setattr(
+        daemon, "_load_runtime_deployment",
+        lambda _path: SimpleNamespace(provider_id=mock.provider_id),
+    )
+    monkeypatch.setattr(daemon, "discover_runtime_host_facts", lambda: object())
+    monkeypatch.setattr(daemon, "managed_runtime_from_deployment", lambda *_a, **_kw: mock)
+    monkeypatch.setattr(daemon, "RuntimeLifecycleManager", RuntimeLifecycleManager)
+    monkeypatch.setattr(daemon, "RuntimeHealthSupervisor", RuntimeHealthSupervisor)
+
+    with pytest.raises(RegistrationReached):
+        await asyncio.wait_for(daemon.run_worker("unused-worker.toml"), timeout=1)
+    assert harness.events[:3] == ["gpu", "client", "register"]
+    assert harness.events[-1] == "close"
+    assert mock.health_probes >= 2  # lifecycle + supervisor before registration
+    assert mock.stops == mock.releases == 1
+    assert len(harness.registrations) == 1
+    assert harness.registrations[0]["serving"].contracts == declaration(SPEECH).contracts

@@ -27,6 +27,8 @@ from ..runtime.providers.dual_llama_cpp import (
 )
 from ..runtime import (
     RuntimeDeploymentSpec,
+    RuntimeHealth,
+    RuntimeHealthState,
     RuntimeLifecycleManager,
     discover_runtime_host_facts,
     managed_runtime_from_deployment,
@@ -217,6 +219,42 @@ def _require_audio_serving_contracts(
             )
 
 
+_AUDIO_CAPABILITIES = frozenset(("audio.synthesize", "audio.transcribe"))
+_AUDIO_MANAGED_ONLY_ERROR = "audio capabilities require a reviewed managed runtime manifest"
+_AUDIO_READY_ERROR = "audio managed runtime readiness is unconfirmed"
+
+
+def _require_audio_managed_only(
+    spec: WorkerSpec, *, executor_factory: str, runtime_manifest: str,
+) -> None:
+    """Reject an unsupervised audio factory before host/Control effects.
+
+    The existing executor capability/feature checks describe a shape; they
+    do not prove engine/model identity, process ownership, or health.
+    A managed manifest is required, but alone is NOT readiness evidence.
+    """
+    if spec.capabilities & _AUDIO_CAPABILITIES and (
+        executor_factory or not runtime_manifest
+    ):
+        raise RuntimeError(_AUDIO_MANAGED_ONLY_ERROR)
+
+
+def _require_audio_ready_health(spec: WorkerSpec, health: RuntimeHealth) -> None:
+    """Audio registration needs a coherent READY snapshot, not only ready=True.
+
+    RuntimeHealthSupervisor independently probes the owned runtime before the
+    Worker registers. This early check closes the inconsistent-health branch
+    of RuntimeLifecycleManager.ensure_ready without modifying non-audio
+    lifecycle behavior in this source-only slice.
+    """
+    if not spec.capabilities & _AUDIO_CAPABILITIES:
+        return
+    if (type(health) is not RuntimeHealth
+            or health.state is not RuntimeHealthState.READY
+            or health.ready is not True):
+        raise RuntimeError(_AUDIO_READY_ERROR)
+
+
 def _require_dual_serving_manifest(
     deployment: RuntimeDeploymentSpec,
     declaration: ServingDeploymentDeclaration | None,
@@ -279,6 +317,9 @@ async def run_worker(
     spec = _build_spec(worker_section)
 
     _require_audio_serving_contracts(spec, serving_declaration)
+    _require_audio_managed_only(
+        spec, executor_factory=executor_factory, runtime_manifest=runtime_manifest,
+    )
     _run_gpu_preflight(spec, worker_section)
 
     client = ControlClient(
@@ -303,11 +344,12 @@ async def run_worker(
                 host=discover_runtime_host_facts(),
             )
             runtime_manager = RuntimeLifecycleManager(managed_runtime)
-            await runtime_manager.ensure_ready(
+            health = await runtime_manager.ensure_ready(
                 timeout_seconds=float(
                     runtime_section.get("startup_timeout_seconds", 600.0)
                 )
             )
+            _require_audio_ready_health(spec, health)
             executor = managed_runtime.executor()
             supervisor = RuntimeHealthSupervisor(
                 managed_runtime,
