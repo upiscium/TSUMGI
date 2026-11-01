@@ -21,6 +21,12 @@ verified in this phase. No arbitrary paths/URLs/model names, reference audio,
 Job. An unknown alias/style/speaker, mismatched semantic revision, malformed
 request, unsupported capability or invalid pinned config is rejected.
 
+The source-only adapter deliberately has **no**
+`serving_features` declaration. A bare `executor.factory` is therefore
+rejected by the Worker daemon's `ja/wav` ServingContract feature gate.
+An async API shape and declared model hashes are not model readiness; only
+a separately qualified ManagedRuntime can make audio serving eligible.
+
 The adapter implements generic `JobExecutor.execute/cancel/residency` and
 audio-only `execute_audio(job, media)`. Model output must be a bounded,
 canonical PCM16 WAV, 8–48 kHz, mono/stereo, matching the already approved

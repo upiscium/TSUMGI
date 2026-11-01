@@ -199,6 +199,8 @@ class StyleBertVits2Executor(AudioJobExecutor):
     """Independent injected-session executor, intentionally not registered."""
 
     capabilities = frozenset({"audio.synthesize"})
+    # No serving_features until a reviewed ManagedRuntime verifies model
+    # artifacts and process readiness. A bare executor.factory is not ready.
 
     def __init__(
         self, *, config: StyleBertVits2ProviderConfig, api: StyleBertVits2AsyncModelApi,

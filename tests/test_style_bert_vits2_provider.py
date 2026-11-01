@@ -353,3 +353,43 @@ async def test_executor_can_reuse_after_a_timed_out_mock_operation():
     result = await ex.execute_audio(job(), media)
     assert isinstance(result, JobResult) and len(result.artifacts) == 1
     assert len(media.calls) == 1
+
+
+def test_unqualified_source_executor_cannot_advertise_ja_wav():
+    from astrumweaver.serving import (
+        DeploymentIdentity, ServingContract, ServingDeploymentDeclaration,
+    )
+    from astrumweaver.worker.runtime import require_executor_serving_features
+
+    def digest(letter):
+        return "sha256:" + letter * 64
+
+    dep = DeploymentIdentity(
+        provider_id="style-bert-vits2",
+        runtime_artifact_sha256=digest("1"),
+        adapter_artifact_sha256=digest("2"),
+        model_artifact_sha256=digest("3"),
+        execution_config_sha256=digest("4"), quantization="synthetic",
+    )
+    def declaration(features):
+        return ServingDeploymentDeclaration(
+            deployment=dep,
+            contracts=(ServingContract(
+                deployment_revision=dep.revision,
+                capability="audio.synthesize",
+                operation_schema="openai-audio-speech-v1",
+                validation_evidence_sha256=digest("5"),
+                features=frozenset(features),
+            ),),
+        )
+
+    executor = StyleBertVits2Executor(config=config(), api=FakeAsyncProcessApi())
+    assert not hasattr(executor, "serving_features")
+    # A fake coroutine/model digest is not evidence of loaded model readiness.
+    # Reviewed ja/wav contracts must remain ineligible at bare factory entry.
+    with pytest.raises(RuntimeError, match="ja"):
+        require_executor_serving_features(executor, declaration({"ja", "wav"}))
+    with pytest.raises(RuntimeError, match="unverified-native-feature"):
+        require_executor_serving_features(
+            executor, declaration({"ja", "wav", "unverified-native-feature"})
+        )
