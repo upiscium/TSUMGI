@@ -143,3 +143,55 @@ checks and CLI exit 0. Legacy v1.18.35 regression also passed 2/2 tasks,
 not an unconditional compatibility or latency claim for arbitrary OpenCode
 v2 clients, plugins or multi-file workloads. No actual Stored Completions
 implementation was introduced (#168 Future Work).
+
+
+## OpenCode 1.18.35 request-shape compatibility — #209 (source candidate)
+
+The 2026-11-01 pinned Adam client is OpenCode **1.18.35** using
+`@ai-sdk/openai-compatible`. The observed HTTPS target advertised the logical
+models `qwen3.8-27b` and `bonsai2-27b`; a minimal direct Chat Completion
+succeeded, while the real OpenCode client failed validation before generation.
+The deployed Control commit is **not established** by that observation.
+
+A disposable **127.0.0.1-only** diagnostic server with a synthetic reply and
+an ephemeral OpenCode provider configuration reproduced the following
+redacted request structure (no prompt, message text, tool schema, authorization
+header or external session history was recorded):
+
+- Top-level keys:
+  `max_tokens,messages,model,reasoning_effort,stream,stream_options,tool_choice,tools`
+  (tools/choice were optional across two observed requests).
+- `reasoning_effort`: `low` and `high` observed; the compatibility
+  validator also accepts the standard `medium` value.
+- User `content`: an ordered JSON array with two text parts, each having
+  **exactly** `{"type":"text","text":<string>}` keys/shape.
+- `stream: true`, `stream_options: {"include_usage": true}`; function
+  tools and `tool_choice` may coexist.
+
+**Bounded semantics:** `reasoning_effort` of `low`, `medium` or `high`
+is accepted solely as a **documented no-effect compatibility hint**. TSUMGI
+does **not** control the runtime's reasoning budget with this parameter and does
+**not** promise different reasoning behavior. It is not forwarded to the
+llama.cpp adapter, stored in `chat-job-v1`, or reflected as an implemented
+serving capability. Unsupported values (including `none`, `minimal`,
+`xhigh`), wrong types, and unrelated keys are rejected; this is intentionally
+not general OpenAI Responses API compatibility.
+
+For `user` messages only, nonempty arrays of at most 128 parts are accepted
+if every part is the exact text-only object above. Concatenation follows array
+order **without introducing separators or coercing values**, preserving the
+resulting plain-text bytes in the existing bounded Chat Job contract. Strings
+remain accepted as before. Other roles retain their previous content rules.
+Images, audio, unknown part keys, nested values, empty arrays and oversize
+part lists fail closed. The request-byte limit is still checked on the original
+HTTP body before normalization; tool-call IDs, tool results, streaming, and
+`store: false` remain unchanged.
+
+Regression evidence: source contract tests cover valid/invalid hints, text
+normalization, role restrictions, request size and structured Tool history.
+ASGI HTTP tests exercise a streamed, tool-advertising request and prove that
+malformed inputs fail before durable Job admission. **Source and synthetic
+HTTP tests are not evidence that a deployed Control or real model has been
+fixed.** Real-model `qwen3.8-27b` plain-chat + tool roundtrip, model-specific
+`bonsai2-27b` capability qualification, production package identity and
+rollback verification remain separate gated acceptance work (AC-OC-04/06).

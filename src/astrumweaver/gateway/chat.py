@@ -50,6 +50,7 @@ _ALLOWED_REQUEST_FIELDS = frozenset(
         "stream",
         "stream_options",
         "store",
+        "reasoning_effort",
     }
 )
 
@@ -349,6 +350,36 @@ def _validate_tool_call(value: object, *, seen: set[str]) -> dict[str, object]:
     }
 
 
+def _normalize_user_content(value: object) -> str:
+    """Normalize the observed OpenCode text-parts form without changing text.
+
+    Only an ordered, bounded array of exact {"type": "text", "text": str}
+    objects is permitted. Adjacent text is concatenated byte-for-byte (no
+    inferred separators); media, unknown part keys and nested values fail closed.
+    """
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list) or not 1 <= len(value) <= 128:
+        raise ChatGatewayError(
+            "invalid_request",
+            "user message content must be a string or bounded text-parts array",
+        )
+    parts: list[str] = []
+    for part in value:
+        if (
+            not isinstance(part, Mapping)
+            or set(part) != {"type", "text"}
+            or part["type"] != "text"
+            or not isinstance(part["text"], str)
+        ):
+            raise ChatGatewayError(
+                "invalid_request",
+                "user message parts must contain only type=text and string text",
+            )
+        parts.append(part["text"])
+    return "".join(parts)
+
+
 def _validate_messages(
     value: object,
 ) -> tuple[list[dict[str, object]], bool]:
@@ -390,7 +421,9 @@ def _validate_messages(
             message["name"] = _nonblank(data["name"], "message name")
 
         content = data.get("content")
-        if role in {"system", "user", "tool"}:
+        if role == "user":
+            message["content"] = _normalize_user_content(content)
+        elif role in {"system", "tool"}:
             if not isinstance(content, str):
                 raise ChatGatewayError(
                     "invalid_request",
@@ -612,6 +645,22 @@ def compile_chat_request(
                 "unsupported_feature", "Stored Completions are not supported"
             )
         data.pop("store")
+
+    # OpenCode 1.18.35 includes this model hint on normal streamed requests.
+    # Stage A has no verified runtime reasoning-effort control; accept only
+    # reviewed enum values as an explicitly documented no-effect compatibility
+    # hint, never claim they influence model sampling or persist them as Jobs.
+    if "reasoning_effort" in data:
+        effort = data.pop("reasoning_effort")
+        if not isinstance(effort, str):
+            raise ChatGatewayError(
+                "invalid_request", "reasoning_effort must be a string"
+            )
+        if effort not in {"low", "medium", "high"}:
+            raise ChatGatewayError(
+                "unsupported_feature",
+                "reasoning_effort supports only low, medium or high as a no-effect hint",
+            )
 
     if data.get("model") != profile.profile_id:
         raise ChatGatewayError(

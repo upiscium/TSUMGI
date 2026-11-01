@@ -868,8 +868,23 @@ async def test_partial_stream_failure_has_no_done_and_no_retry():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("v2_request", [False, True])
-async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_request):
+@pytest.mark.parametrize("client_variant", ["v1_11830", "v2_0032", "v1_11835"])
+async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(client_variant):
+    is_209 = client_variant == "v1_11835"
+    client_content = (
+        [{"type": "text", "text": "read "}, {"type": "text", "text": "README"}]
+        if is_209 else "read README"
+    )
+    if client_variant == "v2_0032":
+        compat_fields = {"store": False, "max_completion_tokens": 128}
+    elif is_209:
+        compat_fields = {
+            "tool_choice": "auto",
+            "reasoning_effort": "high",
+            "max_tokens": 128,
+        }
+    else:
+        compat_fields = {"tool_choice": "auto"}
     repository = InMemoryControlRepository()
     gateway, advertisement = serving_values(tools=True)
     register_worker(repository, advertisement)
@@ -933,7 +948,7 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_r
             headers=headers,
             json={
                 "model": "local-code-v1",
-                "messages": [{"role": "user", "content": "read README"}],
+                "messages": [{"role": "user", "content": client_content}],
                 "stream": True,
                 "stream_options": {"include_usage": True},
                 "tools": [
@@ -945,11 +960,7 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_r
                         },
                     }
                 ],
-                **(
-                    {"store": False, "max_completion_tokens": 128}
-                    if v2_request else
-                    {"tool_choice": "auto"}
-                ),
+                **compat_fields,
             },
         )
         await first_worker
@@ -979,6 +990,9 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_r
         assert call_id == "call_read"
         assert call_name == "read_file"
         assert arguments == '{"path":"README.md"}'
+        assert first.status_code == 200
+        assert sse_data(first)[-1] == "[DONE]"
+        assert all(fragment["index"] == 0 for fragment in tool_fragments)
 
         final_chunks = [
             {
@@ -1006,7 +1020,7 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_r
             json={
                 "model": "local-code-v1",
                 "messages": [
-                    {"role": "user", "content": "read README"},
+                    {"role": "user", "content": client_content},
                     {
                         "role": "assistant",
                         "content": None,
@@ -1039,16 +1053,13 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_r
                         },
                     }
                 ],
-                **(
-                    {"store": False, "max_completion_tokens": 128}
-                    if v2_request else
-                    {"tool_choice": "auto"}
-                ),
+                **compat_fields,
             },
         )
         await second_worker
 
     second_frames = sse_data(second)
+    assert second.status_code == 200
     assert second_frames[-1] == "[DONE]"
     final = json.loads(second_frames[0])
     assert final["choices"][0]["delta"]["content"] == "README summarized."
@@ -1062,7 +1073,11 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape(v2_r
     for job in jobs:
         assert "store" not in job.payload
         assert "store" not in job.payload["request"]
-        if v2_request:
+        if client_variant == "v2_0032":
+            assert job.payload["request"]["max_tokens"] == 128
+        if is_209:
+            assert "reasoning_effort" not in job.payload["request"]
+            assert job.payload["request"]["messages"][0]["content"] == "read README"
             assert job.payload["request"]["max_tokens"] == 128
 
 
@@ -1267,3 +1282,191 @@ async def test_asgi_streaming_response_closes_owning_stream_before_first_event()
             broken_send,
         )
     assert repository.get_job(job.job_id).status is JobStatus.CANCELLED
+
+
+# #209: HTTP-level regression for the redacted OpenCode 1.18.35 request shape.
+@pytest.mark.asyncio
+async def test_opencode_11835_reasoning_hint_and_text_parts_stream_over_durable_job():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(tools=True)
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+    transport = httpx.ASGITransport(app=app)
+    chunks = [
+        {
+            "choices": [{
+                "index": 0,
+                "delta": {"role": "assistant", "content": "TSUMGI_OK"},
+                "finish_reason": "stop",
+            }],
+        },
+        {
+            "choices": [],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9},
+        },
+    ]
+    worker = asyncio.create_task(stream_next(repository, chunks))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://control") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"authorization": f"Bearer {CLIENT_TOKEN}"},
+            json={
+                "model": "local-code-v1",
+                "messages": [
+                    {"role": "system", "content": "system fixture"},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "Reply with "},
+                        {"type": "text", "text": "TSUMGI_OK"},
+                    ]},
+                ],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "read_fixture",
+                        "parameters": {"type": "object"},
+                    },
+                }],
+                "tool_choice": "auto",
+                "reasoning_effort": "high",
+                "max_tokens": 64,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
+        )
+    await worker
+
+    assert response.status_code == 200
+    frames = sse_data(response)
+    assert frames[-1] == "[DONE]"
+    assert "TSUMGI_OK" in response.text
+    assert json.loads(frames[-2])["usage"]["total_tokens"] == 9
+    jobs = repository.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].status is JobStatus.SUCCEEDED
+    request = jobs[0].payload["request"]
+    assert request["messages"] == [
+        {"role": "system", "content": "system fixture"},
+        {"role": "user", "content": "Reply with TSUMGI_OK"},
+    ]
+    assert request["tools"][0]["function"]["name"] == "read_fixture"
+    assert request["tool_choice"] == "auto"
+    assert request["stream"] is True
+    assert request["max_tokens"] == 64
+    assert "reasoning_effort" not in request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra", "content", "error_code"),
+    [
+        ({"reasoning_effort": "xhigh"}, "fixture", "unsupported_feature"),
+        ({"reasoning_effort": None}, "fixture", "invalid_request"),
+        ({"unknown_field": 1}, "fixture", "unsupported_field"),
+        ({}, [{"type": "image_url", "image_url": "fixture"}], "invalid_request"),
+        ({}, [{"type": "text", "text": "ok", "bogus": True}], "invalid_request"),
+        ({"store": True}, [{"type": "text", "text": "ok"}], "unsupported_feature"),
+    ],
+)
+async def test_opencode_http_unreviewed_fields_or_media_reject_before_admission(
+    extra, content, error_code,
+):
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(tools=True)
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://control"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"authorization": f"Bearer {CLIENT_TOKEN}"},
+            json={
+                "model": "local-code-v1",
+                "messages": [{"role": "user", "content": content}],
+                **extra,
+            },
+        )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == error_code
+    assert repository.list_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_opencode_text_parts_original_http_body_limit_precedes_normalization():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(tools=True)
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+
+    # Valid JSON with a tiny normalized text value and >64 KiB of JSON
+    # whitespace. This ensures the *original transport body*, not the
+    # normalized content string, is checked against request_bytes.
+    small = json.dumps({
+        "model": "local-code-v1",
+        "messages": [{
+            "role": "user",
+            "content": [{"type": "text", "text": "ok"}],
+        }],
+        "reasoning_effort": "high",
+    }).encode()
+    oversized = small[:-1] + b" " * 65536 + b"}"
+    assert len(oversized) > 65536
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://control"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            content=oversized,
+            headers={
+                "authorization": f"Bearer {CLIENT_TOKEN}",
+                "content-type": "application/json",
+            },
+        )
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "request_too_large"
+    assert repository.list_jobs() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_result", [False, True])
+async def test_opencode_text_parts_do_not_bypass_tool_history_admission(invalid_result):
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(tools=True)
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+    tool_call = {
+        "id": "call_fixture",
+        "type": "function",
+        "function": {"name": "read_fixture", "arguments": "{}"},
+    }
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "read"}]},
+        {"role": "assistant", "content": None, "tool_calls": [tool_call]},
+        (
+            {"role": "tool", "tool_call_id": "wrong_id", "content": "result"}
+            if invalid_result else
+            {"role": "user", "content": [{"type": "text", "text": "continue"}]}
+        ),
+    ]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://control"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"authorization": f"Bearer {CLIENT_TOKEN}"},
+            json={
+                "model": "local-code-v1",
+                "messages": messages,
+                "reasoning_effort": "low",
+                "tools": [{
+                    "type": "function",
+                    "function": {"name": "read_fixture", "parameters": {}},
+                }],
+            },
+        )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert repository.list_jobs() == []
