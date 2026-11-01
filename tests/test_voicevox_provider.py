@@ -348,3 +348,43 @@ async def test_invalid_audio_query_response_rejected_before_synthesis(malformed)
     assert caught.value.code == "invalid_query"
     assert not media.calls
     assert not any(isinstance(entry, tuple) and entry[0] == "synthesis" for entry in api.invocations)
+
+
+def test_unqualified_source_executor_cannot_advertise_ja_wav():
+    from astrumweaver.serving import (
+        DeploymentIdentity, ServingContract, ServingDeploymentDeclaration,
+    )
+    from astrumweaver.worker.runtime import require_executor_serving_features
+
+    def digest(letter):
+        return "sha256:" + letter * 64
+
+    dep = DeploymentIdentity(
+        provider_id="voicevox",
+        runtime_artifact_sha256=digest("1"),
+        adapter_artifact_sha256=digest("2"),
+        model_artifact_sha256=digest("3"),
+        execution_config_sha256=digest("4"), quantization="synthetic",
+    )
+    def declaration(features):
+        return ServingDeploymentDeclaration(
+            deployment=dep,
+            contracts=(ServingContract(
+                deployment_revision=dep.revision,
+                capability="audio.synthesize",
+                operation_schema="openai-audio-speech-v1",
+                validation_evidence_sha256=digest("5"),
+                features=frozenset(features),
+            ),),
+        )
+
+    executor = VoicevoxExecutor(config=config(), api=FakeVoicevox())
+    assert not hasattr(executor, "serving_features")
+    # The Worker daemon must reject an unqualified source-only executor even
+    # when its method set and pinned voice config appear structurally valid.
+    with pytest.raises(RuntimeError, match="ja"):
+        require_executor_serving_features(executor, declaration({"ja", "wav"}))
+    with pytest.raises(RuntimeError, match="unverified-native-feature"):
+        require_executor_serving_features(
+            executor, declaration({"ja", "wav", "unverified-native-feature"})
+        )

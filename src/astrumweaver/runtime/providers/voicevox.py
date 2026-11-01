@@ -297,6 +297,9 @@ class VoicevoxExecutor(AudioJobExecutor):
     """
 
     capabilities = frozenset({"audio.synthesize"})
+    # Deliberately do NOT expose serving_features before a separately reviewed
+    # ManagedRuntime provides actual engine/voice readiness. The daemon must
+    # reject a bare executor.factory attempting to advertise audio.
 
     def __init__(self, *, config: VoicevoxAdapterConfig, api: VoicevoxEngineApi) -> None:
         if type(config) is not VoicevoxAdapterConfig:

@@ -21,6 +21,13 @@ operator **declarations**. A digest-looking value is not verification of the
 binary or a grant to use a VOICEVOX character. No deployment identity or actual
 engine health is attested by constructor success.
 
+The source-only adapter deliberately **does not expose** a
+`serving_features` advertisement. The Worker daemon therefore rejects the
+reviewed `ja/wav` ServingContract for a bare `executor.factory` using
+this adapter. Static method/pin validation cannot substitute for actual
+VOICEVOX engine/voice readiness; only a later independently reviewed
+ManagedRuntime may supply a qualified serving capability.
+
 The single audio operation accepts the already validated Gateway Job shape:
 `audio.synthesize`, exactly `input`, `voice` (alias/speaker_id/style_id)
 and `response_format=wav`, plus a matching serving semantic revision. Unknown
