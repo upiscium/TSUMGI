@@ -694,3 +694,166 @@ def test_tools_profile_requires_template_artifact_identity():
             adapter_id=LLAMA_CPP_CHAT_ADAPTER,
             request_timeout_seconds=30,
         )
+
+
+# #209: privacy-safe request-shape fixture captured from pinned OpenCode 1.18.35
+# and @ai-sdk/openai-compatible on Adam. The real payload text is not retained.
+@pytest.mark.parametrize("effort", ["low", "medium", "high"])
+def test_opencode_11835_text_parts_and_reasoning_hint_preserve_job_semantics(effort):
+    arguments = '{"fixture":true}'
+    request = {
+        "model": "local-code-v1",
+        "messages": [
+            {"role": "system", "content": "system fixture"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "first\n"},
+                    {"type": "text", "text": "second"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_fixture",
+                        "type": "function",
+                        "function": {"name": "read_fixture", "arguments": arguments},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_fixture", "content": "done"},
+            {"role": "user", "content": [{"type": "text", "text": "continue"}]},
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_fixture",
+                    "parameters": {"type": "object"},
+                },
+            },
+        ],
+        "tool_choice": "auto",
+        "reasoning_effort": effort,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "max_tokens": 64,
+        "store": False,
+    }
+    baseline_messages = [
+        {**request["messages"][0]},
+        {"role": "user", "content": "first\nsecond"},
+        *request["messages"][2:4],
+        {"role": "user", "content": "continue"},
+    ]
+    baseline = {k: v for k, v in request.items() if k not in {"reasoning_effort", "store"}}
+    baseline["messages"] = baseline_messages
+
+    compiled = compile_chat_request(request, profile(), request_size_bytes=4096)
+    expected = compile_chat_request(baseline, profile(), request_size_bytes=4096)
+    assert compiled.payload == expected.payload
+    assert compiled.payload["request"]["stream"] is True
+    assert compiled.payload["request"]["messages"][2]["tool_calls"][0]["id"] == "call_fixture"
+    assert compiled.payload["request"]["messages"][2]["tool_calls"][0]["function"]["arguments"] == arguments
+    assert compiled.payload["request"]["messages"][3]["tool_call_id"] == "call_fixture"
+    assert "reasoning_effort" not in compiled.payload["request"]
+    assert "store" not in compiled.payload["request"]
+    assert request["messages"][1]["content"][0]["text"] == "first\n"
+
+
+@pytest.mark.parametrize(
+    ("hint", "code"),
+    [
+        (None, "invalid_request"),
+        (True, "invalid_request"),
+        (1, "invalid_request"),
+        ([], "invalid_request"),
+        ({}, "invalid_request"),
+        ("", "unsupported_feature"),
+        ("none", "unsupported_feature"),
+        ("minimal", "unsupported_feature"),
+        ("xhigh", "unsupported_feature"),
+        ("HIGH", "unsupported_feature"),
+    ],
+)
+def test_opencode_reasoning_hint_invalid_or_unverified_values_fail_closed(hint, code):
+    with pytest.raises(ChatGatewayError) as error:
+        compile_chat_request(
+            {
+                "model": "local-code-v1",
+                "messages": [{"role": "user", "content": "fixture"}],
+                "reasoning_effort": hint,
+            },
+            profile(),
+            request_size_bytes=256,
+        )
+    assert error.value.status_code == 400
+    assert error.value.code == code
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        None,
+        {},
+        2,
+        [],
+        [{"type": "text", "text": ""}] * 129,
+        [{"type": "text", "text": None}],
+        [{"type": "text", "text": False}],
+        [{"type": "text", "text": {"nested": "not text"}}],
+        [{"type": "image_url", "image_url": "data:image/png;base64,fixture"}],
+        [{"type": "input_audio", "text": "fixture"}],
+        [{"type": "text", "text": "hi", "unexpected": "field"}],
+        [{"text": "missing type"}],
+        [["nested"]],
+        [False],
+        [{"type": "text", "text": "ok"}, {"type": "image_url", "image_url": {}}],
+    ],
+)
+def test_opencode_user_parts_reject_nontext_unknown_nested_and_oversize_forms(content):
+    with pytest.raises(ChatGatewayError) as error:
+        compile_chat_request(
+            {"model": "local-code-v1", "messages": [
+                {"role": "user", "content": content},
+            ]},
+            profile(),
+            request_size_bytes=4096,
+        )
+    assert error.value.code == "invalid_request"
+
+
+@pytest.mark.parametrize("role", ["system", "assistant", "tool"])
+def test_text_parts_do_not_expand_allowed_content_for_other_roles(role):
+    message = {"role": role, "content": [{"type": "text", "text": "fixture"}]}
+    if role == "tool":
+        message["tool_call_id"] = "call_fixture"
+    with pytest.raises(ChatGatewayError) as error:
+        compile_chat_request(
+            {"model": "local-code-v1", "messages": [message]},
+            profile(),
+            request_size_bytes=256,
+        )
+    assert error.value.code == "invalid_request"
+
+
+def test_opencode_text_parts_preserve_utf8_and_cannot_bypass_byte_limits():
+    request = {
+        "model": "local-code-v1",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "あ"},
+            {"type": "text", "text": "β"},
+            {"type": "text", "text": ""},
+            {"type": "text", "text": "c"},
+        ]}],
+        "reasoning_effort": "high",
+    }
+    result = compile_chat_request(request, profile(), request_size_bytes=1000)
+    assert result.payload["request"]["messages"][0]["content"] == "あβc"
+
+    with pytest.raises(ChatGatewayError) as error:
+        compile_chat_request(request, profile(), request_size_bytes=65537)
+    assert error.value.code == "request_too_large"
+    assert error.value.status_code == 413
