@@ -20,6 +20,7 @@ from ..gateway.decision_api import (
     load_decision_catalog,
 )
 from .api import create_app
+from .audio_gateway_config import load_audio_gateway_config
 from .auth import ClientAuthMode
 from .postgres import PostgresControlRepository
 
@@ -30,7 +31,11 @@ def _load_toml(path: str) -> dict[str, Any]:
 
 
 def build_app(config_path: str):
-    config = _load_toml(config_path)
+    try:
+        config = _load_toml(config_path)
+    except (OSError, ValueError):
+        raise RuntimeError("Control configuration is invalid") from None
+    audio_config = load_audio_gateway_config(config.get("audio_gateway", {}))
     section = dict(config.get("control") or {})
     chat_section = dict(config.get("chat_gateway") or {})
     embedding_section = dict(config.get("embedding_gateway") or {})
@@ -60,6 +65,12 @@ def build_app(config_path: str):
         )
     if not worker_token:
         raise RuntimeError("ASTRUMWEAVER_WORKER_TOKEN is required")
+    if audio_config is not None and client_auth is not ClientAuthMode.BEARER:
+        # create_app protects all audio artifact routes using Control bearer auth.
+        # Reject an unsafe mixed mode until per-job audio auth is designed.
+        raise RuntimeError("audio_gateway requires control.client_auth=bearer")
+    if audio_config is not None and client_token == worker_token:
+        raise RuntimeError("audio_gateway requires distinct client and worker tokens")
 
     repository = PostgresControlRepository(
         database_url,
@@ -74,8 +85,15 @@ def build_app(config_path: str):
         ),
         event_max_read=int(section.get("event_max_read", 512)),
     )
+    if audio_config is not None:
+        audio_input_channel, audio_output_channel, audio_routers = audio_config.build(repository)
+    else:
+        audio_input_channel = audio_output_channel = None
+        audio_routers = ()
     app = create_app(
         repository,
+        audio_input_channel=audio_input_channel,
+        audio_output_channel=audio_output_channel,
         client_token=client_token or None,
         worker_token=worker_token,
         client_auth=client_auth,
@@ -162,6 +180,8 @@ def build_app(config_path: str):
                 ),
             )
         )
+    for router in audio_routers:
+        app.include_router(router)
     return app
 
 
