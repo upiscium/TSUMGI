@@ -38,6 +38,7 @@ from .runtime import (
     WorkerRuntime,
     load_executor,
     require_exact_gpu_set,
+    require_audio_executor,
     require_executor_capabilities,
     require_executor_serving_features,
     require_isolated_gpu_access,
@@ -320,6 +321,7 @@ async def run_worker(
             )
 
         require_executor_capabilities(executor, spec.capabilities)
+        require_audio_executor(executor, spec.capabilities)
         if serving_declaration is not None:
             require_executor_serving_features(executor, serving_declaration)
         serving = (
