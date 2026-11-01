@@ -4,6 +4,7 @@ Both non-interactive automation and the interactive TUI consume this API.
 Deployment-specific mutation is supplied later through SetupActionDriver.
 """
 
+from .audio_review import AudioSetupReview, AudioSetupReviewError, review_audio_setup
 from .apply import (
     SetupActionDriver,
     SetupApprovalError,
@@ -46,6 +47,8 @@ from .planner import (
 )
 
 __all__ = [
+    "AudioSetupReview",
+    "AudioSetupReviewError",
     "ActionInspection",
     "ActionReceipt",
     "DeploymentPath",
@@ -79,4 +82,5 @@ __all__ = [
     "dry_run_plan",
     "explain_plan",
     "preview_plan",
+    "review_audio_setup",
 ]
