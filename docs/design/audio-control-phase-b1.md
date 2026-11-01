@@ -218,7 +218,7 @@ default/explicit bearer acceptance and option precedence; anonymous, missing or
 unsafe environment references, overridden state/identity/environment, alternate
 arguments and unsupported roots rejection; absent/disabled/retained-policy
 non-provisioning semantics. It checks real NixOS assertion values and a rejected
-system toplevel, not textual source matching. The default CI check is **NixOS evaluation only**, deliberately not a VM
+system toplevel, not textual source matching. The **new B1 audio-control-module check** is **NixOS evaluation only**, deliberately not a VM
 or live filesystem test: it verifies generated private tmpfiles rules and
 service configuration values, but it does **not** prove directory ownership,
 mode or sandbox write access on an actual host. Those require separately
@@ -227,7 +227,7 @@ authorized isolated-VM/host qualification before operational acceptance.
 Source verification entrypoint: `nix build .#checks.x86_64-linux.audio-control-module`.
 The resulting lightweight derivation exercises real NixOS **configuration
 evaluation**, not runtime execution. It never provisions a real host or VM.
-Do not treat it as a successful boot or permission test. Passing evidence must be obtained
+Do not treat it as a successful boot or permission test. The repository already had a distinct VM-based `setup-permissions` check in default `nix flake check` before B1; this PR neither adds nor removes that existing check. B1 itself introduces no VM requirement. Passing evidence must be obtained
 separately; the presence of the evaluated-module test is not a claim it passed.
 Existing `tests/test_audio_gateway_daemon.py` covers daemon auth, root rejection
 and disabled no-I/O behavior; B1 does not replace that contract.

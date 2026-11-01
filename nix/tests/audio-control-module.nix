@@ -7,18 +7,6 @@ let
   outputRoot = "/var/lib/astrumweaver/audio/output";
   # This is a module/storage test, not a provider, database, or daemon smoke.
   # No secret fixture is generated in the store.
-  daemon = pkgs.writeShellScript "audio-module-test-daemon" ''
-    exec ${pkgs.coreutils}/bin/sleep infinity
-  '';
-  storageProbe = pkgs.writeShellScript "audio-module-storage-probe" ''
-    set -eu
-    for root in ${inputRoot} ${outputRoot}; do
-      test "$(${pkgs.coreutils}/bin/stat -c '%a:%u:%g' "$root")" = \
-        "700:$(${pkgs.coreutils}/bin/id -u):$(${pkgs.coreutils}/bin/id -g)"
-      ${pkgs.coreutils}/bin/touch "$root/service-write-check"
-    done
-    exec ${pkgs.coreutils}/bin/sleep infinity
-  '';
   base = {
     imports = [ controlModule ];
     nixpkgs.pkgs = pkgs;
@@ -26,7 +14,7 @@ let
     services.astrumweaver.control = {
       enable = lib.mkDefault true;
       package = pkgs.coreutils;
-      command = "${daemon}";
+      command = "${pkgs.coreutils}/bin/true";
     };
   };
   # Complete policy shape; the catalog is intentionally absent. The module
