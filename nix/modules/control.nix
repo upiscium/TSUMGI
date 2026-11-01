@@ -20,6 +20,18 @@ let
     then "${cfg.package}/bin/astrumweaver-control"
     else cfg.command;
   execStart = lib.escapeShellArgs ([ effectiveCommand "--config" generatedConfig ] ++ cfg.extraArgs);
+  audioEnabled = (cfg.settings.audio_gateway.enabled or false) == true;
+  audioInputRoot = "/var/lib/astrumweaver/audio/input";
+  audioOutputRoot = "/var/lib/astrumweaver/audio/output";
+  service = config.systemd.services.astrumweaver-control.serviceConfig;
+  # Validate only the reference, never read a secret into the Nix store. Live
+  # ownership/mode and trusted ancestors remain operator prerequisites.
+  protectedEnvironmentPath =
+    cfg.environmentFile != null
+    && !builtins.hasContext cfg.environmentFile
+    && builtins.match "/(etc|run)/[A-Za-z0-9_./-]+" cfg.environmentFile != null
+    && builtins.all (part: part != "" && part != "." && part != "..")
+      (lib.drop 1 (lib.splitString "/" cfg.environmentFile));
 in
 {
   options.services.astrumweaver.control = {
@@ -60,7 +72,12 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       example = "/run/secrets/astrumweaver-control.env";
-      description = "Optional protected EnvironmentFile containing database URL and authority tokens.";
+      description = ''
+        Protected EnvironmentFile containing database URL and authority tokens.
+        Optional unless audio is enabled, when a required plain /etc or /run
+        reference is mandatory. Provision live protection out of band (normally
+        root-owned 0600); the module never reads or stores the file contents.
+      '';
     };
 
     migrateOnStart = lib.mkOption {
@@ -91,6 +108,41 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = lib.optionals audioEnabled [
+      {
+        assertion = (effectiveSettings.control.client_auth or "bearer") == "bearer";
+        message = "Control audio requires effective control.client_auth=bearer (clientAuth overrides settings).";
+      }
+      {
+        assertion = protectedEnvironmentPath
+          && (service.EnvironmentFile or null) == cfg.environmentFile;
+        message = "Control audio requires a protected environmentFile: a required canonical /etc or /run path outside the Nix store, with no string context or EnvironmentFile override. Provision its permissions out of band.";
+      }
+      {
+        assertion = (cfg.settings.audio_gateway.input_spool.root or null) == audioInputRoot
+          && (cfg.settings.audio_gateway.output_spool.root or null) == audioOutputRoot;
+        message = "Control audio supports only input_spool.root=/var/lib/astrumweaver/audio/input and output_spool.root=/var/lib/astrumweaver/audio/output.";
+      }
+      {
+        assertion = service.StateDirectory == "astrumweaver"
+          && service.User == cfg.user && service.Group == cfg.group
+          && !(service.DynamicUser or false);
+        message = "Control audio requires the existing astrumweaver StateDirectory and static module user/group without service identity overrides.";
+      }
+      {
+        assertion = cfg.extraArgs == [ ];
+        message = "Control audio requires empty extraArgs so the reviewed generated config cannot be overridden.";
+      }
+    ];
+
+    # No shell, recursive ownership repair, cleanup, or new provisioning unit.
+    # The daemon independently rejects unsafe pre-existing paths at startup.
+    systemd.tmpfiles.rules = lib.optionals audioEnabled [
+      "d /var/lib/astrumweaver/audio 0700 ${cfg.user} ${cfg.group} - -"
+      "d ${audioInputRoot} 0700 ${cfg.user} ${cfg.group} - -"
+      "d ${audioOutputRoot} 0700 ${cfg.user} ${cfg.group} - -"
+    ];
+
     users.groups.${cfg.group} = { };
     users.users.${cfg.user} = {
       isSystemUser = lib.mkDefault true;
@@ -105,7 +157,8 @@ in
       description = "AstrumWeaver Control Plane";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
-      after = [ "network-online.target" ];
+      after = [ "network-online.target" ] ++ lib.optional audioEnabled "systemd-tmpfiles-setup.service";
+      requires = lib.optional audioEnabled "systemd-tmpfiles-setup.service";
       path = [ cfg.package ] ++ cfg.extraPackages;
 
       serviceConfig = {
