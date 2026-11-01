@@ -20,6 +20,7 @@ from ..gateway.decision_api import (
     load_decision_catalog,
 )
 from .api import create_app
+from .audio_gateway_config import load_audio_gateway_config
 from .auth import ClientAuthMode
 from .postgres import PostgresControlRepository
 
@@ -30,7 +31,11 @@ def _load_toml(path: str) -> dict[str, Any]:
 
 
 def build_app(config_path: str):
-    config = _load_toml(config_path)
+    try:
+        config = _load_toml(config_path)
+    except (OSError, ValueError):
+        raise RuntimeError("Control configuration is invalid") from None
+    audio_config = load_audio_gateway_config(config.get("audio_gateway", {}))
     section = dict(config.get("control") or {})
     chat_section = dict(config.get("chat_gateway") or {})
     embedding_section = dict(config.get("embedding_gateway") or {})
@@ -60,6 +65,12 @@ def build_app(config_path: str):
         )
     if not worker_token:
         raise RuntimeError("ASTRUMWEAVER_WORKER_TOKEN is required")
+    if audio_config is not None and client_auth is not ClientAuthMode.BEARER:
+        # create_app protects all audio artifact routes using Control bearer auth.
+        # Reject an unsafe mixed mode until per-job audio auth is designed.
+        raise RuntimeError("audio_gateway requires control.client_auth=bearer")
+    if audio_config is not None and client_token == worker_token:
+        raise RuntimeError("audio_gateway requires distinct client and worker tokens")
 
     repository = PostgresControlRepository(
         database_url,
@@ -74,95 +85,108 @@ def build_app(config_path: str):
         ),
         event_max_read=int(section.get("event_max_read", 512)),
     )
-    app = create_app(
-        repository,
-        client_token=client_token or None,
-        worker_token=worker_token,
-        client_auth=client_auth,
-        maintenance_interval_seconds=float(section.get("maintenance_interval_seconds", 5.0)),
-    )
-
-    enabled = chat_section.get("enabled", False)
-    if type(enabled) is not bool:
-        raise RuntimeError("chat_gateway.enabled must be boolean")
-    if enabled:
-        catalog_path = str(chat_section.get("catalog", "")).strip()
-        if not catalog_path:
-            raise RuntimeError(
-                "chat_gateway.catalog is required when chat gateway is enabled"
-            )
-        catalog = load_chat_catalog(catalog_path)
-        app.include_router(
-            create_chat_router(
-                repository,
-                catalog,
-                client_auth=client_auth,
-                client_token=client_token or None,
-                poll_interval_seconds=float(
-                    chat_section.get("poll_interval_seconds", 0.05)
-                ),
-                max_pending_admissions=chat_section.get(
-                    "max_pending_admissions", 8
-                ),
-            )
+    audio_setup = audio_config.build(repository) if audio_config is not None else None
+    audio_input_channel = audio_setup.input_channel if audio_setup is not None else None
+    audio_output_channel = audio_setup.output_channel if audio_setup is not None else None
+    audio_routers = audio_setup.routers if audio_setup is not None else ()
+    try:
+        app = create_app(
+            repository,
+            audio_input_channel=audio_input_channel,
+            audio_output_channel=audio_output_channel,
+            client_token=client_token or None,
+            worker_token=worker_token,
+            client_auth=client_auth,
+            maintenance_interval_seconds=float(section.get("maintenance_interval_seconds", 5.0)),
         )
 
-    embedding_enabled = embedding_section.get("enabled", False)
-    if type(embedding_enabled) is not bool:
-        raise RuntimeError("embedding_gateway.enabled must be boolean")
-    if embedding_enabled:
-        catalog_path = str(
-            embedding_section.get("catalog", "")
-        ).strip()
-        if not catalog_path:
-            raise RuntimeError(
-                "embedding_gateway.catalog is required when "
-                "embedding gateway is enabled"
+        enabled = chat_section.get("enabled", False)
+        if type(enabled) is not bool:
+            raise RuntimeError("chat_gateway.enabled must be boolean")
+        if enabled:
+            catalog_path = str(chat_section.get("catalog", "")).strip()
+            if not catalog_path:
+                raise RuntimeError(
+                    "chat_gateway.catalog is required when chat gateway is enabled"
+                )
+            catalog = load_chat_catalog(catalog_path)
+            app.include_router(
+                create_chat_router(
+                    repository,
+                    catalog,
+                    client_auth=client_auth,
+                    client_token=client_token or None,
+                    poll_interval_seconds=float(
+                        chat_section.get("poll_interval_seconds", 0.05)
+                    ),
+                    max_pending_admissions=chat_section.get(
+                        "max_pending_admissions", 8
+                    ),
+                )
             )
-        embedding_catalog = load_embedding_catalog(catalog_path)
-        app.include_router(
-            create_embedding_router(
-                repository,
-                embedding_catalog,
-                client_auth=client_auth,
-                client_token=client_token or None,
-                poll_interval_seconds=float(
-                    embedding_section.get(
-                        "poll_interval_seconds",
-                        0.05,
-                    )
-                ),
-            )
-        )
 
-    decision_enabled = decision_section.get("enabled", False)
-    if type(decision_enabled) is not bool:
-        raise RuntimeError("decision_gateway.enabled must be boolean")
-    if decision_enabled:
-        catalog_path = str(
-            decision_section.get("catalog", "")
-        ).strip()
-        if not catalog_path:
-            raise RuntimeError(
-                "decision_gateway.catalog is required when "
-                "decision gateway is enabled"
+        embedding_enabled = embedding_section.get("enabled", False)
+        if type(embedding_enabled) is not bool:
+            raise RuntimeError("embedding_gateway.enabled must be boolean")
+        if embedding_enabled:
+            catalog_path = str(
+                embedding_section.get("catalog", "")
+            ).strip()
+            if not catalog_path:
+                raise RuntimeError(
+                    "embedding_gateway.catalog is required when "
+                    "embedding gateway is enabled"
+                )
+            embedding_catalog = load_embedding_catalog(catalog_path)
+            app.include_router(
+                create_embedding_router(
+                    repository,
+                    embedding_catalog,
+                    client_auth=client_auth,
+                    client_token=client_token or None,
+                    poll_interval_seconds=float(
+                        embedding_section.get(
+                            "poll_interval_seconds",
+                            0.05,
+                        )
+                    ),
+                )
             )
-        decision_catalog = load_decision_catalog(catalog_path)
-        app.include_router(
-            create_decision_router(
-                repository,
-                decision_catalog,
-                client_auth=client_auth,
-                client_token=client_token or None,
-                poll_interval_seconds=float(
-                    decision_section.get(
-                        "poll_interval_seconds",
-                        0.05,
-                    )
-                ),
+
+        decision_enabled = decision_section.get("enabled", False)
+        if type(decision_enabled) is not bool:
+            raise RuntimeError("decision_gateway.enabled must be boolean")
+        if decision_enabled:
+            catalog_path = str(
+                decision_section.get("catalog", "")
+            ).strip()
+            if not catalog_path:
+                raise RuntimeError(
+                    "decision_gateway.catalog is required when "
+                    "decision gateway is enabled"
+                )
+            decision_catalog = load_decision_catalog(catalog_path)
+            app.include_router(
+                create_decision_router(
+                    repository,
+                    decision_catalog,
+                    client_auth=client_auth,
+                    client_token=client_token or None,
+                    poll_interval_seconds=float(
+                        decision_section.get(
+                            "poll_interval_seconds",
+                            0.05,
+                        )
+                    ),
+                )
             )
-        )
-    return app
+        for router in audio_routers:
+            app.include_router(router)
+        return app
+    except Exception:
+        if audio_setup is not None:
+            audio_setup.rollback()
+        raise
 
 
 def main() -> None:
