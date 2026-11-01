@@ -195,6 +195,32 @@ class JobExecutor(Protocol):
 
 
 @runtime_checkable
+class AudioJobMedia(Protocol):
+    """Optional, attempt-scoped binary I/O; not a source of claim credentials.
+
+    Each operation is one-shot, requires an explicit positive byte cap (at most
+    16 MiB), and is available only while the Worker owns the active attempt.
+    Input is transcription-only; output is synthesis-only. Never retry an
+    uncertain transfer or put WAV bytes in Job JSON or exception messages.
+    """
+
+    async def read_input(self, *, max_bytes: int) -> bytes:
+        ...
+
+    async def stage_output(self, wav_bytes: bytes, *, max_bytes: int) -> ArtifactRef:
+        ...
+
+
+@runtime_checkable
+class AudioJobExecutor(JobExecutor, Protocol):
+    """Optional audio extension; generic/non-audio execution is unchanged."""
+
+    async def execute_audio(self, job: JobRequest, media: AudioJobMedia) -> JobResult:
+        """Execute using only the supplied fenced media interface for WAV I/O."""
+        ...
+
+
+@runtime_checkable
 class StreamingJobExecutor(JobExecutor, Protocol):
     """Optional executor extension for fenced incremental output."""
 

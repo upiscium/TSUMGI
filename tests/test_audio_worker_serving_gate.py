@@ -79,7 +79,12 @@ async def worker_harness(monkeypatch, tmp_path):
     }
     events = []
     registrations = []
+
+    async def execute_audio(_job, _media):
+        pytest.fail("registration fixture must not execute a job")
+
     executor = SimpleNamespace(
+        execute_audio=execute_audio,
         capabilities=frozenset({SPEECH[0], TRANSCRIPTION[0], ECHO[0], "other.work"}),
         serving_features={
             SPEECH[0]: frozenset({"ja", "wav"}),

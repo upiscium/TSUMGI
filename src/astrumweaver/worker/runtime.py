@@ -6,13 +6,14 @@ import asyncio
 import contextlib
 import importlib
 import inspect
+import json
 import math
 import logging
 import time
 import subprocess
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from ..contracts import WorkerSpec
 from ..control.models import WorkerState
@@ -20,6 +21,8 @@ from ..control.repository import OFFLINE_REASON_KEY, RECOVERABLE_OFFLINE_REASON
 from ..control.serde import worker_spec_from_dict
 from ..transport import JOB_EVENTS_EXTENSION, PROTOCOL_VERSION, SERVING_EXTENSION
 from ..execution import (
+    ArtifactRef,
+    AudioJobExecutor,
     JobEvent,
     JobEventSink,
     JobExecutionError,
@@ -44,6 +47,163 @@ from .supervision import RuntimeHealthSupervisor, RuntimeUnavailable
 
 
 _LOG = logging.getLogger(__name__)
+_AUDIO_CAPABILITIES = frozenset({"audio.synthesize", "audio.transcribe"})
+_AUDIO_MAX_BYTES = 16 * 1024 * 1024
+_AUDIO_TEXT_MAX_BYTES = 8192
+_AUDIO_EXECUTOR_ERROR = "audio executor failed"
+_AUDIO_RESULT_ERROR = "audio executor returned an unsupported result"
+_AUDIO_MEDIA_ERROR = "audio media operation rejected"
+
+
+def require_audio_executor(executor: JobExecutor, advertised: frozenset[str]) -> None:
+    if not advertised & _AUDIO_CAPABILITIES:
+        return
+    fn = getattr(executor, "execute_audio", None)
+    if not callable(fn) or not (
+        inspect.iscoroutinefunction(fn)
+        or inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+    ):
+        raise RuntimeError("audio capabilities require async execute_audio")
+
+
+def _audio_json(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Snapshot bounded JSON before serialization, rejecting binary and NaN."""
+    remaining = 256
+
+    def copy(item: Any, depth: int) -> Any:
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 4:
+            raise ValueError(_AUDIO_RESULT_ERROR)
+        if item is None or type(item) is bool:
+            return item
+        if type(item) is str:
+            if len(item.encode("utf-8")) > 8192:
+                raise ValueError(_AUDIO_RESULT_ERROR)
+            return item
+        if type(item) is int and -(2**63) <= item < 2**63:
+            return item
+        if type(item) is float and math.isfinite(item):
+            return item
+        if isinstance(item, Mapping) and len(item) <= 64:
+            if any(type(key) is not str or len(key.encode("utf-8")) > 128 for key in item):
+                raise ValueError(_AUDIO_RESULT_ERROR)
+            return {key: copy(child, depth + 1) for key, child in item.items()}
+        if type(item) is list and len(item) <= 64:
+            return [copy(child, depth + 1) for child in item]
+        raise ValueError(_AUDIO_RESULT_ERROR)
+
+    snapshot = copy(value, 0)
+    if len(json.dumps(snapshot, ensure_ascii=False, allow_nan=False).encode("utf-8")) > 8192:
+        raise ValueError(_AUDIO_RESULT_ERROR)
+    return snapshot
+
+
+class _AudioJobMediaSession:
+    """Private one-shot authority holder. Python adapters are trusted, not sandboxed."""
+
+    __slots__ = ("__runtime", "__claimed", "__closed", "__used", "__error", "__staged", "__read")
+
+    def __init__(self, runtime: "WorkerRuntime", claimed: ClaimedJob) -> None:
+        self.__runtime = runtime
+        self.__claimed = claimed
+        self.__closed = False
+        self.__used = False
+        self.__error: Exception | None = None
+        self.__staged: ArtifactRef | None = None
+        self.__read = False
+
+    def close(self) -> None:
+        self.__closed = True
+
+    def _check(self) -> None:
+        if self.__closed:
+            raise ControlTransportError(409, _AUDIO_MEDIA_ERROR)
+        self.__runtime._require_audio_claim(self.__claimed)
+
+    def _begin(self, capability: str, max_bytes: int) -> None:
+        self._check()
+        used, self.__used = self.__used, True
+        if (used or self.__claimed.request.capability != capability
+                or type(max_bytes) is not int or not 1 <= max_bytes <= _AUDIO_MAX_BYTES):
+            raise JobExecutionError("audio_media_rejected", _AUDIO_MEDIA_ERROR, retryable=False)
+
+    def raise_if_failed(self) -> None:
+        if self.__error is not None:
+            if isinstance(self.__error, ControlTransportError):
+                raise ControlTransportError(self.__error.status_code, _AUDIO_MEDIA_ERROR) from None
+            raise JobExecutionError(
+                "audio_media_rejected", _AUDIO_MEDIA_ERROR, retryable=False,
+            ) from None
+        self._check()
+
+    async def read_input(self, *, max_bytes: int) -> bytes:
+        try:
+            self._begin("audio.transcribe", max_bytes)
+            # No _control_lock over media HTTP I/O: the execution owner's
+            # independent heartbeat continues to renew this exact claim.
+            data = await self.__runtime.client.download_audio_input(
+                self.__runtime.spec.worker_id, self.__claimed, max_bytes=max_bytes,
+            )
+            self._check()
+            self.__read = True
+            return data
+        except asyncio.CancelledError:
+            self.__error = ControlTransportError(0, _AUDIO_MEDIA_ERROR)
+            raise
+        except Exception as exc:
+            self.__error = self.__error or exc
+            raise
+
+    async def stage_output(self, wav_bytes: bytes, *, max_bytes: int) -> ArtifactRef:
+        try:
+            self._begin("audio.synthesize", max_bytes)
+            reference = await self.__runtime.client.stage_audio_output(
+                self.__runtime.spec.worker_id, self.__claimed, wav_bytes, max_bytes=max_bytes,
+            )
+            self._check()
+            self.__staged = reference
+            return reference
+        except asyncio.CancelledError:
+            self.__error = ControlTransportError(0, _AUDIO_MEDIA_ERROR)
+            raise
+        except Exception as exc:
+            # Sticky even if an adapter catches the error. In particular an
+            # uncertain POST must never turn into a completion or a retry.
+            self.__error = self.__error or exc
+            raise
+
+    def result(self, result: Any) -> JobResult:
+        self.raise_if_failed()
+        if type(result) is not JobResult or result.outputs:
+            raise ValueError(_AUDIO_RESULT_ERROR)
+        if self.__claimed.request.capability == "audio.synthesize":
+            if (self.__staged is None or result.artifacts != (self.__staged,)
+                    or result.text is not None):
+                raise ValueError(_AUDIO_RESULT_ERROR)
+        elif (not self.__read or result.artifacts or type(result.text) is not str
+                or len(result.text.encode("utf-8")) > _AUDIO_TEXT_MAX_BYTES):
+            raise ValueError(_AUDIO_RESULT_ERROR)
+        metadata = _audio_json(result.metadata)
+        metrics = _audio_json(result.metrics)
+        if any(type(value) not in (int, float) for value in metrics.values()):
+            raise ValueError(_AUDIO_RESULT_ERROR)
+        return JobResult(artifacts=result.artifacts, text=result.text, metadata=metadata, metrics=metrics)
+
+
+class _ExecutorAudioMedia:
+    """Expose only binary operations, not session lifecycle/result validation."""
+
+    __slots__ = ("__session",)
+
+    def __init__(self, session: _AudioJobMediaSession) -> None:
+        self.__session = session
+
+    async def read_input(self, *, max_bytes: int) -> bytes:
+        return await self.__session.read_input(max_bytes=max_bytes)
+
+    async def stage_output(self, wav_bytes: bytes, *, max_bytes: int) -> ArtifactRef:
+        return await self.__session.stage_output(wav_bytes, max_bytes=max_bytes)
 
 
 def discover_nvidia_gpu_uuids(command: str = "nvidia-smi") -> tuple[str, ...]:
@@ -215,6 +375,7 @@ class WorkerRuntime:
     ) -> None:
         if max_concurrency != 1:
             raise ValueError("v1 WorkerRuntime currently requires max_concurrency=1")
+        require_audio_executor(executor, spec.capabilities)
         if any(
             not math.isfinite(value) or value <= 0
             for value in (
@@ -230,6 +391,8 @@ class WorkerRuntime:
         self.runtime_supervisor = runtime_supervisor
         if serving is not None and not isinstance(serving, WorkerServingAdvertisement):
             raise TypeError("serving must be WorkerServingAdvertisement")
+        if spec.capabilities & _AUDIO_CAPABILITIES and serving is None:
+            raise ValueError("audio Worker requires a current serving advertisement")
         self.serving = serving
         self.poll_interval_seconds = poll_interval_seconds
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
@@ -566,10 +729,15 @@ class WorkerRuntime:
             metadata.get("claimed_runtime_instance_epoch"),
         )
         if raw_binding is None:
+            if claimed.request.capability in _AUDIO_CAPABILITIES:
+                raise RuntimeError("audio claim requires a current serving binding")
             if any(value is not None for value in claimed_values):
                 raise RuntimeError("legacy claim carried partial serving identity")
             return
         binding = ServingJobBinding.from_dict(raw_binding)
+        if (claimed.request.capability in _AUDIO_CAPABILITIES
+                and binding.capability != claimed.request.capability):
+            raise RuntimeError("audio claim serving capability does not match")
         if self.serving is None or not worker_serving_matches(self.serving, binding):
             raise RuntimeError("claimed serving binding does not match local deployment")
         if claimed_values != (
@@ -593,6 +761,14 @@ class WorkerRuntime:
         if contract is None:
             raise RuntimeError("claimed serving contract is unavailable locally")
         metadata = dict(claimed.request.metadata)
+        if claimed.request.capability in _AUDIO_CAPABILITIES:
+            # Claims carry an epoch for Worker-side fencing. It is never an
+            # executor credential, even though generic legacy adapters retain
+            # their historical metadata. Audio uses an explicit allowlist.
+            metadata = {
+                key: metadata[key] for key in ("attempt", "deadline_at", "serving")
+                if key in metadata
+            }
         metadata["serving_semantic_revision"] = contract.semantic_revision
         return JobRequest(
             job_id=claimed.request.job_id,
@@ -639,6 +815,46 @@ class WorkerRuntime:
                 self._control_failed(exc)
                 raise
 
+    def _require_audio_claim(self, claimed: ClaimedJob) -> None:
+        if (self._active is not claimed or self._stop.is_set()
+                or not self._registered or not self.control_available
+                or self._control_state not in (WorkerState.ONLINE, WorkerState.DRAINING)
+                or not self.runtime_available):
+            raise ControlTransportError(409, _AUDIO_MEDIA_ERROR)
+        try:
+            self._validate_claim_serving(claimed)
+        except (KeyError, TypeError, ValueError, RuntimeError):
+            raise ControlTransportError(409, _AUDIO_MEDIA_ERROR) from None
+
+    async def _execute_audio(self, claimed: ClaimedJob, request: JobRequest) -> JobResult:
+        self._require_audio_claim(claimed)
+        session = _AudioJobMediaSession(self, claimed)
+        try:
+            try:
+                result = await cast(AudioJobExecutor, self.executor).execute_audio(
+                    request, _ExecutorAudioMedia(session),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A media transport error takes precedence over an adapter's
+                # replacement exception, including a swallowed uncertain POST.
+                session.raise_if_failed()
+                raise JobExecutionError(
+                    "audio_executor_failed", _AUDIO_EXECUTOR_ERROR, retryable=False,
+                ) from None
+            session.raise_if_failed()
+            try:
+                return session.result(result)
+            except ControlTransportError:
+                raise
+            except Exception:
+                raise JobExecutionError(
+                    "audio_result_invalid", _AUDIO_RESULT_ERROR, retryable=False,
+                ) from None
+        finally:
+            session.close()
+
     async def _execute_claim(self, claimed: ClaimedJob) -> None:
         # The private direct-entry test path also installs the active attempt;
         # normal callers install it under the claim lock before reaching here.
@@ -648,18 +864,20 @@ class WorkerRuntime:
         self._validate_claim_serving(claimed)
         executor_request = self._executor_request(claimed)
         self._active = claimed
+        is_audio = claimed.request.capability in _AUDIO_CAPABILITIES
         runtime_failure = (
             asyncio.create_task(self.runtime_supervisor.failed.wait(), name="astrumweaver-runtime-failure")
             if self.runtime_supervisor is not None else None
         )
-        execution_call = (
-            self.executor.execute_stream(
+        if is_audio:
+            execution_call = self._execute_audio(claimed, executor_request)
+        elif isinstance(self.executor, StreamingJobExecutor):
+            execution_call = self.executor.execute_stream(
                 executor_request,
                 _WorkerJobEventSink(self, claimed),
             )
-            if isinstance(self.executor, StreamingJobExecutor)
-            else self.executor.execute(executor_request)
-        )
+        else:
+            execution_call = self.executor.execute(executor_request)
         execution = asyncio.create_task(
             execution_call,
             name="astrumweaver-job-execution",
@@ -682,6 +900,18 @@ class WorkerRuntime:
                 result = await execution
             except asyncio.CancelledError:
                 raise
+            except ControlTransportError as exc:
+                if is_audio:
+                    # Media upload/download acknowledgement may be uncertain.
+                    # Abandon this attempt for the existing Control lease fence;
+                    # never misreport durable failure or resubmit an output.
+                    raise
+                if self.runtime_supervisor is not None:
+                    await self.runtime_supervisor.check()
+                    self._require_runtime()
+                # Preserve the historical generic executor-error behavior.
+                error = {"type": type(exc).__name__, "message": str(exc)}
+                retryable = True
             except JobExecutionError as exc:
                 if self.runtime_supervisor is not None:
                     await self.runtime_supervisor.check()
@@ -699,8 +929,11 @@ class WorkerRuntime:
                     # the ordinary fenced failure path.
                     await self.runtime_supervisor.check()
                     self._require_runtime()
-                error = {"type": type(exc).__name__, "message": str(exc)}
-                retryable = True
+                error = (
+                    {"type": "AudioExecutorError", "message": _AUDIO_EXECUTOR_ERROR}
+                    if is_audio else {"type": type(exc).__name__, "message": str(exc)}
+                )
+                retryable = not is_audio
             else:
                 if not isinstance(result, JobResult):
                     error = {
@@ -716,6 +949,8 @@ class WorkerRuntime:
                 self._require_runtime()
                 if not self.control_available:
                     raise ControlTransportError(0, "Worker authority is unconfirmed")
+                if is_audio:
+                    self._require_audio_claim(claimed)
                 if error is not None:
                     await self.client.fail(
                         self.spec.worker_id, claimed.request.job_id,
