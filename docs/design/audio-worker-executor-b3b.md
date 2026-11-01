@@ -90,3 +90,34 @@ real Worker/Control integration exercise. #180 must remain OPEN until the
 remaining provider packaging/setup matrix and approved host smoke are complete.
 No model download, host/service operation, release or real-world deployment is
 performed in this source-only phase.
+
+## B3c — delayed media transfer and real Worker-loop regression
+
+Additional **source-only** tests drive `WorkerRuntime.run_forever()` with the
+actual in-process Control ASGI transport, active Worker registration, finite
+lease/heartbeat intervals and an intentionally delayed media response. Unlike
+the original B3b direct-entry tests, these tests do not inject an artificial
+Control acknowledgement or suppress periodic heartbeat scheduling.
+
+- During delayed TTS output upload and STT input download, an independent
+  heartbeat advances the Worker `last_seen_at` and renews the active Job's
+  lease before the transfer response is released; media I/O does not hold the
+  generic Control lock.
+- Drain while TTS output is in flight preserves completion of the **already
+  owned** attempt and prevents admission of new audio Jobs to that draining
+  deployment.
+- Stopping the Worker before a delayed output is acknowledged, or cancelling
+  the Job before the delayed output/input arrives, never produces a public
+  artifact or successful transcript. The current durable Job remains RUNNING
+  after a local stop and is subject to the Control's separate lease recovery;
+  a cancelled Job remains CANCELLED.
+- An output POST already admitted by Control before Worker stop may leave a
+  bounded **private staged receipt** behind. That is neither Job completion
+  nor publication; the original #174 spool TTL/reaping and crash/orphan
+  retention responsibilities still apply. Do not claim synchronous rollback
+  of uncertain filesystem/DB effects.
+
+These tests use controlled delays inside `httpx.ASGITransport`, not an actual
+network socket or provider process. They improve interleaving coverage, but
+do not establish OS-level scheduling, real-network fragmentation/backpressure,
+NVIDIA GPU execution, model identity, provider licensing, or production E2E.

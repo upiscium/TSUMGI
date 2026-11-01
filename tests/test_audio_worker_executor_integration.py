@@ -416,3 +416,223 @@ async def test_stt_not_resubmitted_after_local_media_error_swallowed_by_executor
     assert finished.attempts == 1
     assert finished.result is None
     assert "made-up transcript" not in str(finished)
+
+
+class DelayedAudioTransport(httpx.AsyncBaseTransport):
+    """ASGI transport with a controllable in-flight Worker media POST.
+
+    Other Control requests, especially heartbeats, are never paused. The delay
+    starts before the Control handler sees the media write, so each test can
+    authoritatively change the active claim or Worker state before publication.
+    """
+
+    def __init__(self, app, *, path_suffix="/audio/output"):
+        self.inner = httpx.ASGITransport(app=app)
+        self.path_suffix = path_suffix
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.transfer_requests = 0
+
+    async def handle_async_request(self, request):
+        if request.url.path.endswith(self.path_suffix):
+            self.transfer_requests += 1
+            self.entered.set()
+            await self.release.wait()
+        return await self.inner.handle_async_request(request)
+
+    async def aclose(self):
+        await self.inner.aclose()
+
+
+async def _wait_for(predicate, timeout=1.5):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+
+@pytest.mark.asyncio
+async def test_delayed_media_post_keeps_real_heartbeat_and_drain_allows_owned_completion(tmp_path):
+    """B3b fixture drives the real Worker loop and Control heartbeat path."""
+    repo = InMemoryControlRepository(worker_ttl_seconds=2, lease_seconds=1)
+    binding, serving = serving_values("audio.synthesize")
+    spec = WorkerSpec(worker_id=OWNER, worker_class="cpu-test", resources=ResourceShape(),
+                      capabilities=frozenset({"audio.synthesize"}))
+    output = AudioOutputChannel(repo, spool(tmp_path, "output"), max_bytes=LIMIT)
+    app = create_app(repo, worker_token="worker-secret", client_token="client-secret",
+                     audio_output_channel=output)
+    transport = DelayedAudioTransport(app)
+    executor = AudioExecutor("audio.synthesize")
+    async with ControlClient("http://control", "worker-secret", timeout_seconds=0.8,
+                             transport=transport) as client:
+        runtime = WorkerRuntime(
+            spec=spec, executor=executor, client=client, serving=serving,
+            max_concurrency=1, poll_interval_seconds=0.005,
+            heartbeat_interval_seconds=0.04,
+        )
+        running = asyncio.create_task(runtime.run_forever())
+        try:
+            await _wait_for(lambda: runtime.ready)
+            record = repo.submit_job(JobSubmission(
+                capability="audio.synthesize", serving=binding,
+                deadline_at=datetime.now(UTC) + timedelta(seconds=45),
+                max_attempts=1,
+            ))
+            await asyncio.wait_for(transport.entered.wait(), 1)
+            started = repo.get_job(record.job_id)
+            assert started.status is JobStatus.RUNNING
+            before_lease = started.lease_expires_at
+            before_seen = repo.get_worker(OWNER).last_seen_at
+            await asyncio.sleep(0.17)
+            # Control must continue accepting heartbeats during a pending
+            # binary-media POST, including extending the exact active lease.
+            current = repo.get_job(record.job_id)
+            assert current.lease_expires_at > before_lease
+            assert repo.get_worker(OWNER).last_seen_at > before_seen
+            assert runtime.ready and not running.done()
+            await runtime.drain()
+            assert runtime.draining
+            assert repo.get_worker(OWNER).state is WorkerState.DRAINING
+            transport.release.set()
+            await _wait_for(lambda: repo.get_job(record.job_id).status is JobStatus.SUCCEEDED)
+            completed = repo.get_job(record.job_id)
+            assert completed.result is not None and len(completed.result.artifacts) == 1
+            assert transport.transfer_requests == 1
+            assert executor.audio_called == 1
+            # Existing drain prevents new claims without withdrawing the
+            # authority of an attempt already held before drain.
+            from astrumweaver.control.repository import NoCompatibleDeployment
+            with pytest.raises(NoCompatibleDeployment):
+                repo.submit_job(JobSubmission(
+                    capability="audio.synthesize", serving=binding,
+                    deadline_at=datetime.now(UTC) + timedelta(seconds=45),
+                    max_attempts=1,
+                ))
+            await asyncio.sleep(0.08)
+            assert executor.audio_called == 1
+            assert runtime.draining
+        finally:
+            transport.release.set()
+            runtime.request_stop()
+            await asyncio.wait_for(running, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt", ["stop", "cancelled_job"])
+async def test_delayed_media_response_never_publishes_after_stop_or_cancel(tmp_path, interrupt):
+    repo = InMemoryControlRepository(worker_ttl_seconds=2, lease_seconds=1)
+    binding, serving = serving_values("audio.synthesize")
+    spec = WorkerSpec(worker_id=OWNER, worker_class="cpu-test", resources=ResourceShape(),
+                      capabilities=frozenset({"audio.synthesize"}))
+    output = AudioOutputChannel(repo, spool(tmp_path, "output"), max_bytes=LIMIT)
+    transport = DelayedAudioTransport(create_app(
+        repo, worker_token="worker-secret", client_token="client-secret",
+        audio_output_channel=output,
+    ))
+    executor = AudioExecutor("audio.synthesize")
+    async with ControlClient("http://control", "worker-secret", timeout_seconds=0.8,
+                             transport=transport) as client:
+        runtime = WorkerRuntime(
+            spec=spec, executor=executor, client=client, serving=serving,
+            max_concurrency=1, poll_interval_seconds=0.005,
+            heartbeat_interval_seconds=0.04,
+        )
+        running = asyncio.create_task(runtime.run_forever())
+        try:
+            await _wait_for(lambda: runtime.ready)
+            record = repo.submit_job(JobSubmission(
+                capability="audio.synthesize", serving=binding,
+                deadline_at=datetime.now(UTC) + timedelta(seconds=45), max_attempts=1,
+            ))
+            await asyncio.wait_for(transport.entered.wait(), 1)
+            if interrupt == "stop":
+                runtime.request_stop()
+            else:
+                repo.cancel_job(record.job_id)
+            transport.release.set()
+            await _wait_for(lambda: runtime.active_job_id is None or running.done())
+            observed = repo.get_job(record.job_id)
+            assert observed.status is (JobStatus.RUNNING if interrupt == "stop" else JobStatus.CANCELLED)
+            assert observed.result is None
+            assert transport.transfer_requests == 1
+            assert executor.audio_called == 1
+            if interrupt == "cancelled_job":
+                assert not output._staged
+            else:
+                # A delayed POST may stage a bounded private receipt before
+                # Worker-local stop is observed; that is NOT publication.
+                # Orphan expiry/reaping is the separate #174 retention gate.
+                from astrumweaver.control.repository import NotFoundError
+                assert len(output._staged) <= 1
+                for artifact_id in output._staged:
+                    with pytest.raises(NotFoundError):
+                        output.read_published(record.job_id, artifact_id)
+        finally:
+            transport.release.set()
+            runtime.request_stop()
+            await asyncio.wait_for(running, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_before_release", [False, True])
+async def test_delayed_stt_input_download_renews_lease_and_is_fenced_on_cancel(
+    tmp_path, cancel_before_release,
+):
+    repo = InMemoryControlRepository(worker_ttl_seconds=2, lease_seconds=1)
+    binding, serving = serving_values("audio.transcribe")
+    spec = WorkerSpec(
+        worker_id=OWNER, worker_class="cpu-test", resources=ResourceShape(),
+        capabilities=frozenset({"audio.transcribe"}),
+    )
+    source = AudioInputChannel(
+        repo, spool(tmp_path, "input"), max_bytes=LIMIT,
+        max_decoded_bytes=LIMIT, max_duration_seconds=120,
+    )
+    staged = source.stage(WAV)
+    app = create_app(repo, worker_token="worker-secret", client_token="client-secret",
+                     audio_input_channel=source)
+    transport = DelayedAudioTransport(app, path_suffix="/audio/input")
+    executor = AudioExecutor("audio.transcribe")
+    async with ControlClient("http://control", "worker-secret", timeout_seconds=0.8,
+                             transport=transport) as client:
+        runtime = WorkerRuntime(
+            spec=spec, executor=executor, client=client, serving=serving,
+            max_concurrency=1, poll_interval_seconds=0.005,
+            heartbeat_interval_seconds=0.04,
+        )
+        running = asyncio.create_task(runtime.run_forever())
+        try:
+            await _wait_for(lambda: runtime.ready)
+            record = source.submit(JobSubmission(
+                capability="audio.transcribe", serving=binding,
+                payload={"language": "ja"},
+                idempotency_key="b3c-delayed-stt-" + str(cancel_before_release),
+                deadline_at=datetime.now(UTC) + timedelta(seconds=45),
+                max_attempts=1,
+            ), artifact_uri=staged["uri"])
+            await asyncio.wait_for(transport.entered.wait(), 1)
+            before = repo.get_job(record.job_id).lease_expires_at
+            await asyncio.sleep(0.17)
+            assert repo.get_job(record.job_id).lease_expires_at > before
+            assert runtime.ready and not running.done()
+            if cancel_before_release:
+                repo.cancel_job(record.job_id)
+            transport.release.set()
+            await _wait_for(lambda: runtime.active_job_id is None)
+            finished = repo.get_job(record.job_id)
+            assert finished.status is (
+                JobStatus.CANCELLED if cancel_before_release else JobStatus.SUCCEEDED
+            )
+            if cancel_before_release:
+                assert finished.result is None
+            else:
+                assert finished.result is not None
+                assert finished.result.text == "散歩"
+                assert finished.result.artifacts == ()
+                assert executor.data == WAV
+                assert "RIFF" not in repr(finished.result)
+            assert executor.audio_called == 1 and executor.called == 0
+            assert transport.transfer_requests == 1
+        finally:
+            transport.release.set()
+            runtime.request_stop()
+            await asyncio.wait_for(running, 2)
