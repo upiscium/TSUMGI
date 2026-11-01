@@ -232,6 +232,27 @@ separately; the presence of the evaluated-module test is not a claim it passed.
 Existing `tests/test_audio_gateway_daemon.py` covers daemon auth, root rejection
 and disabled no-I/O behavior; B1 does not replace that contract.
 
+Phase B2b adds only source qualification checks:
+`tests/test_audio_generic_setup_staging.py` stages the unchanged generic helper
+under pytest's temporary root with synthetic policy/credentials, checking exact
+idempotent copies, modes, unchanged unit, overwrite refusal, token non-disclosure
+and absent/disabled compatibility, without `--start` or live setup.
+`nix/tests/audio-control-package.nix`, exposed as
+`checks.x86_64-linux.audio-control-package`, imports audio configuration, all three
+router factories and operation schemas using `${control}/bin/python` from the
+actual flake Control package in isolated mode, not the source checkout. Coordinator
+verification entrypoints are `python -m pytest tests/test_audio_generic_setup_staging.py`
+(with the project's test environment) and
+`nix build .#checks.x86_64-linux.audio-control-package`. These add no VM and do not
+start a daemon, construct routers/spools, contact a database or download a model.
+Their presence is not passing evidence; package imports and temporary staging are
+**not actual installed runtime/host qualification**, ownership/sandbox proof or
+deployment approval. The generic helper still creates no private audio roots:
+operators must manually provision and verify the parent and both `0700` spool
+roots under the effective Control identity before separately authorized startup.
+Model/provider readiness remains **blocked** on #176/#177/#178/#179 and their
+separately reviewed qualification evidence; neither check unblocks it.
+
 Phase A/#174 restart/orphan/retention limitations remain. No automatic cleanup,
 crash recovery, Worker lifecycle, runtime/model installation, readiness
 advertisement, deployment/rollback execution or production qualification is
