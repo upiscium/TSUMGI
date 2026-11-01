@@ -432,13 +432,18 @@ class DelayedAudioTransport(httpx.AsyncBaseTransport):
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
         self.transfer_requests = 0
+        self.transfer_statuses = []
 
     async def handle_async_request(self, request):
-        if request.url.path.endswith(self.path_suffix):
+        selected = request.url.path.endswith(self.path_suffix)
+        if selected:
             self.transfer_requests += 1
             self.entered.set()
             await self.release.wait()
-        return await self.inner.handle_async_request(request)
+        response = await self.inner.handle_async_request(request)
+        if selected:
+            self.transfer_statuses.append(response.status_code)
+        return response
 
     async def aclose(self):
         await self.inner.aclose()
@@ -498,6 +503,7 @@ async def test_delayed_media_post_keeps_real_heartbeat_and_drain_allows_owned_co
             assert completed.result is not None and len(completed.result.artifacts) == 1
             assert transport.transfer_requests == 1
             assert executor.audio_called == 1
+            assert transport.transfer_statuses == [201]
             # Existing drain prevents new claims without withdrawing the
             # authority of an attempt already held before drain.
             from astrumweaver.control.repository import NoCompatibleDeployment
@@ -554,6 +560,7 @@ async def test_delayed_media_response_never_publishes_after_stop_or_cancel(tmp_p
             assert observed.status is (JobStatus.RUNNING if interrupt == "stop" else JobStatus.CANCELLED)
             assert observed.result is None
             assert transport.transfer_requests == 1
+            assert transport.transfer_statuses == [409 if interrupt == "cancelled_job" else 201]
             assert executor.audio_called == 1
             if interrupt == "cancelled_job":
                 assert not output._staged
@@ -624,7 +631,13 @@ async def test_delayed_stt_input_download_renews_lease_and_is_fenced_on_cancel(
             )
             if cancel_before_release:
                 assert finished.result is None
+                # A terminal CANCELLED status alone does not prove input was
+                # withheld: assert Control rejected the actual transfer and
+                # the audio executor never received the cancelled WAV bytes.
+                assert executor.data is None
+                assert transport.transfer_statuses == [409]
             else:
+                assert transport.transfer_statuses == [200]
                 assert finished.result is not None
                 assert finished.result.text == "散歩"
                 assert finished.result.artifacts == ()

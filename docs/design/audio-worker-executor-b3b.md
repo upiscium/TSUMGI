@@ -110,7 +110,11 @@ Control acknowledgement or suppress periodic heartbeat scheduling.
   the Job before the delayed output/input arrives, never produces a public
   artifact or successful transcript. The current durable Job remains RUNNING
   after a local stop and is subject to the Control's separate lease recovery;
-  a cancelled Job remains CANCELLED.
+  a cancelled Job remains CANCELLED. The tests explicitly observe the
+  cancelled transfer's HTTP 409 response and assert no cancelled STT WAV
+  reached the Executor. Checking terminal status alone would not prove that
+  input access was fenced; a late public Job completion could be denied even
+  if an erroneous input response had exposed bytes.
 - An output POST already admitted by Control before Worker stop may leave a
   bounded **private staged receipt** behind. That is neither Job completion
   nor publication; the original #174 spool TTL/reaping and crash/orphan
