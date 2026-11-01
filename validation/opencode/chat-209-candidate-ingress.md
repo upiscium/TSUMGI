@@ -1,5 +1,7 @@
 # TSUMGI #209 — OpenCode 1.18.35 candidate ingress smoke
 
+**Historical scope update (2026-11-01 JST):** This test-only bridge evidence has been superseded for native candidate E2E by the [patched Control acceptance report](chat-209-native-candidate.md). The bridge-only outstanding gates below describe the state *at the time of this earlier test*. Native candidate E2E is now complete, but production rollout/rollback and final Ready/Merge remain separately controlled.
+
 **Date (JST):** 2026-11-01
 
 **Assessment:** **PASS for the isolated ingress-bridge smoke; NOT YET PASS for native candidate Control deployment.**
