@@ -246,6 +246,10 @@
           inherit pkgs control installer;
         };
 
+        audio-control-module = import ./nix/tests/audio-control-module.nix {
+          inherit pkgs nixpkgs system;
+        };
+
         installation-surface = pkgs.runCommand "astrumweaver-installation-surface" { } ''
           test -x ${installer}/bin/astrumweaver-setup-tui
           test -x ${installer}/bin/astrumweaver-control
