@@ -1,4 +1,4 @@
-"""Validate v0.1.3 RC tier while preserving historical release evidence."""
+"""Validate the v0.1.3 RC2 tier while preserving historical release evidence."""
 import re
 import hashlib
 import tomllib
@@ -6,16 +6,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-# Only the explicitly qualified v0.1.3 RC is accepted for the current source.
+# Only the explicitly qualified v0.1.3 RC2 is accepted for the current source.
 # A future GA must be separately reviewed before adding stable metadata.
 EXPECTED_NIX_VERSION_BY_PYTHON = {
-    "0.1.3rc1": "0.1.3pre1",
+    "0.1.3rc2": "0.1.3pre2",
 }
 assert PROJECT_VERSION in EXPECTED_NIX_VERSION_BY_PYTHON, PROJECT_VERSION
 CURRENT_NIX_VERSION = EXPECTED_NIX_VERSION_BY_PYTHON[PROJECT_VERSION]
 
 # Only exact, real, quoted Nix attribute assignments count. A substring such
-# as 0.1.3pre2 or an extra comment must never satisfy the exact RC identity.
+# as 0.1.3pre3 or an extra comment must never satisfy the exact RC identity.
 EXPECTED_NIX_PRODUCT_ATTRIBUTES = {
     "nix/package.nix": [("version", CURRENT_NIX_VERSION)],
     "nix/integration-package.nix": [("version", CURRENT_NIX_VERSION)],
@@ -109,9 +109,9 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
 def test_rc_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "astrumweaver"
-    assert project["version"] == "0.1.3rc1"
+    assert project["version"] == "0.1.3rc2"
     assert project["version"] == PROJECT_VERSION
-    assert re.fullmatch(r"0\.1\.3rc1", project["version"])
+    assert re.fullmatch(r"0\.1\.3rc2", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
         _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
     assert (ROOT / "src/astrumweaver").is_dir()
@@ -286,14 +286,14 @@ def test_ga_scope_does_not_imply_release_or_site_authorization() -> None:
     assert "does not establish publication" in notes
 
 
-def test_v013_rc_notes_match_current_python_nix_and_readme() -> None:
-    rc = (ROOT / "docs/releases/v0.1.3-rc.1.md").read_text()
+def test_v013_rc2_notes_match_current_python_nix_and_readme() -> None:
+    rc = (ROOT / "docs/releases/v0.1.3-rc.2.md").read_text()
     readme = (ROOT / "README.md").read_text()
-    assert PROJECT_VERSION == "0.1.3rc1"
-    assert CURRENT_NIX_VERSION == "0.1.3pre1"
-    assert "v0.1.3-rc.1" in rc
-    assert "astrumweaver==0.1.3rc1" in rc
-    assert "0.1.3pre1" in rc
+    assert PROJECT_VERSION == "0.1.3rc2"
+    assert CURRENT_NIX_VERSION == "0.1.3pre2"
+    assert "v0.1.3-rc.2" in rc
+    assert "astrumweaver==0.1.3rc2" in rc
+    assert "0.1.3pre2" in rc
     assert "v0.1.2" in rc
     assert "#209" in rc and "#174" in rc and "#175" in rc
     assert "#180" in rc and "#176" in rc and "#177" in rc
@@ -306,12 +306,13 @@ def test_v013_rc_notes_match_current_python_nix_and_readme() -> None:
             assert phrase.lower() in rc.lower(), phrase
     assert "> **Published stable release:** [v0.1.2]" in readme
     assert "> **v0.1.3 release candidate:**" in readme
-    assert "docs/releases/v0.1.3-rc.1.md" in readme
+    assert "docs/releases/v0.1.3-rc.2.md" in readme
     # Immutable historical v0.1.2 release docs must not be changed to
     # make current v0.1.3 prerelease tests pass.
     frozen_docs = {
         "docs/releases/v0.1.2-rc.1.md": "812990112fa73e0a2c6bc7928409398e5e9d56344f54869ca66756679854e6d3",
         "docs/releases/v0.1.2.md": "75eea6f44b5b691a5d4d6478411cf8fc83393ee8e7fb171e9e02a52bc3c1ab5b",
+        "docs/releases/v0.1.3-rc.1.md": "2341640d9848c523a0ffdf7ed7136df906c18368c3d26b7c2fb707b9e1dfe0cf",
     }
     for path, digest in frozen_docs.items():
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path

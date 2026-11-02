@@ -5,7 +5,7 @@ let
 
   migrations = stdenvNoCC.mkDerivation {
     pname = "astrumweaver-control-assets";
-    version = "0.1.3pre1";
+    version = "0.1.3pre2";
     src = ../.;
     dontBuild = true;
     installPhase = ''
@@ -15,7 +15,7 @@ let
   };
 in
 buildEnv {
-  name = "astrumweaver-control-support-0.1.3pre1";
+  name = "astrumweaver-control-support-0.1.3pre2";
   paths = [
     controlCli
     migrations
