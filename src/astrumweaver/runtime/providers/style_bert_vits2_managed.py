@@ -16,7 +16,7 @@ import re
 import signal
 import stat
 import struct
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -306,10 +306,35 @@ async def _read_frame(reader: asyncio.StreamReader) -> dict:
     return parsed
 
 
+class _ReadyBoundMedia:
+    """Reject terminal media receipts from an earlier runtime generation."""
+
+    def __init__(self, media, active: Callable[[], bool]) -> None:
+        self._media = media
+        self._active = active
+
+    async def stage_output(self, wav_bytes: bytes, *, max_bytes: int):
+        if not self._active():
+            raise StyleBertRuntimeFailure("stylebert_runtime_not_ready")
+        receipt = await self._media.stage_output(wav_bytes, max_bytes=max_bytes)
+        if not self._active():
+            raise StyleBertRuntimeFailure("stylebert_runtime_not_ready")
+        return receipt
+
+
 class _QualifiedStyleBertExecutor(StyleBertVits2Executor):
     serving_features: ClassVar[Mapping[str, frozenset[str]]] = MappingProxyType(
         {"audio.synthesize": frozenset({"ja", "wav"})}
     )
+
+    def __init__(self, *, config, api, active: Callable[[], bool]) -> None:
+        super().__init__(config=config, api=api)
+        self._active = active
+
+    async def execute_audio(self, job, media):
+        if not self._active():
+            raise StyleBertRuntimeFailure("stylebert_runtime_not_ready")
+        return await super().execute_audio(job, _ReadyBoundMedia(media, self._active))
 
 
 class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
@@ -328,7 +353,14 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
         self._failed_detail: str | None = None
         self._file_ids: tuple[tuple[int, ...], ...] | None = None
         self._ipc_lock = asyncio.Lock()
-        self._executor = _QualifiedStyleBertExecutor(config=config.adapter, api=self)
+        self._owned_stop_lock = asyncio.Lock()
+        self._executor = _QualifiedStyleBertExecutor(
+            config=config.adapter,
+            api=self,
+            active=lambda: (
+                self._state is RuntimeHealthState.READY and not self._released
+            ),
+        )
 
     def _health(
         self, state: RuntimeHealthState, detail: str | None = None
@@ -535,6 +567,10 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
                 raise StyleBertRuntimeFailure("stylebert_inference_failed") from None
 
     async def _stop_owned(self) -> None:
+        async with self._owned_stop_lock:
+            await self._stop_owned_once()
+
+    async def _stop_owned_once(self) -> None:
         proc = self._proc
         if proc is None:
             return
@@ -588,11 +624,25 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
         return self._health(RuntimeHealthState.STARTING)
 
     async def stop(self) -> None:
+        # Revoke admission before awaiting IPC/process cleanup.
+        if self._state is not RuntimeHealthState.FAILED:
+            self._state = RuntimeHealthState.STOPPED
+        active = tuple(self._executor._inflight.values())
+        for task in active:
+            if not task.done():
+                task.cancel()
         try:
             await self._stop_owned()
         except Exception:  # noqa: BLE001 - redact subprocess errors
             self._fail("stylebert_cleanup_uncertain")
             raise StyleBertRuntimeFailure("stylebert_cleanup_uncertain") from None
+        if active:
+            _, pending = await asyncio.wait(
+                active, timeout=self._config.stop_timeout_seconds
+            )
+            if pending:
+                self._fail("stylebert_drain_timeout")
+                raise StyleBertRuntimeFailure("stylebert_drain_timeout")
         if self._state is not RuntimeHealthState.FAILED:
             self._state = RuntimeHealthState.STOPPED
         self._epoch = None

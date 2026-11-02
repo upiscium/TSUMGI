@@ -425,3 +425,55 @@ async def test_changed_model_bytes_after_ready_latch_unavailable_before_new_clai
     with pytest.raises(StyleBertRuntimeFailure, match="not_ready"):
         runtime.executor()
     await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_active_media_stage_before_terminal_result(tmp_path):
+    runtime = StyleBertOwnedManagedRuntime(config=make_spec(tmp_path))
+    await runtime.start()
+    cached = runtime.executor()
+    media = FakeMedia()
+    media.delay = True
+    pending = asyncio.create_task(cached.execute_audio(job(), media))
+    await asyncio.wait_for(media.started.wait(), 1)
+    await runtime.stop()
+    media.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert runtime._proc is None
+    assert not (await runtime.health()).ready
+
+
+@pytest.mark.asyncio
+async def test_cached_executor_does_not_admit_job_after_stop(tmp_path):
+    runtime = StyleBertOwnedManagedRuntime(config=make_spec(tmp_path))
+    await runtime.start()
+    cached = runtime.executor()
+    await runtime.stop()
+    with pytest.raises(StyleBertRuntimeFailure):
+        await cached.execute_audio(job(), FakeMedia())
+
+
+@pytest.mark.asyncio
+async def test_late_stage_receipt_after_cancel_cannot_publish_success(tmp_path):
+    runtime = StyleBertOwnedManagedRuntime(config=make_spec(tmp_path))
+    await runtime.start()
+
+    class SuppressCancelMedia(FakeMedia):
+        async def stage_output(self, wav_bytes, *, max_bytes):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass  # Simulate ambiguous stage outcome from a completed POST.
+            return await super().stage_output(wav_bytes, max_bytes=max_bytes)
+
+    media = SuppressCancelMedia()
+    pending = asyncio.create_task(runtime.executor().execute_audio(job(), media))
+    await asyncio.wait_for(media.started.wait(), 1)
+    await runtime.stop()
+    with pytest.raises(JobExecutionError) as error:
+        await pending
+    assert error.value.code == "audio_stage_failed"
+    assert len(media.calls) == 1
+    assert not (await runtime.health()).ready
