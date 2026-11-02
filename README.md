@@ -6,9 +6,9 @@ TSUMGI is a deployment-agnostic compute fabric for scheduling capability-based w
 
 It is GPU-first, but its control-plane contracts are intentionally not tied to LLMs, a particular accelerator generation, Proxmox, or a one-GPU-per-worker topology.
 
-> **Published stable release:** [v0.1.2](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.2), the maintenance rollup of Qwen3.8 CUDA, guarded Worker Offline recovery, and OpenCode v2 Chat compatibility. [v0.1.2 release notes](docs/releases/v0.1.2.md).
+> **Published stable release:** [v0.1.3](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.3), the scoped OpenCode Chat compatibility and managed-only audio Worker safety release. [v0.1.3 release notes](docs/releases/v0.1.3.md). Native audio engine Serving remains opt-in and unqualified.
 >
-> **v0.1.3 release candidate:** [v0.1.3-rc.2 notes](docs/releases/v0.1.3-rc.2.md) describe the updated prerelease with the fail-closed audio managed-runtime gate (#214). Prior [v0.1.3-rc.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.3-rc.1) remains an immutable historical prerelease. Audio interfaces and adapters are still opt-in/in qualification; no live Control/Worker change is implied.
+> **Prior prereleases:** [v0.1.3-rc.2](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.3-rc.2) and [v0.1.3-rc.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.3-rc.1) remain immutable historical source candidates. This GA preserves RC2 functional code, and its publication does not update running services.
 >
 > **Prior releases:** [v0.1.2-rc.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.2-rc.1) (published prerelease) and [v0.1.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.1) stable (Bonsai 2 opt-in). A tag or GitHub Release is a source publication, **not** a production Control/Worker upgrade authorization. Verify actual publication under [GitHub Releases](https://github.com/upiscium/TSUMGI/releases) and use the [operator rollout gate](docs/operator-rollout-gates.md) before site upgrades.
 >
@@ -98,7 +98,7 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 - Existing development machines may later participate as drainable/borrowable workers without reprovisioning.
 
 ## Documentation
-- [v0.1.3-rc.2 candidate notes](docs/releases/v0.1.3-rc.2.md) and [historical v0.1.3-rc.1 notes](docs/releases/v0.1.3-rc.1.md) — bounded integrated source, fail-closed audio caveats, and release gates.
+- [v0.1.3 GA release notes](docs/releases/v0.1.3.md) and [historical RC2](docs/releases/v0.1.3-rc.2.md) / [RC1](docs/releases/v0.1.3-rc.1.md) notes — reviewed Chat compatibility and fail-closed audio Worker scope.
 - [v0.1.2 GA release notes](docs/releases/v0.1.2.md) and [earlier v0.1.2-rc.1 notes](docs/releases/v0.1.2-rc.1.md) — verified maintenance release scope, version and qualification.
 - [v0.1.1 GA](docs/releases/v0.1.1.md) — previous published stable and optional Bonsai 2 contract.
 - [v0.1.0 GA release notes](docs/releases/v0.1.0.md) and [historical qualification checklist](docs/ga-qualification-v0.1.0.md) — previously frozen scope and acceptance evidence.
