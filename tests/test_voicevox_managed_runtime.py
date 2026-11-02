@@ -9,6 +9,7 @@ import pytest
 from test_voicevox_provider import FakeMedia, FakeVoicevox, job
 from test_voicevox_provider import config as basic_config
 
+from astrumweaver.execution import JobExecutionError
 from astrumweaver.runtime.contracts import RuntimeHealthState
 from astrumweaver.runtime.lifecycle import RuntimeLifecycleManager
 from astrumweaver.runtime.providers.voicevox_managed import (
@@ -402,3 +403,64 @@ def test_serving_identity_and_voice_license_reference_are_exact_operator_inputs(
                 ),
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_active_synthesis_before_late_media_publish(tmp_path):
+    runtime, engine, _process, _ = make_runtime(tmp_path)
+    await runtime.start()
+    engine.delay = True
+    executor = runtime.executor()
+    media = FakeMedia()
+    pending = asyncio.create_task(executor.execute_audio(job(), media))
+    await asyncio.wait_for(engine.called_synthesis.wait(), 1)
+    await runtime.stop()
+    engine.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert not media.calls
+    assert (await runtime.health()).state is RuntimeHealthState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_cached_executor_does_not_admit_job_after_stop(tmp_path):
+    runtime, engine, _process, _ = make_runtime(tmp_path)
+    await runtime.start()
+    cached = runtime.executor()
+    await runtime.stop()
+    with pytest.raises(VoicevoxRuntimeFailure):
+        await cached.execute_audio(job(), FakeMedia())
+    assert not any(
+        isinstance(x, tuple) and x[0] == "audio_query" for x in engine.invocations
+    )
+
+
+@pytest.mark.asyncio
+async def test_late_stage_receipt_after_cancel_cannot_publish_success(tmp_path):
+    runtime, _engine, _process, _ = make_runtime(tmp_path)
+    await runtime.start()
+
+    class SuppressCancelMedia(FakeMedia):
+        def __init__(self):
+            super().__init__()
+            self.entered = asyncio.Event()
+
+        async def stage_output(self, wav_bytes, *, max_bytes):
+            self.entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass  # Simulate uncertain upstream POST that completed after cancel.
+            return await super().stage_output(wav_bytes, max_bytes=max_bytes)
+
+    media = SuppressCancelMedia()
+    pending = asyncio.create_task(runtime.executor().execute_audio(job(), media))
+    await asyncio.wait_for(media.entered.wait(), 1)
+    await runtime.stop()
+    with pytest.raises(JobExecutionError) as error:
+        await pending
+    assert error.value.code == "stage_failed"
+    assert (
+        len(media.calls) == 1
+    )  # Upload may already have occurred; never terminal success.
+    assert not (await runtime.health()).ready

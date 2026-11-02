@@ -16,7 +16,7 @@ import math
 import os
 import re
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import ClassVar, Protocol, runtime_checkable
@@ -270,10 +270,35 @@ def _digest_regular_file(path: str) -> str:
         os.close(fd)
 
 
+class _ReadyBoundMedia:
+    """Disallow late media publication when the owned runtime loses admission."""
+
+    def __init__(self, media, active: Callable[[], bool]) -> None:
+        self._media = media
+        self._active = active
+
+    async def stage_output(self, wav_bytes: bytes, *, max_bytes: int):
+        if not self._active():
+            raise VoicevoxRuntimeFailure("voicevox_runtime_not_ready")
+        receipt = await self._media.stage_output(wav_bytes, max_bytes=max_bytes)
+        if not self._active():
+            raise VoicevoxRuntimeFailure("voicevox_runtime_not_ready")
+        return receipt
+
+
 class _QualifiedVoicevoxExecutor(VoicevoxExecutor):
     serving_features: ClassVar[Mapping[str, frozenset[str]]] = MappingProxyType(
         {"audio.synthesize": frozenset({"ja", "wav"})}
     )
+
+    def __init__(self, *, config, api, active: Callable[[], bool]) -> None:
+        super().__init__(config=config, api=api)
+        self._active = active
+
+    async def execute_audio(self, job, media):
+        if not self._active():
+            raise VoicevoxRuntimeFailure("voicevox_runtime_not_ready")
+        return await super().execute_audio(job, _ReadyBoundMedia(media, self._active))
 
 
 class VoicevoxOwnedManagedRuntime(ManagedRuntime):
@@ -303,7 +328,13 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
         self._config = config
         self._process = process
         self._engine = engine
-        self._executor = _QualifiedVoicevoxExecutor(config=config.adapter, api=engine)
+        self._executor = _QualifiedVoicevoxExecutor(
+            config=config.adapter,
+            api=engine,
+            active=lambda: (
+                self._state is RuntimeHealthState.READY and not self._released
+            ),
+        )
         self._state = RuntimeHealthState.STOPPED
         self._nonce: str | None = None
         self._pid: int | None = None
@@ -418,6 +449,7 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
             return self._health(self._state)
         cfg = self._config
         was_ready = self._state is RuntimeHealthState.READY
+        observed_nonce = self._nonce
         try:
             async with asyncio.timeout(cfg.probe_timeout_seconds):
                 obs = await self._process.inspect()
@@ -459,6 +491,12 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
                 owner_after = await self._process.endpoint_owner()
                 if type(owner_after) is not int or owner_after != obs.pid:
                     return self._fail("voicevox_foreign_endpoint")
+                if (
+                    self._state
+                    not in (RuntimeHealthState.READY, RuntimeHealthState.STARTING)
+                    or self._nonce != observed_nonce
+                ):
+                    return self._health(self._state)
                 self._state = RuntimeHealthState.READY
                 return self._health(RuntimeHealthState.READY)
         except asyncio.CancelledError:
@@ -472,18 +510,33 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
 
     async def stop(self) -> None:
         async with self._lock:
+            # Revoke admission synchronously, before any await or process stop.
+            if self._state is not RuntimeHealthState.FAILED:
+                self._state = RuntimeHealthState.STOPPED
+            active = tuple(self._executor._inflight.values())
+            for task in active:
+                if not task.done():
+                    task.cancel()
+            drain_ok = True
+            if active:
+                _, pending = await asyncio.wait(
+                    active, timeout=self._config.stop_timeout_seconds
+                )
+                drain_ok = not pending
             nonce = self._nonce
             if nonce is not None:
                 try:
                     async with asyncio.timeout(self._config.stop_timeout_seconds):
                         await self._process.stop_owned(nonce=nonce)
-                except Exception:  # noqa: BLE001 - sanitize process-controller errors
+                except Exception:  # noqa: BLE001 - redacted process-controller error
                     self._state = RuntimeHealthState.FAILED
                     raise VoicevoxRuntimeFailure("voicevox_owned_stop_failed") from None
                 self._nonce = None
                 self._pid = None
-            if self._state is not RuntimeHealthState.FAILED:
-                self._state = RuntimeHealthState.STOPPED
+            if not drain_ok:
+                self._cleanup_uncertain = True
+                self._state = RuntimeHealthState.FAILED
+                raise VoicevoxRuntimeFailure("voicevox_owned_drain_failed")
 
     async def release(self) -> None:
         if self._released:
