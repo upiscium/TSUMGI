@@ -541,3 +541,79 @@ async def test_cancelled_spawn_with_unknown_creation_failure_never_reports_clean
             await controller.stop_owned(nonce=nonce)
     finally:
         assert controller._aborted and controller._proc is None
+
+
+def test_same_port_foreign_interface_listener_is_not_ignored(monkeypatch):
+    """One owned loopback listener plus a different IPv4 interface is ambiguous.
+
+    Use synthetic procfs only: never open a real non-loopback test port.
+    """
+    from astrumweaver.runtime.providers.voicevox_linux_process import (
+        _listener_sockets,
+    )
+
+    port = 50521
+    header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+
+    def row(index, address, inode):
+        return (
+            f"{index:4d}: {address}:{port:04X} 00000000:0000 0A "
+            f"00000000:00000000 00:00000000 00000000 1000 0 {inode} 1 0000000000000000\n"
+        )
+
+    original_read_text = Path.read_text
+
+    def fake_proc_net(self, *args, **kwargs):
+        if str(self) == "/proc/net/tcp":
+            return header + row(0, "0100007F", 123456) + row(1, "010C0A0A", 234567)
+        if str(self) == "/proc/net/tcp6":
+            return header
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_proc_net)
+    entries = _listener_sockets(port)
+    assert len(entries) == 2, "foreign interface listener on same port was ignored"
+    assert {(kind, address) for kind, address, _inode in entries} == {
+        ("tcp", "0100007F"),
+        ("tcp", "010C0A0A"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_owned_loopback_plus_synthetic_other_interface_denies_ready(
+    tmp_path,
+    monkeypatch,
+):
+    """Keep real child on loopback; add only a synthetic non-loopback proc row.
+
+    No actual network-facing socket is opened by this test.
+    """
+    cfg, _pin, _runner, ctl = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    await ctl.launch(config=cfg, nonce=nonce)
+    await ready(ctl)
+    owned_pid = ctl._proc.pid
+    assert await ctl.endpoint_owner() == owned_pid
+
+    port = int(cfg.endpoint.rsplit(":", 1)[1])
+    original_read_text = Path.read_text
+
+    def fake_extra_listener(self, *args, **kwargs):
+        raw = original_read_text(self, *args, **kwargs)
+        if str(self) == "/proc/net/tcp":
+            raw += (
+                f"999: 010C0A0A:{port:04X} 00000000:0000 0A "
+                "00000000:00000000 00:00000000 00000000 "
+                "1000 0 123400001 1 0000000000000000\n"
+            )
+        return raw
+
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(Path, "read_text", fake_extra_listener)
+            assert await ctl.endpoint_owner() == 0
+            with pytest.raises(VoicevoxOwnedProcessError):
+                await ctl.inspect()
+    finally:
+        await ctl.stop_owned(nonce=nonce)
+    assert ctl._proc is None

@@ -201,10 +201,11 @@ def _proc_fixed_command(pid: int, argv: tuple[str, ...]) -> bool:
 
 
 def _listener_sockets(port: int) -> tuple[tuple[str, str, int], ...]:
-    """Return target loopback/wildcard IPv4 and any IPv6 listen socket.
+    """Return ALL IPv4/IPv6 listeners on the target port, not just loopback.
 
-    Reject IPv6 on the same port conservatively even when v6only would make
-    it harmless. Multiple/reuseport listener ambiguity always denies.
+    A process may bind separate 127.0.0.1 and non-loopback IPv4 sockets on
+    the same port. Ignoring the latter would silently qualify an engine also
+    exposed on the network. Reject all ambiguity conservatively.
     """
     result: list[tuple[str, str, int]] = []
     try:
@@ -217,8 +218,10 @@ def _listener_sockets(port: int) -> tuple[tuple[str, str, int], ...]:
                 address, hexport = columns[1].split(":")
                 if int(hexport, 16) != port:
                     continue
-                if kind == "tcp6" or address in ("0100007F", "00000000"):
-                    result.append((kind, address, int(columns[9])))
+                # Preserve every listening interface on this port. The
+                # caller allows exactly one 127.0.0.1 IPv4 listener; all
+                # other addresses and multiple listeners deny readiness.
+                result.append((kind, address, int(columns[9])))
     except (OSError, ValueError, IndexError):
         _fail()
     return tuple(result)
