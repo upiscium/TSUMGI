@@ -506,3 +506,38 @@ async def test_stop_with_pending_spawn_is_bounded_and_never_claims_cleanup(
         await asyncio.wait_for(controller._pending_spawn_cleanup, timeout=3)
     await controller.stop_owned(nonce=nonce)
     assert controller._proc is None and controller._aborted
+
+
+@pytest.mark.asyncio
+async def test_cancelled_spawn_with_unknown_creation_failure_never_reports_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    """No handle returned is not proof that subprocess creation had no effects."""
+    cfg, pin, _runner, _controller = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    controller = LinuxVoicevoxOwnedProcessControl(
+        launch_spec=replace(pin, stop_timeout_seconds=0.2),
+        config=cfg,
+    )
+    started = asyncio.Event()
+    unblock = asyncio.Event()
+
+    async def unknown_spawn_failure(*_args, **_kwargs):
+        started.set()
+        await unblock.wait()
+        raise OSError("test-only spawn may have begun; ownership uncertain")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unknown_spawn_failure)
+    task = asyncio.create_task(controller.launch(config=cfg, nonce=nonce))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    task.cancel()
+    await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+    unblock.set()
+    try:
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await asyncio.wait_for(controller._pending_spawn_cleanup, timeout=2)
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await controller.stop_owned(nonce=nonce)
+    finally:
+        assert controller._aborted and controller._proc is None

@@ -489,8 +489,11 @@ class LinuxVoicevoxOwnedProcessControl:
         try:
             try:
                 proc = await asyncio.shield(spawn)
-            except Exception:  # noqa: BLE001 - no subprocess was returned
-                return
+            except Exception:  # noqa: BLE001 - spawn effects are not provable
+                # A failed await is not proof that subprocess creation had
+                # zero side effects. With no owned handle, cleanup is unknown:
+                # never confirm stop or permit another launch.
+                _fail()
             self._proc = proc
             await self._reap_newborn()
             if await asyncio.to_thread(_listener_sockets, port):
