@@ -1,0 +1,35 @@
+# TSUMGI #215 B6c — Linux OwnedProcessController (source-only)
+
+**Status:** Provider-local Linux process/port validation only. Not a deployed VOICEVOX engine, verified loaded model, actual voice-license approval, or general-purpose process sandbox. No RuntimeProvider registration, NixOS/generic-systemd SetupPlan, GPU service or actual engine HTTP client is added.
+
+## Source contract
+
+- The provider-local module voicevox_linux_process.py implements VoicevoxOwnedProcessControl: endpoint_owner, inspect, launch and stop_owned.
+- The operator supplies a frozen VoicevoxLinuxLaunchSpec with one absolute executable, fixed argv and optional SHA-256-pinned auxiliary file. It is bound to one exact VoicevoxOwnedRuntimeSpec when constructed. No client input or audio Job may choose a runtime, shell command or filename.
+- Before launching, verify actual executable and model files' bytes against their B5b SHA-256 pins, and the auxiliary file against its pin. Reject symlink components, altered files, occupied endpoint and wrong UID. The controller uses the configured effective UID only (no setuid/sudo). It invokes the executable directly, with minimal fixed environment, disconnected stdin, discarded output, a fresh session/process group and no inherited nonstandard FDs.
+- Linux identity observations combine one direct child PID generation from /proc/PID/stat, UID from /proc/PID/status, actual executable inode via /proc/PID/exe, immutable operator-approved argv compared to /proc/PID/cmdline, own process-group leader, and exact 127.0.0.1 listening socket inode cross-checked through /proc/net/tcp and /proc/PID/fd. Unowned ports, duplicate/reuseport or IPv6 ambiguity, and a publicly accessible 0.0.0.0 wildcard listener are rejected. An occupied foreign endpoint is represented by sentinel 0; it is never adopted, signaled or labeled ready.
+- File hash preflight plus filesystem observations do not attest that real VOICEVOX has actually **loaded** selected model weights or rights-approved voices. Existing VoicevoxOwnedManagedRuntime still requires exact version/speaker UUID/global numeric style probes and a verified engine HTTP transport before advertising readiness.
+- Stop requires the exact launch nonce, checks the direct child's generation and process group before SIGTERM, bounded wait, SIGKILL if required, and direct-child reaping. It also checks that the configured port is no longer listening before reporting success. If ownership cannot be verified it fails closed rather than signaling a potentially foreign process. Startup cancellation attempts to reap the newly spawned owned subprocess handle.
+- Filesystem and /proc reads are off the Worker asyncio event loop. Errors are fixed and redact paths, argv, PIDs, tokens, source text and native stderr.
+
+## Synthetic acceptance
+
+Tests launch a disposable **Python TCP listener** under an isolated Linux sandbox; they exercise genuine OS PID, UID, process groups, /proc socket inode correlation, stdout/stderr disconnection, start/stop, forced kill/reap, heartbeat responsiveness and model/source pin validation. No real VOICEVOX engine, model, voice, live GPU, production service or User text is accessed.
+
+Two RED-then-GREEN security regressions matter:
+1. An owned listener bound to **0.0.0.0** originally satisfied the PID and socket inode checks. Strict local address matching now rejects it, including when it is the exact child.
+2. A pinned Python executable could re-exec into an unreviewed script yet retain PID, start ticks, UID, executable inode and listening socket. Full fixed command-line checks now deny readiness after this change; the same provably owned process generation remains stoppable.
+
+The tests also cover a foreign socket that remains alive after rejection, wrong executable/model/auxiliary SHA pins, symlink auxiliary paths, UID mismatch, changed or exited processes, fake engine integration, and bounded direct-child stop.
+
+## Hard limits and next gates
+
+- **/proc is not a trusted kernel attestation.** A process may rewrite its command-line memory. Launcher/file hash checks have TOCTOU windows; root compromise or same-UID threat can bypass some observations. No pidfd/execveat immutability, cgroups, LSM/seccomp, namespace sandbox or PID reuse-free atomic signaling exists. Review these separately for real native acceptance.
+- **Escaped descendants:** SIGTERM/SIGKILL only target the observed process group. A child calling setsid can escape. A remaining listener prevents claiming successful stop; a descendant without a listener is not detected. No general fleet-level process safety or host GPU ownership is claimed.
+- **Actual loaded model and voice license:** an on-disk model SHA is not proof a process loaded it. Operator declarations/voice hashes are not a legal approval or real hardware test. Real binary arguments/ABI, model quality, and downstream service ownership remain unqualified.
+- **VOICEVOX privacy:** native /audio_query places input text in the URL query. Separate PR #225 uses no client URL logging; real native engine/access/proxy/tracing logs must still be independently verified disabled/redacted before handling user text.
+- **Disabled by default:** the common RuntimeProvider registry, Nix modules, Worker manifest, Control service, PostgreSQL, SetupPlan, and deployed hosts are unchanged. Even an observation from this controller is insufficient to enable a production audio Worker.
+
+Sequence: exact PR source/CI review → separate Human Ready/Merge → independently authorized, isolated real engine and process security/voice/model/ABI tests → #180 executable provider and Nix/systemd setup/rollback → #181 real audio acceptance. The #178→#179 STT selection gate remains separate.
+
+Keep #215/#176/#175/#180 OPEN. No engine/model download, host service changes, GPU/DB action, deployment or release.
