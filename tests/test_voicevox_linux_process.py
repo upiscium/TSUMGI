@@ -402,3 +402,107 @@ async def test_simultaneous_lookups_and_stop_do_not_requalify_old_child(tmp_path
     assert await ctl.inspect() is None
     assert await ctl.endpoint_owner() is None
     assert ctl._proc is None
+
+
+@pytest.mark.parametrize(
+    "modification",
+    [
+        {"auxiliary_path": None, "auxiliary_sha256": None},
+        {"fixed_args": ("-I", "-u", "-c", "import os; os.system('true')")},
+        {"fixed_args": ("-I", "-m", "unreviewed_module")},
+        {"fixed_args": ("-I", "-u", "/tmp/unpinned_module.py")},
+    ],
+)
+def test_unpinned_dynamic_python_argv_is_never_a_qualified_launch(
+    tmp_path,
+    modification,
+):
+    """Known source-integrity gap: binary hash != executed Python code hash."""
+    _cfg, pin, _runner, _ctl = setup(tmp_path)
+    with pytest.raises(ValueError, match="launch configuration is invalid"):
+        replace(pin, **modification)
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_delayed_spawn_does_not_hang_indefinitely(
+    tmp_path,
+    monkeypatch,
+):
+    """Cancel at subprocess-creation boundary; release fake delay for cleanup."""
+    cfg, launch_spec, _runner, controller = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    launch_spec = replace(launch_spec, stop_timeout_seconds=0.2)
+    controller = LinuxVoicevoxOwnedProcessControl(
+        launch_spec=launch_spec,
+        config=cfg,
+    )
+    created = asyncio.Event()
+    unblock = asyncio.Event()
+    original = asyncio.create_subprocess_exec
+
+    async def delayed_spawn(*args, **kwargs):
+        created.set()
+        await unblock.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    task = asyncio.create_task(controller.launch(config=cfg, nonce=nonce))
+    await asyncio.wait_for(created.wait(), 2)
+    task.cancel()
+    _done, pending = await asyncio.wait({task}, timeout=0.3)
+    try:
+        assert not pending, (
+            "launch cancellation remained blocked in subprocess creation"
+        )
+    finally:
+        unblock.set()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 3)
+        if controller._pending_spawn_cleanup is not None:
+            await asyncio.wait_for(controller._pending_spawn_cleanup, 3)
+        if controller._proc is not None:
+            await controller.stop_owned(nonce=nonce)
+    assert controller._proc is None
+    assert controller._aborted is True
+    with pytest.raises(VoicevoxOwnedProcessError):
+        await controller.launch(config=cfg, nonce=nonce)
+
+
+@pytest.mark.asyncio
+async def test_stop_with_pending_spawn_is_bounded_and_never_claims_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    """A delayed spawn keeps the same controller permanently unavailable."""
+    cfg, pin, _runner, controller = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    pin = replace(pin, stop_timeout_seconds=0.15)
+    controller = LinuxVoicevoxOwnedProcessControl(launch_spec=pin, config=cfg)
+    created = asyncio.Event()
+    unblock = asyncio.Event()
+    actual = asyncio.create_subprocess_exec
+
+    async def delayed(*args, **kwargs):
+        created.set()
+        await unblock.wait()
+        return await actual(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed)
+    task = asyncio.create_task(controller.launch(config=cfg, nonce=nonce))
+    await asyncio.wait_for(created.wait(), 2)
+    task.cancel()
+    await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 0.3)
+    try:
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await asyncio.wait_for(
+                controller.stop_owned(nonce=nonce),
+                timeout=0.4,
+            )
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await controller.launch(config=cfg, nonce=nonce)
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await controller.endpoint_owner()
+    finally:
+        unblock.set()
+        await asyncio.wait_for(controller._pending_spawn_cleanup, timeout=3)
+    await controller.stop_owned(nonce=nonce)
+    assert controller._proc is None and controller._aborted

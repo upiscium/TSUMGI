@@ -50,6 +50,26 @@ def _strict_path(value: object) -> bool:
         return False
 
 
+def _fixed_argv_is_reviewable(
+    fixed_args: tuple[str, ...],
+    auxiliary_path: str | None,
+) -> bool:
+    """No silent shell/module/inline-script or unpinned path-based code load.
+
+    The controller cannot attest dynamically loaded code via Python -m/-c,
+    and cannot hash an arbitrary path in fixed_args unless the operator
+    provided the one explicit pinned auxiliary file.
+    """
+    for arg in fixed_args:
+        if arg in ("-c", "-m", "-e", "--module", "--eval", "--command"):
+            return False
+        if (
+            "/" in arg or "\\" in arg or arg.lower().endswith((".py", ".pyc", ".sh"))
+        ) and (auxiliary_path is None or arg != auxiliary_path):
+            return False
+    return True
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class VoicevoxLinuxLaunchSpec:
     """Operator-pinned fixed argv, never modified by the current Job payload."""
@@ -73,6 +93,7 @@ class VoicevoxLinuxLaunchSpec:
                 for arg in self.fixed_args
             )
             or (self.auxiliary_path is None) != (self.auxiliary_sha256 is None)
+            or not _fixed_argv_is_reviewable(self.fixed_args, self.auxiliary_path)
             or (
                 self.auxiliary_path is not None
                 and (
@@ -264,6 +285,11 @@ class LinuxVoicevoxOwnedProcessControl:
         self._aux_identity: tuple[int, int, int, int] | None = None
         self._start_ticks: int | None = None
         self._lock = asyncio.Lock()
+        # Once a spawn is cancelled, never admit another child from this
+        # controller. A late subprocess result is reaped by the same loop.
+        self._aborted = False
+        self._aborted_nonce: str | None = None
+        self._pending_spawn_cleanup: asyncio.Task[None] | None = None
 
     @staticmethod
     def _port(cfg: VoicevoxOwnedRuntimeSpec) -> int:
@@ -305,6 +331,8 @@ class LinuxVoicevoxOwnedProcessControl:
         return proc.pid
 
     async def endpoint_owner(self) -> int | None:
+        if self._aborted:
+            _fail()
         # Config is frozen at construction: ManagedRuntime preflight calls
         # endpoint_owner BEFORE launch. Never admit a second/foreign listener.
         cfg = self._config
@@ -314,6 +342,8 @@ class LinuxVoicevoxOwnedProcessControl:
             raise VoicevoxOwnedProcessError() from None
 
     async def inspect(self) -> VoicevoxProcessObservation | None:
+        if self._aborted:
+            _fail()
         cfg = self._config
         proc = self._proc
         if cfg is None or proc is None:
@@ -381,7 +411,7 @@ class LinuxVoicevoxOwnedProcessControl:
         ):
             _fail()
         async with self._lock:
-            if self._proc is not None or self._nonce is not None:
+            if self._aborted or self._proc is not None or self._nonce is not None:
                 _fail()
             if (
                 config != self._config
@@ -411,16 +441,16 @@ class LinuxVoicevoxOwnedProcessControl:
                 )
                 try:
                     proc = await asyncio.shield(spawn)
-                except BaseException:
-                    # Even if startup cancellation occurs inside subprocess
-                    # creation, wait for the process handle before owned reap.
-                    proc = await asyncio.shield(spawn)
-                    self._proc = proc
-                    self._nonce = nonce
-                    self._identity = exe_identity
-                    self._model_identity = model_identity
-                    self._aux_identity = aux_identity
-                    await self._reap_newborn()
+                except asyncio.CancelledError:
+                    # Shield preserves a potentially already-started child.
+                    # Never wait without a deadline for an unresponsive
+                    # subprocess creator while holding launch's lock. The
+                    # known spawn task is handed to a terminal late reaper.
+                    self._aborted = True
+                    self._aborted_nonce = nonce
+                    self._pending_spawn_cleanup = asyncio.create_task(
+                        self._reap_delayed_spawn(spawn, port)
+                    )
                     raise
                 self._proc = proc
                 self._nonce = nonce
@@ -444,6 +474,31 @@ class LinuxVoicevoxOwnedProcessControl:
                 if not isinstance(error, Exception):
                     raise
                 raise VoicevoxOwnedProcessError() from None
+
+    async def _reap_delayed_spawn(
+        self,
+        spawn: asyncio.Task[asyncio.subprocess.Process],
+        port: int,
+    ) -> None:
+        """Terminal late-spawn cleanup after the waiting launcher was cancelled.
+
+        This does not release admission again. If subprocess creation stalls
+        forever, the controller remains FAILED/aborted; stop_owned returns an
+        explicit cleanup-uncertain error on its deadline, not READY.
+        """
+        try:
+            try:
+                proc = await asyncio.shield(spawn)
+            except Exception:  # noqa: BLE001 - no subprocess was returned
+                return
+            self._proc = proc
+            await self._reap_newborn()
+            if await asyncio.to_thread(_listener_sockets, port):
+                _fail()
+        except BaseException as error:
+            if not isinstance(error, Exception):
+                raise
+            raise VoicevoxOwnedProcessError() from None
 
     def _check_before_launch(self, cfg: VoicevoxOwnedRuntimeSpec, port: int):
         if _listener_sockets(port):
@@ -470,7 +525,12 @@ class LinuxVoicevoxOwnedProcessControl:
         if proc is None:
             return
         if proc.returncode is None:
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                # Child exited between inspection and signal. The owned
+                # subprocess handle can still be reaped normally.
+                pass
         try:
             async with asyncio.timeout(self._launch_spec.stop_timeout_seconds):
                 await proc.wait()
@@ -488,6 +548,15 @@ class LinuxVoicevoxOwnedProcessControl:
 
     async def stop_owned(self, *, nonce: str) -> None:
         async with self._lock:
+            if self._pending_spawn_cleanup is not None:
+                if nonce != self._aborted_nonce:
+                    _fail()
+                try:
+                    async with asyncio.timeout(self._launch_spec.stop_timeout_seconds):
+                        await asyncio.shield(self._pending_spawn_cleanup)
+                except Exception:  # noqa: BLE001 - unresolved process cleanup
+                    raise VoicevoxOwnedProcessError() from None
+                return
             if self._proc is None:
                 if nonce == self._nonce:
                     return
