@@ -388,24 +388,24 @@ EOF
           runtimeEnvironmentText = nixpkgs.lib.concatStringsSep "\n" runtimeEnvironment;
         } ''
           test -n "$runtimeWorkerExec"
-          printf "%s" "$runtimeWorkerExec" | grep -q astrumweaver-worker
-          printf "%s" "$runtimeWorkerPath" | grep -q ollama
+          printf "%s" "$runtimeWorkerExec" | grep astrumweaver-worker >/dev/null
+          printf "%s" "$runtimeWorkerPath" | grep ollama >/dev/null
           workerConfig="$(printf "%s" "$runtimeWorkerExec" | sed -n 's/.*--config \([^ ]*\).*/\1/p')"
           test -n "$workerConfig"
           test -f "$workerConfig"
           grep -q '\[runtime\]' "$workerConfig"
           grep -q 'manifest' "$workerConfig"
           test "$runtimeDevicePolicy" = closed
-          printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidia7 rw'
-          printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidiactl rw'
-          printf "%s" "$runtimeEnvironmentText" | grep -q 'CUDA_VISIBLE_DEVICES=GPU-example-smoke'
-          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access'
-          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_GPU_DEVICE_MAP='
-          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_GPU_WORKER_CONFIG='
-          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND='
-          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_NVIDIA_SMI='
-          printf "%s" "$runtimeWorkerPreflight" | grep -Eq '^\+/nix/store/[a-z0-9]{32}-astrumweaver-gpu-preflight/bin/astrumweaver-gpu-preflight /nix/store/[a-z0-9]{32}-astrumweaver-gpu-uuids$'
-          printf "%s" "$runtimeIsolationPreflight" | grep -q 'gpu-device-map verify'
+          printf "%s" "$runtimeDeviceAllowText" | grep '/dev/nvidia7 rw' >/dev/null
+          printf "%s" "$runtimeDeviceAllowText" | grep '/dev/nvidiactl rw' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'CUDA_VISIBLE_DEVICES=GPU-example-smoke' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'ASTRUMWEAVER_GPU_DEVICE_MAP=' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'ASTRUMWEAVER_GPU_WORKER_CONFIG=' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'ASTRUMWEAVER_NVIDIA_SMI=' >/dev/null
+          printf "%s" "$runtimeWorkerPreflight" | grep -E '^\+/nix/store/[a-z0-9]{32}-astrumweaver-gpu-preflight/bin/astrumweaver-gpu-preflight /nix/store/[a-z0-9]{32}-astrumweaver-gpu-uuids$' >/dev/null
+          printf "%s" "$runtimeIsolationPreflight" | grep 'gpu-device-map verify' >/dev/null
           printf "%s\n%s\n%s\n%s\n%s\n" \
             "$runtimeWorkerExec" "$runtimeWorkerPath" "$workerConfig" \
             "$runtimeDevicePolicy" "$runtimeWorkerPreflight" \
