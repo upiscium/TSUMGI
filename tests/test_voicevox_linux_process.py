@@ -55,7 +55,10 @@ def setup(tmp_path: Path, *, runner_code=RUNNER, port=None):
     tmp_path.mkdir(parents=True, exist_ok=True)
     port = port or free_port()
     original = make_spec(tmp_path)
-    exe = os.path.realpath(sys.executable)
+    # The Nix test interpreter can be a small exec-wrapper. Pin the actual
+    # kernel executable observed by /proc rather than the bootstrap wrapper,
+    # otherwise the child changes ELF inode before its HTTP listener is READY.
+    exe = os.path.realpath(os.readlink("/proc/self/exe"))
     exe_sha = sha(Path(exe).read_bytes())
     adapter = replace(original.adapter, engine_artifact_sha256=exe_sha)
     deployment = replace(original.serving.deployment, runtime_artifact_sha256=exe_sha)
@@ -617,3 +620,46 @@ async def test_owned_loopback_plus_synthetic_other_interface_denies_ready(
     finally:
         await ctl.stop_owned(nonce=nonce)
     assert ctl._proc is None
+
+
+@pytest.mark.asyncio
+async def test_exec_replacement_denies_ready_but_stops_same_owned_child_generation(
+    tmp_path,
+):
+    """Changed executable is not READY; known spawned child must still be reaped.
+
+    A Nix/Python launcher or a script can exec into a different ELF image with
+    the same PID/UID/birth tick/process group. Readiness must remain strict, but
+    refusal to reap this direct child would leak an owned process.
+    """
+    import shutil
+
+    replacement = shutil.which("sleep")
+    if replacement is None:
+        pytest.skip("no disposable sleep executable")
+    script = (
+        "import os,time\n"
+        "time.sleep(.20)\n"
+        f"os.execv({replacement!r},[{replacement!r},'30'])\n"
+    )
+    cfg, _pin, _runner, ctl = setup(tmp_path, runner_code=script)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    await ctl.launch(config=cfg, nonce=nonce)
+    proc = ctl._proc
+    try:
+        async with asyncio.timeout(3):
+            while True:
+                observed = os.stat(f"/proc/{proc.pid}/exe")
+                if (observed.st_dev, observed.st_ino) != ctl._identity[:2]:
+                    break
+                await asyncio.sleep(0.03)
+        # Never infer readiness for an unreviewed replacement image.
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await ctl.inspect()
+        assert await ctl.endpoint_owner() is None
+    finally:
+        # Still the same direct child handle, UID, start ticks and PGID:
+        # safe to terminate even though its executable image has changed.
+        await ctl.stop_owned(nonce=nonce)
+    assert ctl._proc is None
+    assert proc.returncode is not None

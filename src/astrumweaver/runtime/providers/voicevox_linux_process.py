@@ -239,20 +239,32 @@ def _process_socket_inodes(pid: int) -> frozenset[int]:
     return frozenset(inodes)
 
 
+def _owned_group_generation(pid: int, uid: int, generation: int) -> bool:
+    """Signal authority for an already created direct child, not READY proof.
+
+    A child can exec into a different image without changing PID, birth tick,
+    UID or process group. Reject that image for readiness, but still reap the
+    exact child generation whose handle was returned by our own spawn.
+    """
+    try:
+        start, state = _proc_generation(pid)
+        return (
+            start == generation
+            and state not in ("Z", "X")
+            and _proc_uid(pid) == uid
+            and os.getpgid(pid) == pid
+        )
+    except (OSError, ValueError, VoicevoxOwnedProcessError):
+        return False
+
+
 def _proc_identity(
     pid: int, identity: tuple[int, int, int, int], uid: int, generation: int
 ) -> bool:
     try:
         info = os.stat(f"/proc/{pid}/exe")
         observed = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
-        start, state = _proc_generation(pid)
-        return (
-            observed == identity
-            and start == generation
-            and state not in ("Z", "X")
-            and _proc_uid(pid) == uid
-            and os.getpgid(pid) == pid
-        )
+        return observed == identity and _owned_group_generation(pid, uid, generation)
     except (OSError, ValueError, VoicevoxOwnedProcessError):
         return False
 
@@ -578,16 +590,18 @@ class LinuxVoicevoxOwnedProcessControl:
         timeout = self._launch_spec.stop_timeout_seconds
         try:
             if proc.returncode is None:
-                # Never signal a pidgroup unless exact child generation and
-                # executable inode match. Use same process group only.
+                # Stop is allowed to reap only the child process group
+                # returned by our own subprocess handle, with matching PID
+                # birth generation and UID. Re-exec changes the executable
+                # inode and invalidates READY, but must not prevent safely
+                # reaping this same owned child process generation.
                 safe = (
                     self._identity is not None
                     and self._start_ticks is not None
                     and self._config is not None
                     and await asyncio.to_thread(
-                        _proc_identity,
+                        _owned_group_generation,
                         proc.pid,
-                        self._identity,
                         self._config.owner_uid,
                         self._start_ticks,
                     )
@@ -605,9 +619,8 @@ class LinuxVoicevoxOwnedProcessControl:
                     if proc.returncode is None:
                         try:
                             if await asyncio.to_thread(
-                                _proc_identity,
+                                _owned_group_generation,
                                 proc.pid,
-                                self._identity,
                                 self._config.owner_uid,
                                 self._start_ticks,
                             ):
