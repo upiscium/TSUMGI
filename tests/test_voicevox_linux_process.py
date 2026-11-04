@@ -663,3 +663,98 @@ async def test_exec_replacement_denies_ready_but_stops_same_owned_child_generati
         await ctl.stop_owned(nonce=nonce)
     assert ctl._proc is None
     assert proc.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_different_elf_exec_preserving_original_listen_fd_denies_ready_and_reaps(
+    tmp_path,
+    monkeypatch,
+):
+    """Changing executable with an inherited listener must revoke READY.
+
+    The same known direct child keeps its PID/UID/starttime/process group and
+    bound 127.0.0.1 socket across exec into a different ELF. The listener
+    must not become a qualified engine, but stop must still reap that child.
+    """
+    import shutil
+
+    import astrumweaver.runtime.providers.voicevox_linux_process as process_module
+    from astrumweaver.runtime.providers.voicevox_linux_process import (
+        _listener_sockets,
+        _owned_group_generation,
+        _process_socket_inodes,
+    )
+
+    replacement = shutil.which("sleep")
+    if replacement is None:
+        pytest.skip("no disposable alternative executable available")
+
+    gate = tmp_path / "reexec-now"
+    script = f"""
+import os, socket, sys, time
+port = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.set_inheritable(True)
+s.bind(("127.0.0.1", port))
+s.listen(5)
+while not os.path.isfile({str(gate)!r}):
+    time.sleep(.015)
+os.execv({replacement!r}, [{replacement!r}, "30"])
+"""
+    cfg, _pin, _runner, controller = setup(tmp_path, runner_code=script)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    await controller.launch(config=cfg, nonce=nonce)
+    proc = controller._proc
+    port = int(cfg.endpoint.rsplit(":", 1)[1])
+    try:
+        observed = await ready(controller)
+        assert observed.pid == proc.pid
+        assert await controller.endpoint_owner() == proc.pid
+        original_image = controller._identity
+        original_generation = controller._start_ticks
+        before_listeners = await asyncio.to_thread(_listener_sockets, port)
+        assert len(before_listeners) == 1
+        original_socket_inode = before_listeners[0][2]
+
+        gate.write_text("reexec")
+        async with asyncio.timeout(4):
+            while True:
+                exe = os.stat(f"/proc/{proc.pid}/exe")
+                if (exe.st_dev, exe.st_ino) != original_image[:2]:
+                    break
+                await asyncio.sleep(0.025)
+
+        # The foreign binary retained the exact old socket FD and address.
+        listeners = await asyncio.to_thread(_listener_sockets, port)
+        assert len(listeners) == 1
+        kind, address, inode = listeners[0]
+        assert kind == "tcp" and address == "0100007F"
+        assert inode == original_socket_inode
+        assert inode in await asyncio.to_thread(_process_socket_inodes, proc.pid)
+        assert await asyncio.to_thread(
+            _owned_group_generation,
+            proc.pid,
+            cfg.owner_uid,
+            original_generation,
+        )
+
+        # Image drift revokes READY even if the socket owner and PID match.
+        assert await controller.endpoint_owner() == 0
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await controller.inspect()
+        # Prove the executable-image check independently from argv checking:
+        # even if a bug mistakenly accepted the changed command line, the
+        # swapped ELF alone must still prevent admission.
+        with monkeypatch.context() as patch:
+            patch.setattr(process_module, "_proc_fixed_command", lambda *_args: True)
+            assert await controller.endpoint_owner() == 0
+            with pytest.raises(VoicevoxOwnedProcessError):
+                await controller.inspect()
+    finally:
+        # Even though READY was revoked, it remains our known spawned child.
+        await controller.stop_owned(nonce=nonce)
+    assert controller._proc is None
+    assert proc.returncode is not None
+    assert await controller.endpoint_owner() is None
+    assert await asyncio.to_thread(_listener_sockets, port) == ()
