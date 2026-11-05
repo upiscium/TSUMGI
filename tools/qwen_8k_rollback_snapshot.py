@@ -19,17 +19,19 @@ from typing import Mapping
 
 from qwen_12k_candidate import _check_base, BASE_CONTEXT, PROFILE_ID
 
-SCHEMA = "qwen8k-rollback-snapshot-v1"
+SCHEMA = "qwen8k-rollback-snapshot-v2"
 PREFIX = "tsumgi-qwen8k-rollback-"
 MAX_BYTES = 512 * 1024
 REQUIRED = (
     "runtime.json", "serving.json", "catalog.json", "reviewed-pin.json",
-    "worker.toml", "worker.service", "control.toml",
+    "worker.toml", "worker.service",
+    "30-coding-runtime.conf", "40-qwen38-identity.conf",
+    "control.toml",
 )
 GATES = (
     "pin_real_8k_nix_runtime_store_closure_against_garbage_collection",
     "retain_exact_8k_model_file_and_sha256_attestation",
-    "capture_any_worker_systemd_dropins_and_environment_separately",
+    "inventory_all_live_systemd_dropins_and_protect_environment_separately",
     "verify_exact_current_service_unit_worker_control_config_permissions",
     "ensure_no_old_revision_jobs_remain_nonterminal_before_cutover",
     "authorize_service_maintenance_and_ordered_rollback_separately",
@@ -81,7 +83,10 @@ def validate(data: Mapping[str, bytes]) -> str:
         raise ValueError("not-current-8k")
     # Other configuration inputs are backed up as opaque exact bytes.
     # They are NOT parsed as authority for a production restoration.
-    if not all(data[k] for k in ("worker.toml", "worker.service", "control.toml")):
+    if not all(data[k] for k in (
+        "worker.toml", "worker.service",
+        "30-coding-runtime.conf", "40-qwen38-identity.conf", "control.toml",
+    )):
         raise ValueError("empty-service-config")
     return revision
 
@@ -273,6 +278,8 @@ def main() -> int:
         "reviewed-pin.json": "--reviewed-pin",
         "worker.toml": "--worker-toml",
         "worker.service": "--worker-service",
+        "30-coding-runtime.conf": "--worker-dropin-runtime",
+        "40-qwen38-identity.conf": "--worker-dropin-identity",
         "control.toml": "--control-toml",
     }
     for name, flag in arguments.items():

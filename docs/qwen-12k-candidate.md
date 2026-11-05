@@ -149,7 +149,10 @@ modifying the hypervisor/Kernel, or writing to the Control DB.
 
 The historical Qwen Runtime generation 2 from #157 is **not present**
 on Sirius. The currently running generation 3 and its Nix Store closure
-remain available. A new 12K experiment must therefore preserve and
+remain available (25 store paths by read-only closure query, 2026-11-05).
+The current generation's profile link is not independent protection:
+a future profile replacement or garbage collection may make the old
+runtime unreachable unless the operator separately pins that closure. A new 12K experiment must therefore preserve and
 prove restoration of the **current** 8K configuration, not assume the old
 generation-2 package can be recovered.
 
@@ -161,7 +164,7 @@ stop processes, restart systemd, or restore production installations.
 
 ### Inputs (sensitive: assemble only in a trusted, private directory)
 
-Collect these seven exact 8K source files through already-authorized
+Collect these nine exact 8K source files through already-authorized
 read-only access. Control and Sirius files may be copied privately to
 one operator machine for offline review, but **do not commit or print
 their contents**:
@@ -174,12 +177,18 @@ their contents**:
 | --reviewed-pin | Independently reviewed original Qwen 8K model/reference/revision pin |
 | --worker-toml | Sirius Worker configuration TOML (opaque exact bytes) |
 | --worker-service | Sirius systemd Worker unit file (opaque exact bytes) |
+| --worker-dropin-runtime | Sirius 30-coding-runtime.conf (opaque exact bytes) |
+| --worker-dropin-identity | Sirius 40-qwen38-identity.conf (opaque exact bytes) |
 | --control-toml | Control daemon TOML (opaque exact bytes) |
 
-The last three opaque inputs are snapshotted and hashed, **not**
-semantically audited. Additional systemd drop-ins, separate
-environment/secret files, Nix profile references, and the GGUF itself
-are **not included** and must be inventoried and protected separately.
+The last five opaque configuration inputs are snapshotted and hashed,
+**not semantically audited**. The two drop-ins are the **actual** ones
+observed under the active Sirius Worker (2026-11-05): 30-coding-runtime.conf
+and 40-qwen38-identity.conf. Compare against the live systemd
+DropInPaths listing before every capture; reject or separately protect
+any added/changed drop-in. Separate environment/secret files, Nix profile
+references and the GGUF itself are **not included** and require separate
+inventory, protection and restoration testing.
 The reviewed pin is an operator trust boundary and does not rehash
 16GB of model bytes or independently sign provenance.
 
@@ -192,12 +201,14 @@ First check without writing:
       --reviewed-pin /private/reviewed-pin.json \
       --worker-toml /private/worker.toml \
       --worker-service /private/astrumweaver-worker.service \
+      --worker-dropin-runtime /private/30-coding-runtime.conf \
+      --worker-dropin-identity /private/40-qwen38-identity.conf \
       --control-toml /private/control.toml
 
 After separate operator approval for private backup file creation,
 replace check with capture using the same arguments. The tool creates
 an unpredictable new /tmp/tsumgi-qwen8k-rollback-* directory with
-owner-only permissions and writes the seven exact input byte streams
+owner-only permissions and writes the nine exact input byte streams
 plus a digest/size receipt. Files are opened without following
 final-component symlinks; directory and files use exclusive creation.
 Sources are re-read after copying to detect changes in that interval.
@@ -217,7 +228,7 @@ Then verify the chosen private snapshot:
 verify compares each file with the receipt's size and SHA-256,
 checks the required file set and permissions, and loads the baseline
 through TSUMGI's actual 8K Serving/Runtime/Control validators.
-rehearse also copies those seven files into a temporary directory,
+rehearse also copies those nine files into a temporary directory,
 verifies bytes and Qwen identity, and removes that disposable directory.
 It **never** writes to /etc, a systemd unit, Nix profile or Control.
 
@@ -235,7 +246,7 @@ that a live Worker/Control will restart after replacing those files.
   not guarantee the old build remains accessible. Never assume
   generation 2 or its earlier package still exists.
 - Independently preserve the approved Qwen model artifact, original
-  model SHA-256 receipt, systemd drop-ins/environment, current Worker
+  model SHA-256 receipt, all active systemd drop-ins/environment, current Worker
   unit/config, Runtime/Serving manifests, Control Catalog and
   compatible client limit/Agent settings. Avoid bearer secrets in
   public logs, issues or PR artifacts.

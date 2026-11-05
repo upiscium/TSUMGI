@@ -468,6 +468,8 @@ def rollback_fixture_files(tmp_path: Path) -> dict[str, Path]:
         "reviewed-pin.json": json.dumps(reviewed_pin()).encode(),
         "worker.toml": b"[worker]\nsynthetic_secret = 'DO_NOT_PRINT_SECRET'\n",
         "worker.service": b"[Service]\nExecStart=/fake/worker\n",
+        "30-coding-runtime.conf": b"[Service]\nEnvironment=CODE=SAFE\n",
+        "40-qwen38-identity.conf": b"[Service]\nEnvironment=IDENTITY=QWEN\n",
         "control.toml": b"[control]\nsynthetic_secret = 'DO_NOT_PRINT_SECRET'\n",
     }
     return {name: (tmp_path / name) for name in docs
@@ -506,6 +508,44 @@ def test_8k_snapshot_refuses_postcapture_corruption(tmp_path: Path):
     try:
         (root / "worker.toml").write_bytes(b"tampered")
         with pytest.raises(ValueError, match="snapshot-file-hash-mismatch"):
+            rb.verify(root)
+    finally:
+        shutil.rmtree(root)
+
+
+def test_8k_snapshot_refuses_missing_systemd_dropins(tmp_path: Path):
+    rb = rollback_module()
+    sources = rollback_fixture_files(tmp_path)
+    for key in ("30-coding-runtime.conf", "40-qwen38-identity.conf"):
+        incomplete = dict(sources)
+        del incomplete[key]
+        with pytest.raises(ValueError, match="source-arguments-incomplete"):
+            rb.capture(incomplete)
+
+
+@pytest.mark.parametrize("dropin", [
+    "30-coding-runtime.conf", "40-qwen38-identity.conf",
+])
+def test_8k_snapshot_detects_dropin_tampering(tmp_path: Path, dropin: str):
+    rb = rollback_module()
+    root = rb.capture(rollback_fixture_files(tmp_path))
+    try:
+        (root / dropin).write_bytes(b"[Service]\\nMOCKED=1\\n")
+        with pytest.raises(ValueError, match="snapshot-file-hash-mismatch"):
+            rb.verify(root)
+    finally:
+        shutil.rmtree(root)
+
+
+def test_v1_seven_member_snapshot_receipt_is_not_accepted(tmp_path: Path):
+    rb = rollback_module()
+    root = rb.capture(rollback_fixture_files(tmp_path))
+    try:
+        receipt = root / "receipt.json"
+        value = json.loads(receipt.read_text())
+        value["schema_version"] = "qwen8k-rollback-snapshot-v1"
+        receipt.write_text(json.dumps(value))
+        with pytest.raises(ValueError, match="invalid-receipt"):
             rb.verify(root)
     finally:
         shutil.rmtree(root)
@@ -617,6 +657,8 @@ def test_8k_snapshot_cli_check_capture_verify_rehearse(tmp_path: Path):
         ("runtime.json", "--runtime"), ("serving.json", "--serving"),
         ("catalog.json", "--catalog"), ("reviewed-pin.json", "--reviewed-pin"),
         ("worker.toml", "--worker-toml"), ("worker.service", "--worker-service"),
+        ("30-coding-runtime.conf", "--worker-dropin-runtime"),
+        ("40-qwen38-identity.conf", "--worker-dropin-identity"),
         ("control.toml", "--control-toml"),
     ):
         args.extend((opt, str(files[name])))
@@ -636,7 +678,7 @@ def test_8k_snapshot_cli_check_capture_verify_rehearse(tmp_path: Path):
     assert dry["status"] == "READ_ONLY_8K_BASELINE_VALIDATED"
     root = Path(invoke("capture", *args)["snapshot_dir"])
     try:
-        assert invoke("verify", "--snapshot-dir", str(root))["files_verified"] == 7
+        assert invoke("verify", "--snapshot-dir", str(root))["files_verified"] == 9
         assert invoke("rehearse", "--snapshot-dir", str(root))["live_restore_exercised"] is False
         with pytest.raises(AssertionError):
             invoke("capture", "--snapshot-dir", str(root), *args)
