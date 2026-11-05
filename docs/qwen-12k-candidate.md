@@ -1,0 +1,145 @@
+# Qwen3.8-27B 12K Context — offline Stage A (TSUMGI #230)
+
+This is a **source-only proposal and safety contract**, not a production
+upgrade instruction. Sirius, its GPUs, installed model, systemd units,
+Worker/Control configurations, and OpenCode Agents remain on **8K**.
+GPU incident observation is independently tracked by TSUMGI #229.
+
+## Capacity evidence (not an allocation guarantee)
+
+Pinned Qwen GGUF metadata: 65 layers, 4 KV heads, key/value head lengths
+256/256. Assuming FP16 K and V, its theoretical KV cache costs
+65 x 4 x (256 + 256) x 2 = **266,240 bytes per token**, excluding
+fragmentation, CUDA graph/compute buffers, and other GPU users.
+
+| Candidate | Native context | Input | Output | Total | Added FP16 KV |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Current | 8,192 | 6,144 | 2,048 | 8,192 | 0 |
+| Stage A | **12,288** | **10,240** | **2,048** | **12,288** | **1,040 MiB total** |
+| Stage B (not authorized) | 16,384 | 14,336 | 2,048 | 16,384 | 2,080 MiB total |
+
+At the November 5 baseline, Sirius GPUs had **4,350** and **3,349 MiB**
+free. In a worst-case allocation of the additional 1,040 MiB KV wholly
+on the more constrained GPU, idle free memory falls to **2,309 MiB**,
+only 261 MiB over the proposed 2 GiB floor. This is **not a peak VRAM
+qualification**. Measure each GPU at sustained 12K prefill, keeping
+parallel slots at one; require **>=2,048 MiB free per GPU at peak**, no
+OOM, CUDA errors, Worker restarts or serving identity drift.
+
+Native tokenizer-only synthetic OpenCode first-main-request counts on
+Qwen: OpenAI-oriented plan override **7,841 input tokens**, dedicated
+tsumgi-qwen **1,504**. A proposed 10,240 input cap accommodates the
+specific synthetic plan request. This does **not** prove long-horizon
+planning quality, production source attribution, or Tool correctness.
+
+## Unqualified candidate generator (no GPU access)
+
+The operator tool is tools/qwen_12k_candidate.py. It consumes three
+**existing reviewed 8K JSON inputs**: Sirius runtime.manifest, Sirius
+serving.manifest, and the complete Control ChatGatewayCatalog. It also
+requires a **fourth, independently reviewed Qwen baseline pin**, NOT
+generated from the three supplied source files. The pin binds the
+approved model artifact SHA-256, SHA-256 of the exact runtime model_ref
+UTF-8 string, old deployment revision and qwen3.8-27b logical alias.
+This guards against mutually consistent but wrong-model manifests.
+The operator must independently establish the model artifact and
+reference provenance; merely supplying a self-generated pin is NOT
+an attestation of the actual GGUF file bytes.
+
+The pin has schema reviewed-qwen-baseline-pin-v1 and exactly these
+JSON properties: schema_version, profile_id, model_artifact_sha256,
+model_ref_sha256, deployment_revision. All three hash values have
+canonical sha256: plus 64 lowercase hexadecimal digits. Source files
+may contain private model paths and deployment details: **do not
+commit, publish or share the raw inputs, pin or generated drafts**.
+
+In a trusted isolated checkout with the project Python environment:
+
+    PYTHONPATH=src python3 tools/qwen_12k_candidate.py \
+      --runtime /private/8k/runtime.json \
+      --serving /private/8k/serving.json \
+      --control /private/8k/control-chat-catalog.json \
+      --reviewed-pin /private/approved/qwen8k-pin.json
+
+Default mode prints only bounded metadata, with **zero file writes**.
+An optional, explicitly requested output directory must be a NEW direct
+child of /tmp with a name prefixed tsumgi-qwen12k-:
+
+    PYTHONPATH=src python3 tools/qwen_12k_candidate.py \
+      --runtime /private/8k/runtime.json \
+      --serving /private/8k/serving.json \
+      --control /private/8k/control-chat-catalog.json \
+      --reviewed-pin /private/approved/qwen8k-pin.json \
+      --output-dir /tmp/tsumgi-qwen12k-local-private-review
+
+The private directory is owner-only (0700), files 0600, and must be
+deleted after review. Atomic directory creation, an O_NOFOLLOW directory
+file descriptor and exclusive O_NOFOLLOW child file creation protect the
+output path against final-component symlink replacement and redirects.
+Files are not securely erased by ordinary deletion. The tool emits
+intentionally **NON-DEPLOYABLE** artifacts:
+
+- runtime.UNQUALIFIED.json: both provider_config.context_size and
+  setup_intent.configuration.context_size are 12,288.
+- serving.INVALID.json: proposed 10,240 input, 2,048 output, 12,288
+  total, 65,536 request bytes. The new execution-config digest,
+  validation evidence and contract revision are **PENDING**, invalid.
+- control.INVALID.json: replacement Qwen deployment/contract/profile
+  revisions are **PENDING**; unrelated logical model profiles are
+  preserved byte-for-byte.
+- review-gates.json: input fingerprints and outstanding human/evidence
+  checkpoints (not proof of artifact provenance).
+
+Inputs are validated using TSUMGI's real RuntimeDeploymentSpec,
+LlamaCppProviderConfig, ServingDeploymentDeclaration and
+ChatProfileCatalog. The two INVALID drafts are deliberately rejected
+by the real TSUMGI loaders. No new execution digest is invented from a
+local path and the old validation-evidence digest is never reused.
+Even successful generation does **not** authorize deployment.
+
+The tool requires the precise 8K Qwen profile, matched immutable
+identities, two-GPU runtime topology, correct setup intent, matching
+8K limits and an unambiguous catalog. It rejects incompatible source
+inputs or shared Qwen deployment aliases. It uses neither network nor
+GPU calls and never modifies any original files.
+
+## Steps for a separate, approved maintenance canary
+
+1. Complete the already scheduled 24-hour GPU incident observation.
+   Verify 5/5 Workers Ready and Sirius CUDA stable. Preserve existing
+   8K manifests, hashes, Worker/Control serving bindings, Nix generations
+   and current OpenCode provider settings; ensure no nonterminal Qwen
+   Jobs before any source-revision cutover.
+2. Independently review exact 12K runtime execution config and compute
+   a **new execution_config_sha256** excluding paths and secrets. Do
+   not invent digests from partial path/config excerpts.
+3. During a **separately authorized maintenance window**, drain Sirius,
+   stop its native Qwen process under the approved lifecycle controls,
+   and launch the same pinned model at native 12K. Do **not** assume a
+   second concurrent 27B server fits in the two 12 GiB GPUs.
+4. At runtime, measure each GPU's idle and peak VRAM during prolonged
+   prefill and Tool use. Validate tokenizer counting of the synthetic
+   7,841-token first-main request, bounded real Chat, streaming,
+   Tool Call/Result, over-limit fail-closed, cancellation, CUDA
+   initialization and restart-free operation. Require **>=2 GiB free
+   per GPU at peak**. If not met, restore the 8K runtime immediately.
+5. Only after real evidence, calculate new DeploymentIdentity,
+   ServingContract and LogicalServingProfile revisions with the
+   existing canonical classes. Worker readiness and the Control
+   catalog must agree on exactly that revision. Do not migrate
+   admitted old Jobs or reuse old evidence.
+6. Once new Worker/Control serving is consistent, update the
+   OpenCode TSUMGI model limit.context to 12,288 and preserve
+   output 2,048. The canonical OpenAI plan Agent, model assignments,
+   permissions and explicit no-fallback policy remain unchanged.
+7. Test actual public Chat/Tool E2E, observe errors/VRAM/restarts, and
+   preserve a documented **reverse-order rollback** of native runtime,
+   Worker serving, Control profile and client config. Any failure
+   returns **all affected surfaces together** to exact old 8K.
+8. Only after successful Stage-A canary and measured headroom consider
+   16K in a separate decision. Bonsai 12K is separately tracked in
+   TSUMGI #232; the Qwen change cannot silently expand Bonsai.
+
+**Authority boundary:** passing source-only tests does not permit
+restarting Sirius, merging code, changing a production manifest,
+modifying the hypervisor/Kernel, or writing to the Control DB.
