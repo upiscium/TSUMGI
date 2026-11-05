@@ -4,7 +4,6 @@ Both non-interactive automation and the interactive TUI consume this API.
 Deployment-specific mutation is supplied later through SetupActionDriver.
 """
 
-from .audio_review import AudioSetupReview, AudioSetupReviewError, review_audio_setup
 from .apply import (
     SetupActionDriver,
     SetupApprovalError,
@@ -13,6 +12,12 @@ from .apply import (
     explain_plan,
     preview_plan,
 )
+from .audio_provider_binding import (
+    AudioProviderBindingError,
+    AudioProviderBindingReview,
+    review_audio_provider_binding,
+)
+from .audio_review import AudioSetupReview, AudioSetupReviewError, review_audio_setup
 from .contracts import (
     ActionInspection,
     ActionReceipt,
@@ -39,18 +44,20 @@ from .discovery import (
     discover_local_gpus,
     discover_local_host,
 )
-from .systemd import SystemdSetupDriver, create_systemd_driver
 from .planner import (
     SetupPlanningError,
     build_runtime_release_plan,
     build_runtime_setup_plan,
 )
+from .systemd import SystemdSetupDriver, create_systemd_driver
 
 __all__ = [
-    "AudioSetupReview",
-    "AudioSetupReviewError",
     "ActionInspection",
     "ActionReceipt",
+    "AudioProviderBindingError",
+    "AudioProviderBindingReview",
+    "AudioSetupReview",
+    "AudioSetupReviewError",
     "DeploymentPath",
     "DiscoveredGpu",
     "HostDiscoveryError",
@@ -63,7 +70,6 @@ __all__ = [
     "SetupActionResult",
     "SetupActionResultStatus",
     "SetupActionState",
-    "SystemdSetupDriver",
     "SetupApplyResult",
     "SetupApplyStatus",
     "SetupApproval",
@@ -73,6 +79,7 @@ __all__ = [
     "SetupPlanGoal",
     "SetupPlanningError",
     "SetupPreview",
+    "SystemdSetupDriver",
     "apply_plan",
     "build_runtime_release_plan",
     "build_runtime_setup_plan",
@@ -82,5 +89,6 @@ __all__ = [
     "dry_run_plan",
     "explain_plan",
     "preview_plan",
+    "review_audio_provider_binding",
     "review_audio_setup",
 ]
