@@ -293,9 +293,11 @@ without printing Store filenames or model paths. It **does not**
 run garbage collection, add or remove Nix GC roots, switch generations,
 realise Store outputs, change model files or restart services.
 
-The result always reports independent_gcroot_verified=false,
-old_generation_rollback_verified=false and
-live_service_restore_verified=false. A current profile root is not
+By default the result reports independent_gcroot_verified=false;
+the explicit --require-independent-root flag verifies the separately
+installed direct root before reporting true. The fields
+old_generation_rollback_verified and live_service_restore_verified
+remain false. A current profile root is not
 an independently preserved rollback root. The script does not
 cryptographically attest the runtime model or guarantee that another
 user will not change the profile immediately after the check.
@@ -311,3 +313,61 @@ or authorized by this PR.
 This preflight is intentionally independent from the seven/nine-file
 snapshot command: it verifies the native Nix closure existence,
 not the completeness of Worker/Control configuration snapshots.
+
+
+## R4: independent 8K GCroot now installed (2026-11-05)
+
+The operator explicitly prioritized 12K work without waiting for the
+separate 24-hour GPU monitoring result. The current accepted Qwen
+generation-3 Nix Store output was protected on Sirius by a **new direct
+GCroot**, without switching the running profile:
+
+    /nix/var/nix/gcroots/tsumgi-qwen38-8k-pre12k-20261105
+
+The root points at the exact same generation-3 Store profile already
+used by the 8K Worker. At installation, 25 closure paths existed and
+the count of current Nix root references increased from one to two.
+No Nix build, garbage collection or service restart was performed.
+
+To independently re-check the **currently installed** root and full
+closure without modifying anything:
+
+    python3 tools/qwen_8k_nix_preflight.py \
+      --read-only --require-independent-root
+
+The flag validates root ownership, the **direct literal symlink** to
+the independently accepted generation-3 **8K** Store output, trusted
+GCroot-parent permissions, and the exact root-to-pinned-Store record in
+the read-only Nix roots query. It queries the **pinned old output**,
+not the replaceable active profile. Even after the active profile is
+switched to 12K, the old 8K root must still be independently verified.
+It rejects a missing, indirect, mismatched, duplicate or malformed root. Only when all checks pass does it
+report independent_gcroot_verified=true. Without that flag, the tool
+continues to report the independent-root status as unverified.
+
+This means the 8K **native Runtime Store closure is currently
+protected from Nix garbage collection** independently of the
+replaceable runtime profile. It does NOT imply that a privileged
+operator cannot remove the GCroot, that GGUF weights or configuration
+are in the Nix closure, or that real Worker/Control rollback succeeds.
+
+Separate protected, root-owned **host-local** source backups were
+also created under the following private backup basename on Sirius
+and Control:
+
+    qwen12k-8k-fallback-20261105-r1
+
+The Sirius snapshot contains 8 exact files (Worker TOML, Runtime and
+Serving Manifests, systemd unit, two drop-ins, Worker environment and
+Qwen model-hash receipt). Control contains 4 (TOML, complete Qwen+Bonsai
+catalog, unit, environment). All 12 were SHA-256 verified against
+their current source files and copied into disposable sandbox restore
+directories, with 12/12 exact-byte comparisons PASS. Raw source data
+are not embedded in the repository, public issue or CI artifacts.
+
+**Remaining boundary:** These backups are host-local rather than
+off-host backups, and the model's 16GB GGUF is not copied. The real
+service-impacting 8K restore and full 12K native runtime canary still
+require a separately bounded maintenance/rollback procedure. The
+separate GPU 24-hour monitoring automation is still scheduled but is
+not used as a precondition for this source and backup work.

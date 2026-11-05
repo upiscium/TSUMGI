@@ -17,6 +17,14 @@ import sys
 from typing import Callable, Iterable
 
 PROFILE = Path("/nix/var/nix/profiles/astrumweaver-runtime-qwen38")
+INDEPENDENT_ROOT = Path(
+    "/nix/var/nix/gcroots/tsumgi-qwen38-8k-pre12k-20261105"
+)
+# Independently accepted live 8K generation-3 output, not the mutable
+# runtime profile after a future 12K switch. Source: #157 and #230 R4.
+ACCEPTED_8K_STORE = Path(
+    "/nix/store/lk6r07rifys2zvbsz2ah9wm6skay92q2-profile"
+)
 STORE = Path("/nix/store")
 MAX_OUTPUT_BYTES = 2_000_000
 STORE_NAME = re.compile(r"[0-9a-df-np-sv-z]{32}-[A-Za-z0-9+._?=-]{1,240}\Z")
@@ -38,10 +46,13 @@ def summarize(
     root_lines: Iterable[str],
     *,
     exists: Callable[[str], bool],
+    require_independent_root: bool = False,
 ) -> dict[str, object]:
-    """Pure bounded verifier. Root references do NOT imply future pin safety."""
+    """Verify closure now; independent root requires separately checked state."""
     if profile_link != str(PROFILE):
         raise ValueError("unexpected-production-profile")
+    if require_independent_root and resolved_target != str(ACCEPTED_8K_STORE):
+        raise ValueError("pinned-8k-target-mismatch")
     if not _store_path(resolved_target) or not exists(resolved_target):
         raise ValueError("missing-or-unexpected-profile-target")
     requisites = list(requisite_lines)
@@ -58,15 +69,25 @@ def summarize(
         raise ValueError("missing-closure-path")
     if len(roots) > 10000:
         raise ValueError("unbounded-root-list")
-    # nix-store --query --roots shows current reachable roots, not
-    # guaranteed protection when the profile switches generations.
-    # Do not claim an independent GCroot is already established.
+    expected_record = f"{INDEPENDENT_ROOT} -> {resolved_target}"
+    for record in roots:
+        entry, separator, target = record.partition(" -> ")
+        if not separator or not entry.startswith("/nix/var/nix/"):
+            raise ValueError("malformed-root-record")
+        if not _store_path(target) or target != resolved_target:
+            raise ValueError("unexpected-root-target")
+    if require_independent_root and roots.count(expected_record) != 1:
+        raise ValueError("independent-root-missing-from-nix-records")
     return {
-        "status": "CURRENT_8K_STORE_CLOSURE_PRESENT_READ_ONLY",
+        "status": (
+            "PINNED_8K_STORE_CLOSURE_PRESENT_READ_ONLY"
+            if require_independent_root
+            else "CURRENT_8K_STORE_CLOSURE_PRESENT_READ_ONLY"
+        ),
         "current_closure_paths": len(requisites),
         "current_referencing_roots": len(roots),
         "target_is_store_path": True,
-        "independent_gcroot_verified": False,
+        "independent_gcroot_verified": bool(require_independent_root),
         "old_generation_rollback_verified": False,
         "live_service_restore_verified": False,
     }
@@ -132,30 +153,53 @@ def query_nix(command: list[str]) -> list[str]:
     return decoded
 
 
-def probe() -> dict[str, object]:
+def probe(*, require_independent_root: bool = False) -> dict[str, object]:
     if not PROFILE.is_symlink():
         raise ValueError("profile-is-not-a-symlink")
-    resolved = str(PROFILE.resolve(strict=True))
-    if not _store_path(resolved):
+    current = str(PROFILE.resolve(strict=True))
+    if not _store_path(current):
         raise ValueError("profile-outside-nix-store")
+    target = current
+    if require_independent_root:
+        # Even after PROFILE switches to 12K, protect/check the *fixed*
+        # original 8K output rather than following any mutable link.
+        target = str(ACCEPTED_8K_STORE)
+        if not ACCEPTED_8K_STORE.is_dir():
+            raise ValueError("accepted-8k-store-target-missing")
+        if not INDEPENDENT_ROOT.is_symlink():
+            raise ValueError("independent-root-not-a-symlink")
+        if INDEPENDENT_ROOT.lstat().st_uid != 0:
+            raise ValueError("independent-root-not-root-owned")
+        # Path.resolve() is insufficient: it would follow an indirect
+        # GCroot->mutable-profile->Store chain and falsely pass.
+        if str(INDEPENDENT_ROOT.readlink()) != target:
+            raise ValueError("independent-root-not-direct-to-pinned-8k")
+        parent = INDEPENDENT_ROOT.parent
+        if parent.stat().st_uid != 0 or parent.stat().st_mode & 0o022:
+            raise ValueError("root-parent-not-trusted")
+    query_target = target if require_independent_root else str(PROFILE)
     requisites = query_nix(
-        ["nix-store", "--query", "--requisites", str(PROFILE)],
+        ["nix-store", "--query", "--requisites", query_target],
     )
     roots = query_nix(
-        ["nix-store", "--query", "--roots", str(PROFILE)],
+        ["nix-store", "--query", "--roots", query_target],
     )
-    return summarize(
-        str(PROFILE), resolved, requisites, roots,
+    report = summarize(
+        str(PROFILE), target, requisites, roots,
         exists=lambda p: Path(p).exists(),
+        require_independent_root=require_independent_root,
     )
+    report["current_profile_points_to_accepted_8k"] = current == str(ACCEPTED_8K_STORE)
+    return report
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--read-only", action="store_true", required=True)
-    parser.parse_args()
+    parser.add_argument("--require-independent-root", action="store_true")
+    args = parser.parse_args()
     try:
-        result = probe()
+        result = probe(require_independent_root=args.require_independent_root)
     except (ValueError, OSError, subprocess.SubprocessError):
         print(json.dumps({"status": "BLOCKED", "reason": "non-sensitive-preflight-failure"}))
         return 2
