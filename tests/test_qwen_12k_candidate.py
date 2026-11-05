@@ -441,3 +441,204 @@ def test_cli_only_reports_shape_and_never_outputs_model_paths(tmp_path: Path):
     assert not data["private_draft_written"]
     assert "/synthetic-not-actual/" not in result.stdout
     assert "/synthetic-not-actual/" not in result.stderr
+
+
+# Exact-byte 8K rollback preservation is independent from 12K draft creation.
+def rollback_module():
+    # Only the source checkout's operator tools, never an installed runtime.
+    import sys
+    tools_dir = str(ROOT / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    spec = importlib.util.spec_from_file_location(
+        "qwen_8k_rollback_snapshot", ROOT / "tools/qwen_8k_rollback_snapshot.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def rollback_fixture_files(tmp_path: Path) -> dict[str, Path]:
+    baseline_runtime, baseline_serving, baseline_catalog = fixtures()
+    docs = {
+        "runtime.json": json.dumps(baseline_runtime).encode(),
+        "serving.json": json.dumps(baseline_serving).encode(),
+        "catalog.json": json.dumps(baseline_catalog).encode(),
+        "reviewed-pin.json": json.dumps(reviewed_pin()).encode(),
+        "worker.toml": b"[worker]\nsynthetic_secret = 'DO_NOT_PRINT_SECRET'\n",
+        "worker.service": b"[Service]\nExecStart=/fake/worker\n",
+        "control.toml": b"[control]\nsynthetic_secret = 'DO_NOT_PRINT_SECRET'\n",
+    }
+    return {name: (tmp_path / name) for name in docs
+            if (tmp_path / name).write_bytes(docs[name]) == len(docs[name])}
+
+
+def test_exact_8k_snapshot_capture_verify_and_disposable_rehearsal(tmp_path: Path):
+    rb = rollback_module()
+    sources = rollback_fixture_files(tmp_path)
+    contents = {k: p.read_bytes() for k, p in sources.items()}
+    root = rb.capture(sources)
+    try:
+        assert root.is_dir() and root.parent == Path("/tmp")
+        assert root.name.startswith(rb.PREFIX)
+        assert root.stat().st_mode & 0o777 == 0o700
+        assert set(p.name for p in root.iterdir()) == set(rb.REQUIRED) | {"receipt.json"}
+        assert all(p.stat().st_mode & 0o777 == 0o600 for p in root.iterdir())
+        assert rb.verify(root)["status"] == "EXACT_8K_BYTES_VERIFIED"
+        proof = rb.verify(root, rehearse=True)
+        assert proof["status"] == "EXACT_8K_BYTES_VERIFIED_IN_DISPOSABLE_SANDBOX"
+        assert proof["files_verified"] == len(rb.REQUIRED)
+        assert proof["nix_closure_preserved"] is False
+        assert proof["live_restore_exercised"] is False
+        assert {k: p.read_bytes() for k, p in sources.items()} == contents
+        receipt = json.loads((root / "receipt.json").read_text())
+        assert receipt["signed_or_authenticated"] is False
+        assert receipt["nix_runtime_closure_backed_up"] is False
+        assert "DO_NOT_PRINT_SECRET" not in json.dumps(receipt)
+    finally:
+        shutil.rmtree(root)
+
+
+def test_8k_snapshot_refuses_postcapture_corruption(tmp_path: Path):
+    rb = rollback_module()
+    root = rb.capture(rollback_fixture_files(tmp_path))
+    try:
+        (root / "worker.toml").write_bytes(b"tampered")
+        with pytest.raises(ValueError, match="snapshot-file-hash-mismatch"):
+            rb.verify(root)
+    finally:
+        shutil.rmtree(root)
+
+
+def test_8k_snapshot_rejects_symlinked_source(tmp_path: Path):
+    rb = rollback_module()
+    sources = rollback_fixture_files(tmp_path)
+    link = tmp_path / "symlink-worker.toml"
+    link.symlink_to(sources["worker.toml"])
+    sources["worker.toml"] = link
+    with pytest.raises(OSError):
+        rb.capture(sources)
+
+
+def test_8k_snapshot_rejects_symlinked_member(tmp_path: Path):
+    rb = rollback_module()
+    root = rb.capture(rollback_fixture_files(tmp_path))
+    try:
+        member = root / "worker.toml"
+        member.unlink()
+        member.symlink_to(tmp_path / "worker.toml")
+        with pytest.raises(OSError):
+            rb.verify(root)
+        assert (tmp_path / "worker.toml").is_file()
+    finally:
+        shutil.rmtree(root)
+
+
+def test_8k_snapshot_rejects_relaxed_directory_permissions(tmp_path: Path):
+    rb = rollback_module()
+    root = rb.capture(rollback_fixture_files(tmp_path))
+    try:
+        root.chmod(0o755)
+        with pytest.raises(ValueError, match="snapshot-directory-not-owner-only"):
+            rb.verify(root)
+    finally:
+        root.chmod(0o700)
+        shutil.rmtree(root)
+
+
+def test_8k_snapshot_rejects_oversized_source(tmp_path: Path):
+    rb = rollback_module()
+    sources = rollback_fixture_files(tmp_path)
+    sources["worker.toml"].write_bytes(b"x" * (rb.MAX_BYTES + 1))
+    with pytest.raises(ValueError, match="source-not-bounded-regular-file"):
+        rb.capture(sources)
+
+
+def test_8k_snapshot_rejects_extra_members_and_modified_receipt(tmp_path: Path):
+    rb = rollback_module()
+    root = rb.capture(rollback_fixture_files(tmp_path))
+    try:
+        (root / "unreviewed.json").write_text("{}")
+        with pytest.raises(ValueError, match="unexpected-snapshot-files"):
+            rb.verify(root)
+        (root / "unreviewed.json").unlink()
+        receipt_path = root / "receipt.json"
+        d = json.loads(receipt_path.read_text())
+        d["nix_runtime_closure_backed_up"] = True
+        receipt_path.write_text(json.dumps(d))
+        with pytest.raises(ValueError, match="invalid-receipt"):
+            rb.verify(root)
+    finally:
+        shutil.rmtree(root)
+
+
+def test_8k_snapshot_rejects_symlinked_snapshot_root(tmp_path: Path):
+    rb = rollback_module()
+    root = rb.capture(rollback_fixture_files(tmp_path))
+    alias = Path("/tmp") / (rb.PREFIX + "symlink-" + uuid4().hex)
+    alias.symlink_to(root, target_is_directory=True)
+    try:
+        with pytest.raises(ValueError, match="not-private-direct-tmp-child"):
+            rb.verify(alias)
+    finally:
+        alias.unlink()
+        shutil.rmtree(root)
+
+
+def test_8k_snapshot_rejects_source_changes_during_capture(tmp_path: Path, monkeypatch):
+    rb = rollback_module()
+    files = rollback_fixture_files(tmp_path)
+    before = {p for p in Path("/tmp").glob(rb.PREFIX + "*") if p.is_dir()}
+    original = rb._read_regular
+    calls = 0
+
+    def altered(path: Path) -> bytes:
+        nonlocal calls
+        calls += 1
+        raw = original(path)
+        if calls > len(rb.REQUIRED) and path == files["runtime.json"]:
+            return raw + b" "
+        return raw
+
+    monkeypatch.setattr(rb, "_read_regular", altered)
+    with pytest.raises(ValueError, match="source-changed-during-snapshot"):
+        rb.capture(files)
+    after = {p for p in Path("/tmp").glob(rb.PREFIX + "*") if p.is_dir()}
+    assert before == after
+
+
+def test_8k_snapshot_cli_check_capture_verify_rehearse(tmp_path: Path):
+    rb = rollback_module()
+    files = rollback_fixture_files(tmp_path)
+    command = [sys.executable, str(ROOT / "tools/qwen_8k_rollback_snapshot.py")]
+    args = []
+    for name, opt in (
+        ("runtime.json", "--runtime"), ("serving.json", "--serving"),
+        ("catalog.json", "--catalog"), ("reviewed-pin.json", "--reviewed-pin"),
+        ("worker.toml", "--worker-toml"), ("worker.service", "--worker-service"),
+        ("control.toml", "--control-toml"),
+    ):
+        args.extend((opt, str(files[name])))
+    env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
+
+    def invoke(*parts: str):
+        ret = subprocess.run(
+            [*command, *parts], env=env, text=True,
+            capture_output=True, check=False, timeout=15,
+        )
+        assert ret.returncode == 0, (ret.returncode, ret.stdout[-300:], ret.stderr[-300:])
+        assert "DO_NOT_PRINT_SECRET" not in ret.stdout + ret.stderr
+        assert "/synthetic-not-actual/" not in ret.stdout + ret.stderr
+        return json.loads(ret.stdout)
+
+    dry = invoke("check", *args)
+    assert dry["status"] == "READ_ONLY_8K_BASELINE_VALIDATED"
+    root = Path(invoke("capture", *args)["snapshot_dir"])
+    try:
+        assert invoke("verify", "--snapshot-dir", str(root))["files_verified"] == 7
+        assert invoke("rehearse", "--snapshot-dir", str(root))["live_restore_exercised"] is False
+        with pytest.raises(AssertionError):
+            invoke("capture", "--snapshot-dir", str(root), *args)
+    finally:
+        shutil.rmtree(root)

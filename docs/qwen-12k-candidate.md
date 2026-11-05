@@ -143,3 +143,116 @@ GPU calls and never modifies any original files.
 **Authority boundary:** passing source-only tests does not permit
 restarting Sirius, merging code, changing a production manifest,
 modifying the hypervisor/Kernel, or writing to the Control DB.
+
+
+## R2: exact-byte 8K rollback preservation (source-only)
+
+The historical Qwen Runtime generation 2 from #157 is **not present**
+on Sirius. The currently running generation 3 and its Nix Store closure
+remain available. A new 12K experiment must therefore preserve and
+prove restoration of the **current** 8K configuration, not assume the old
+generation-2 package can be recovered.
+
+The companion operator tool,
+tools/qwen_8k_rollback_snapshot.py, handles **only an offline snapshot
+and disposable byte-for-byte restore rehearsal**. It does not pin Nix
+closures, download the GGUF, edit Worker/Control files, switch profiles,
+stop processes, restart systemd, or restore production installations.
+
+### Inputs (sensitive: assemble only in a trusted, private directory)
+
+Collect these seven exact 8K source files through already-authorized
+read-only access. Control and Sirius files may be copied privately to
+one operator machine for offline review, but **do not commit or print
+their contents**:
+
+| CLI argument | Exact source |
+| --- | --- |
+| --runtime | Sirius RuntimeDeploymentSpec JSON |
+| --serving | Sirius ServingDeploymentDeclaration JSON |
+| --catalog | Entire Control ChatGatewayCatalog JSON (including Bonsai) |
+| --reviewed-pin | Independently reviewed original Qwen 8K model/reference/revision pin |
+| --worker-toml | Sirius Worker configuration TOML (opaque exact bytes) |
+| --worker-service | Sirius systemd Worker unit file (opaque exact bytes) |
+| --control-toml | Control daemon TOML (opaque exact bytes) |
+
+The last three opaque inputs are snapshotted and hashed, **not**
+semantically audited. Additional systemd drop-ins, separate
+environment/secret files, Nix profile references, and the GGUF itself
+are **not included** and must be inventoried and protected separately.
+The reviewed pin is an operator trust boundary and does not rehash
+16GB of model bytes or independently sign provenance.
+
+First check without writing:
+
+    PYTHONPATH=src python3 tools/qwen_8k_rollback_snapshot.py check \
+      --runtime /private/runtime.json \
+      --serving /private/serving.json \
+      --catalog /private/control-catalog.json \
+      --reviewed-pin /private/reviewed-pin.json \
+      --worker-toml /private/worker.toml \
+      --worker-service /private/astrumweaver-worker.service \
+      --control-toml /private/control.toml
+
+After separate operator approval for private backup file creation,
+replace check with capture using the same arguments. The tool creates
+an unpredictable new /tmp/tsumgi-qwen8k-rollback-* directory with
+owner-only permissions and writes the seven exact input byte streams
+plus a digest/size receipt. Files are opened without following
+final-component symlinks; directory and files use exclusive creation.
+Sources are re-read after copying to detect changes in that interval.
+Standard deletion **does not securely erase** these contents. /tmp is
+not a durable backup across reboots, so an operator-managed durable,
+protected copy is required before any live 12K cutover. Do **not**
+create a public CI artifact or commit the snapshot to Git.
+
+Then verify the chosen private snapshot:
+
+    PYTHONPATH=src python3 tools/qwen_8k_rollback_snapshot.py verify \
+      --snapshot-dir /tmp/tsumgi-qwen8k-rollback-EXAMPLE
+
+    PYTHONPATH=src python3 tools/qwen_8k_rollback_snapshot.py rehearse \
+      --snapshot-dir /tmp/tsumgi-qwen8k-rollback-EXAMPLE
+
+verify compares each file with the receipt's size and SHA-256,
+checks the required file set and permissions, and loads the baseline
+through TSUMGI's actual 8K Serving/Runtime/Control validators.
+rehearse also copies those seven files into a temporary directory,
+verifies bytes and Qwen identity, and removes that disposable directory.
+It **never** writes to /etc, a systemd unit, Nix profile or Control.
+
+**The receipt is not authenticated.** Someone who can rewrite both
+files and receipt can make hashes agree. Independent file provenance
+review and a protected backup repository remain necessary. A successful
+rehearse proves byte-level restoration **only into a sandbox**, not
+that a live Worker/Control will restart after replacing those files.
+
+### Mandatory independent rollback gates
+
+- Confirm exact installed Sirius native Qwen generation-3 Nix profile
+  and **pin its Store closure against garbage collection** through
+  the approved operator mechanism. Nix generation history alone does
+  not guarantee the old build remains accessible. Never assume
+  generation 2 or its earlier package still exists.
+- Independently preserve the approved Qwen model artifact, original
+  model SHA-256 receipt, systemd drop-ins/environment, current Worker
+  unit/config, Runtime/Serving manifests, Control Catalog and
+  compatible client limit/Agent settings. Avoid bearer secrets in
+  public logs, issues or PR artifacts.
+- Record pre-cutover nonterminal Jobs and immutable
+  DeploymentIdentity/ServingContract/LogicalProfile revisions.
+  **Stop admissions/drain** under a separately authorized maintenance
+  procedure before changing any live serving identity.
+- Rehearse the **actual** 8K runtime restoration, Worker registration,
+  Control catalog consistency, OpenCode limit reconciliation,
+  Chat/Tool E2E and rollback under a separately authorized
+  service-impacting window. The source-only CLI cannot do that.
+- Any 12K candidate with peak free VRAM below 2 GiB per GPU,
+  CUDA/OOM/restart, identity mismatch or Chat/Tool failure must abort
+  and restore the full affected Worker/Control/client revision set
+  to 8K; never silently fall back to Bonsai or another model.
+
+The receipt explicitly records signed_or_authenticated=false,
+nix_runtime_closure_backed_up=false and
+BACKUP_ONLY_NOT_RESTORED. These are **deliberate negative claims**
+and may not be silently waived. **Production remains at 8K.**
