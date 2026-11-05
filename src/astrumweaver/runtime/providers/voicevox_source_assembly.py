@@ -139,22 +139,26 @@ class VoicevoxSourceAssemblyReview:
             raise VoicevoxSourceAssemblyError() from None
 
 
-def _bound_launch_args(args: tuple[str, ...], port: int) -> bool:
-    """Conservative source-only port/host token convention.
+def _bound_launch_args(
+    args: tuple[str, ...], port: int, auxiliary_path: str | None
+) -> bool:
+    """Require an explicit port switch or pinned script's positional port.
 
-    Native VOICEVOX CLI flags still require later operator qualification.
-    Requiring an explicit target port here blocks a silent fixed-argv/config
-    mismatch but does not claim that the native binary honors its arguments.
+    Matching any unrelated argument equal to the port was not proof of a
+    launch endpoint declaration. This is still a conservative source check;
+    the native binary's complete CLI semantics require later qualification.
     """
     target = str(port)
-    if target not in args and f"--port={port}" not in args:
-        return False
+    explicit_port = False
     for index, arg in enumerate(args):
         if arg in ("--port", "-p"):
             if index + 1 >= len(args) or args[index + 1] != target:
                 return False
-        elif arg.startswith("--port=") and arg != f"--port={port}":
-            return False
+            explicit_port = True
+        elif arg.startswith("--port="):
+            if arg != f"--port={port}":
+                return False
+            explicit_port = True
         elif arg in ("--host", "--listen"):
             if index + 1 >= len(args) or args[index + 1] != "127.0.0.1":
                 return False
@@ -163,7 +167,16 @@ def _bound_launch_args(args: tuple[str, ...], port: int) -> bool:
             and arg.split("=", 1)[1] != "127.0.0.1"
         ) or arg in ("0.0.0.0", "::", "::1"):
             return False
-    return True
+
+    # The existing disposable test runner consumes one adjacent positional
+    # port after a SHA-256-pinned auxiliary Python script. This is not an
+    # authorization for arbitrary native arguments.
+    positional = False
+    if auxiliary_path is not None:
+        positions = [i for i, arg in enumerate(args) if arg == auxiliary_path]
+        if len(positions) == 1 and positions[0] + 1 < len(args):
+            positional = args[positions[0] + 1] == target
+    return explicit_port or positional
 
 
 def review_voicevox_source_assembly(
@@ -180,6 +193,18 @@ def review_voicevox_source_assembly(
         raise VoicevoxSourceAssemblyError()
     if not enabled:
         return VoicevoxSourceAssemblyReview(enabled=False)
+    try:
+        return _review_enabled_voicevox_source_assembly(intent)
+    except Exception:  # noqa: BLE001 - never disclose a malformed private input
+        # Frozen dataclasses may still contain mutable mappings, or be
+        # reflectively changed after an initial review. Neither urllib nor
+        # attribute/type errors may escape with private configuration values.
+        raise VoicevoxSourceAssemblyError() from None
+
+
+def _review_enabled_voicevox_source_assembly(
+    intent: VoicevoxSourceAssemblyIntent | None,
+) -> VoicevoxSourceAssemblyReview:
     if (
         type(intent) is not VoicevoxSourceAssemblyIntent
         or type(intent.runtime) is not VoicevoxOwnedRuntimeSpec
@@ -208,7 +233,7 @@ def review_voicevox_source_assembly(
         or launch.stop_timeout_seconds > runtime.stop_timeout_seconds
         or http.request_timeout_seconds > runtime.adapter.synthesis_timeout_seconds
         or port is None
-        or not _bound_launch_args(launch.fixed_args, port)
+        or not _bound_launch_args(launch.fixed_args, port, launch.auxiliary_path)
     ):
         raise VoicevoxSourceAssemblyError()
 

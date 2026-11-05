@@ -502,3 +502,106 @@ async def test_real_model_file_mutation_before_start_is_denied_without_child(tmp
     assert runtime._process._proc is None
     assert not (await runtime.health()).ready
     await runtime.release()
+
+
+@pytest.mark.parametrize(
+    ("field_owner", "attribute", "tampered"),
+    (
+        ("runtime", "endpoint", "http://127.0.0.1:PRIVATE_SECRET_PORT"),
+        ("launch", "fixed_args", None),
+        ("http", "request_timeout_seconds", "PRIVATE_SECRET_TIMEOUT"),
+        ("worker", "resources", None),
+    ),
+)
+def test_mutated_frozen_input_is_rejected_with_fixed_redacted_error(
+    field_owner,
+    attribute,
+    tampered,
+):
+    """Reflective drift must not reveal private configuration in exceptions."""
+    intent = static_intent()
+    before = review_voicevox_source_assembly(enabled=True, intent=intent)
+    object.__setattr__(getattr(intent, field_owner), attribute, tampered)
+    for operation in (
+        lambda: review_voicevox_source_assembly(enabled=True, intent=intent),
+        before.compose_disposable_source_runtime,
+    ):
+        with pytest.raises(VoicevoxSourceAssemblyError) as error:
+            operation()
+        assert str(error.value) == "VOICEVOX source assembly review is invalid"
+        assert "PRIVATE_SECRET" not in str(error.value)
+
+
+def test_unrelated_positional_port_token_cannot_qualify_launch():
+    intent = static_intent()
+    mutated = replace(
+        intent,
+        launch=replace(intent.launch, fixed_args=("--not-an-engine-port", "51000")),
+    )
+    with pytest.raises(VoicevoxSourceAssemblyError):
+        review_voicevox_source_assembly(enabled=True, intent=mutated)
+
+
+def test_reflective_multi_field_drift_does_not_bypass_review_digest():
+    intent = static_intent()
+    reviewed = review_voicevox_source_assembly(enabled=True, intent=intent)
+    # Keep the two executable paths internally consistent while drifting
+    # both values away from the originally approved configuration.
+    object.__setattr__(intent.runtime, "executable_path", "/opt/private/unreviewed")
+    object.__setattr__(intent.launch, "executable_path", "/opt/private/unreviewed")
+    # The new declaration is still self-consistent, but no longer the
+    # reviewed version. An assembly review never constitutes an authorization.
+    drift = review_voicevox_source_assembly(enabled=True, intent=intent)
+    assert drift.assembly_digest != reviewed.assembly_digest
+    with pytest.raises(VoicevoxSourceAssemblyError):
+        reviewed.compose_disposable_source_runtime()
+
+
+def test_disposable_source_constructor_makes_no_file_socket_or_process_io(
+    monkeypatch,
+):
+    import asyncio
+    import socket
+
+    intent = static_intent()
+    reviewed = review_voicevox_source_assembly(enabled=True, intent=intent)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("disposable constructor attempted I/O")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("builtins.open", forbidden)
+        patch.setattr(os, "open", forbidden)
+        patch.setattr(os, "stat", forbidden)
+        patch.setattr(Path, "read_bytes", forbidden)
+        patch.setattr(socket, "socket", forbidden)
+        patch.setattr(asyncio, "create_subprocess_exec", forbidden)
+        runtime = reviewed.compose_disposable_source_runtime()
+        assert runtime._process._proc is None
+        assert runtime._state is RuntimeHealthState.STOPPED
+    assert not reviewed.can_apply
+
+
+def test_pinned_auxiliary_port_must_be_directly_adjacent():
+    intent = static_intent()
+    pin = intent.runtime.adapter.engine_artifact_sha256
+    auxiliary = "/opt/private/pinned-runner.py"
+    normal = replace(
+        intent.launch,
+        fixed_args=("-I", "-u", auxiliary, "51000"),
+        auxiliary_path=auxiliary,
+        auxiliary_sha256=pin,
+    )
+    assert (
+        review_voicevox_source_assembly(
+            enabled=True, intent=replace(intent, launch=normal)
+        ).status
+        == "review_only_blocked"
+    )
+    unrelated = replace(
+        normal, fixed_args=("-I", "-u", auxiliary, "--unrelated", "51000")
+    )
+    with pytest.raises(VoicevoxSourceAssemblyError):
+        review_voicevox_source_assembly(
+            enabled=True, intent=replace(intent, launch=unrelated)
+        )

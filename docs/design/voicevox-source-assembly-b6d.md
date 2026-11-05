@@ -31,7 +31,7 @@ revision, and provider identity. B6d additionally requires:
   selection, no automatic download, no implicit fallback.
 
 An assembly_digest hashes the review digest and static launch/HTTP config,
-including private path and fixed argv without displaying them. It is not
+including private path and fixed argv without displaying them. Reflectively mutated fields (including an invalid port string) are rejected with one fixed redacted error, never exposing underlying parser exceptions. It is not
 an HMAC, signature, actual file digest, license proof, or authorization.
 Captured mutable inputs are re-reviewed before disposable construction to
 reject changes. Review serialization allowlists only public-safe status
@@ -48,7 +48,7 @@ only. It is not registered or exported as a shared RuntimeProvider.
 
 Disposable tests cover disabled-mode noninspection, mismatched profiles,
 provider identity, Worker/host and CPU-only resource contract, endpoint,
-port and argv mismatch, model/auxiliary SHA pins, no leaked private values,
+port and argv mismatch (unrelated bare numeric arguments do not count as a configured port), model/auxiliary SHA pins, no leaked private values,
 review drift, and Style-Bert substitution rejection. A synthetic local Linux
 HTTP subprocess with actual PID/socket demonstrates STOPPED → READY →
 Japanese-text-to-fake-WAV ArtifactRef, then bounded cleanup. Negative tests
