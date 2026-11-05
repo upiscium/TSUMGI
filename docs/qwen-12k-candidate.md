@@ -267,3 +267,47 @@ The receipt explicitly records signed_or_authenticated=false,
 nix_runtime_closure_backed_up=false and
 BACKUP_ONLY_NOT_RESTORED. These are **deliberate negative claims**
 and may not be silently waived. **Production remains at 8K.**
+
+
+## R3: read-only Nix closure availability preflight
+
+The running Sirius Qwen 8K native Nix profile currently points to the
+generation-3 store output. A direct, read-only Nix query on November 5
+found **25 current requisites, zero missing Store paths and one current
+profile root reference**. This is a CURRENT reachability result only:
+after an operator switches that profile to a new generation, the
+old generation may lose its root and become eligible for garbage collection.
+The historical Qwen generation 2 remains unavailable.
+
+The source-only companion preflight
+tools/qwen_8k_nix_preflight.py is restricted to the known exact
+Sirius runtime profile path and to Nix read-only query operations:
+
+    PYTHONPATH=src python3 tools/qwen_8k_nix_preflight.py --read-only
+
+On a host where that profile is installed, it resolves the current
+profile Store output, calls nix-store --query --requisites and
+nix-store --query --roots, checks each referenced Store path exists,
+rejects empty/duplicated/malformed closure data, and reports counts
+without printing Store filenames or model paths. It **does not**
+run garbage collection, add or remove Nix GC roots, switch generations,
+realise Store outputs, change model files or restart services.
+
+The result always reports independent_gcroot_verified=false,
+old_generation_rollback_verified=false and
+live_service_restore_verified=false. A current profile root is not
+an independently preserved rollback root. The script does not
+cryptographically attest the runtime model or guarantee that another
+user will not change the profile immediately after the check.
+
+Before an authorized 12K maintenance window, the operator must
+separately select and protect a stable direct Store root for the
+currently accepted **8K generation-3 output**, verify the exact root
+still points to that original Store item, establish a durable
+configuration/model backup, and complete a real 8K restoration
+rehearsal. Those operations are NOT performed by this source tool
+or authorized by this PR.
+
+This preflight is intentionally independent from the seven/nine-file
+snapshot command: it verifies the native Nix closure existence,
+not the completeness of Worker/Control configuration snapshots.
