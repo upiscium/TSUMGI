@@ -624,6 +624,7 @@ class LlamaCppSubprocessController:
         self.flash_attn = flash_attn
         self._process: asyncio.subprocess.Process | None = None
         self._lifecycle_lock = asyncio.Lock()
+        self._stop_incomplete = False
 
     @property
     def running(self) -> bool:
@@ -733,6 +734,10 @@ class LlamaCppSubprocessController:
 
     async def start(self) -> None:
         async with self._lifecycle_lock:
+            if self._stop_incomplete:
+                raise RuntimeError(
+                    "previous owned llama.cpp shutdown has not completed"
+                )
             if self._process is not None:
                 if self._process.returncode is None:
                     return
@@ -793,6 +798,9 @@ class LlamaCppSubprocessController:
             process = self._process
             if process is None:
                 return
+            # Never admit a new GPU launch after a failed or cancelled stop,
+            # including when the immediate wrapper is still alive.
+            self._stop_incomplete = True
             pgid = process.pid
             if type(pgid) is not int or pgid <= 1:
                 raise RuntimeError("owned llama.cpp process group identity unavailable")
@@ -815,6 +823,7 @@ class LlamaCppSubprocessController:
                     self._signal_group(pgid, signal.SIGKILL)
                 raise
             self._process = None
+            self._stop_incomplete = False
 
 
 class LlamaCppExecutor(JobExecutor):

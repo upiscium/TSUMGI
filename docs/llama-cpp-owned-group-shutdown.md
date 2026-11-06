@@ -28,7 +28,10 @@ has exited, `start()` rejects a new native launch while the previous
 process owner remains bound, until `stop()` successfully verifies group
 cleanup and clears ownership. Launch and shutdown are serialized by a
 per-controller async lock, so a concurrent stop cannot race an
-in-progress spawn. Cancellation of shutdown sends group-scoped SIGKILL
+in-progress spawn. An attempted stop marks shutdown incomplete until
+group disappearance is verified; even a still-running wrapper cannot
+be silently re-admitted if that stop failed or was cancelled. A later
+successful explicit stop clears that fence. Cancellation sends group-scoped SIGKILL
 as a best-effort last resort and propagates cancellation **without**
 claiming a successful release.
 

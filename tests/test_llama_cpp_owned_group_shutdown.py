@@ -191,6 +191,55 @@ async def test_failed_group_cleanup_preserves_ownership_and_reports_failure(tmp_
 
 
 @pytest.mark.asyncio
+async def test_failed_shutdown_fences_restart_even_if_wrapper_still_running(
+    tmp_path, monkeypatch,
+):
+    proc = controller(fixture_script(tmp_path))
+
+    class Previous:
+        pid = 567891
+        returncode = None
+
+        async def wait(self):
+            return 0
+
+    owner = Previous()
+    proc._process = owner
+    state = {"exists": True}
+    monkeypatch.setattr(proc, "_group_exists", lambda _pgid: state["exists"])
+    monkeypatch.setattr(proc, "_signal_group", lambda *_args: None)
+
+    async def failed_wait(_process, _pgid, _timeout):
+        return False
+
+    monkeypatch.setattr(proc, "_wait_group_quiet", failed_wait)
+    with pytest.raises(RuntimeError, match="process group did not stop"):
+        await proc.stop()
+    assert proc._stop_incomplete is True
+
+    async def no_new_spawn(*args, **kwargs):
+        pytest.fail("cannot spawn or re-admit while stop is incomplete")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", no_new_spawn)
+    with pytest.raises(RuntimeError, match="shutdown has not completed"):
+        await proc.start()
+    assert proc._process is owner
+
+    # An explicit second stop may clear ownership once the old group is
+    # independently observed absent and its immediate wrapper has exited.
+    state["exists"] = False
+    owner.returncode = 0
+
+    async def quiet_wait(_process, _pgid, _timeout):
+        return True
+
+    monkeypatch.setattr(proc, "_wait_group_quiet", quiet_wait)
+    await proc.stop()
+    assert proc._process is None
+    assert proc._stop_incomplete is False
+
+
+@pytest.mark.asyncio
 async def test_broken_group_identity_denies_unscoped_termination(tmp_path):
     proc = controller(fixture_script(tmp_path))
     class Broken:
@@ -295,6 +344,9 @@ async def test_stop_cancellation_sends_owned_kill_without_claiming_release(
         (owner.pid, signal.SIGKILL),
     ]
     assert proc._process is owner
+    assert proc._stop_incomplete is True
+    with pytest.raises(RuntimeError, match="shutdown has not completed"):
+        await proc.start()
 
 
 @pytest.mark.asyncio
