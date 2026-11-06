@@ -24,12 +24,31 @@ UUIDS = [
 
 def sample(a: int = 4350, b: int = 3349, *, reverse: bool = False) -> bytes:
     values = [
-        f"{UUIDS[0]}, 11912, {a}, {11912 - a}",
-        f"{UUIDS[1]}, 11912, {b}, {11912 - b}",
+        f"{UUIDS[0]}, 12288, {a}, {12288 - a - 377}",
+        f"{UUIDS[1]}, 12288, {b}, {12288 - b - 378}",
     ]
     if reverse:
         values.reverse()
     return ("\n".join(values) + "\n").encode("ascii")
+
+
+def test_real_sirius_nvml_reserves_377_and_378_mib_outside_free_and_used():
+    # Read-only physical probe on 2026-11-06 during approved 12K canary.
+    # The old "used + free == total +/- 16" parser rejected these real values.
+    raw = (
+        f"{UUIDS[0]}, 12288, 4212, 7699\n"
+        f"{UUIDS[1]}, 12288, 3209, 8701\n"
+    ).encode("ascii")
+    assert module.parse_sample(raw, UUIDS) == {
+        UUIDS[0]: 4212, UUIDS[1]: 3209,
+    }
+
+
+@pytest.mark.parametrize("used", [1000, 10000])
+def test_invalid_large_or_negative_driver_reservation_fails_closed(used):
+    raw = sample().replace(b"7561", str(used).encode("ascii"))
+    with pytest.raises(ValueError, match="inconsistent-memory-counts"):
+        module.parse_sample(raw, UUIDS)
 
 
 def test_crlf_is_accepted_without_normalizing_malformed_records():
@@ -50,16 +69,16 @@ def test_parse_exact_two_expected_gpus_with_stable_uuid_order():
     b"nonsense\n",
     sample() + b"\n",
     sample().replace(b"\n", b"\r"),
-    sample() + b"GPU-00000000-0000-0000-0000-000000000003, 11912, 3000, 8912\n",
+    sample() + b"GPU-00000000-0000-0000-0000-000000000003, 12288, 3000, 8912\n",
     sample().replace(UUIDS[1].encode(), UUIDS[0].encode()),
     sample().replace(UUIDS[1].encode(), b"GPU-00000000-0000-0000-0000-000000000003"),
-    sample().replace(b"11912", b"11912.0"),
+    sample().replace(b"12288", b"12288.0"),
     sample().replace(b"4350", b"-1"),
     sample().replace(b"4350", b"20000"),
     sample().replace(b"4350", b"2000, 5"),
     sample().replace(b"4350", b"n/a"),
     sample().replace(b"4350", b"\xff"),
-    sample().replace(b"7562", b"3"),
+    sample().replace(b"7561", b"3"),
     b"x" * 9000,
 ])
 def test_parse_untrusted_or_incomplete_samples_fail_closed(raw):

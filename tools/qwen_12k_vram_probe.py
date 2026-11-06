@@ -62,8 +62,12 @@ def parse_sample(output: bytes, expected_uuids: Sequence[str]) -> dict[str, int]
         total, free, used = int(total_s), int(free_s), int(used_s)
         if not (2048 <= total <= 200000 and free <= total and used <= total):
             raise ValueError("memory-out-of-range")
-        # NVML reports integer MiB, with driver-specific MiB rounding.
-        if abs((free + used) - total) > 16:
+        # NVML's total framebuffer capacity is NOT necessarily used + free.
+        # On actual Sirius RTX 3060 devices, 377/378 MiB of driver-reserved
+        # memory is excluded from both. Reject negative or implausibly large
+        # reservations, without falsely rejecting that verified hardware.
+        reserved = total - free - used
+        if not 0 <= reserved <= 1024:
             raise ValueError("inconsistent-memory-counts")
         metrics[uuid] = free
     if set(metrics) != set(expected_uuids):

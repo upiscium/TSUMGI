@@ -425,3 +425,71 @@ systemd restarts, queued Job fencing, Control contract revisions, or
 actual 8K restoration. These mandatory acceptance gates must be
 reviewed **separately** with genuine live canary evidence and the
 operator-approved reverse-order rollback.
+
+## R8: bounded Sirius 12K native-only canary and exact 8K restoration (2026-11-06)
+
+The operator explicitly authorized a **temporary** Sirius Qwen 12K
+native canary and restoring the original 8K service; this is **not**
+approval to promote a 12K Control contract or change OpenCode settings.
+A 10-minute fail-safe systemd rollback timer was armed *before* the
+original Worker was stopped. Control and PostgreSQL remained unmodified.
+
+Pre-cutover: database query observed **zero nonterminal Jobs**. The
+current 8K runtime Wrapper command, Nix generation-3 GCroot, exact
+Runtime/Serving and Control source backups, model artifact size and two
+Sirius GPU UUIDs were independently checked. The original Worker
+`systemctl stop` did **not** finish gracefully: its native llama-server
+lingered and systemd reported stop **timeout** after approximately
+90 seconds. Both GPUs freed their allocations before the process was
+fully gone; the 12K process was not started until the 8K process exited.
+This is an operational shutdown issue to address before automated
+promotion; do not hide it behind the later successful restoration.
+
+A transient, **loopback-only**, single-slot instance of the **same pinned**
+Qwen native llama.cpp Wrapper, GGUF and two-GPU split was launched with
+`--ctx-size 12288` on a separate local canary port. Native
+`/slots` reported `n_ctx=12288`; `/health` and `/v1/models` gave 200.
+Exact model-native synthetic input counts of **7,841** and **10,052**
+were accepted with HTTP 200. The 10,052-token fresh prefill lasted about
+14 seconds and overlapped **98** valid NVML samples, with observed
+minimum free VRAM of **4,212 MiB** (GPU0) and **3,207 MiB** (GPU1).
+This satisfies the sampled **2,048 MiB floor** on both GPUs, but does
+not measure every possible instantaneous allocation, peak concurrency,
+or a long-duration production soak. A repeated 7,841-token request was
+KV-cache-assisted; do not misrepresent that short response as a new
+uncached full prefill.
+
+Synthetic native Tool Call → Tool Result and streaming Chat roundtrips
+also returned HTTP 200. The public 10,240-input Serving Contract,
+fail-closed Gateway admission, new immutable Deployment/Contract/Profile
+revisions, full Control end-to-end 12K admission and cancellation/auth
+cases were **not** exercised, because no 12K Control/Worker profiles were
+activated. The canary is therefore **native capacity evidence only**.
+
+**Rollback was actually performed:** the transient canary was stopped,
+the original Worker was restarted, `/slots` confirmed `n_ctx=8192`,
+native Chat and Worker `/ready` were HTTP 200, Control
+`/v1/{health,ready,models}` remained 200, 12/12 original Sirius/Control
+backed-up source files matched live sources, and nonterminal Jobs stayed
+at zero. The fail-safe timer was disarmed **after** verifying this recovery.
+The original 8K Nix GCroot and model weights were retained.
+
+**Read-only NVML parser correction:** Sirius's RTX 3060 NVML reported
+`memory.total=12288` but `total - used - free=377/378 MiB` due to
+reserved framebuffer capacity. Earlier R5–R7 test fixtures incorrectly
+assumed 16 MiB or less of discrepancy, causing the published script to
+reject valid samples. This R8 correction accepts a bounded nonnegative
+reserved amount up to 1,024 MiB while still validating both exact GPU
+UUIDs, dimensions, each sampled free amount and error behavior.
+An initial measurement attempt legitimately failed closed with 0 valid
+samples; the quoted 98-sample measurement used the corrected accounting
+formula in a temporary read-only process. No production telemetry
+claim is derived from the earlier failed sampler.
+
+**Decision:** Stage A 12K native single-slot capacity looks feasible
+under this bounded synthetic workload, but production-wide 12K remains
+**NOT QUALIFIED**. Next steps require independent source review of this
+correction, non-disruptive root-cause investigation of slow shutdown,
+actual reviewed contract identity/evidence construction, a separately
+approved coherent Gateway/Worker/Control cutover and its own rollback.
+Do not promote 16K based on this result.
