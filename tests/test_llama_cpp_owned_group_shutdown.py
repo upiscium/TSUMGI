@@ -368,3 +368,92 @@ async def test_two_simultaneous_starts_spawn_only_one_owned_process(tmp_path, mo
     await asyncio.gather(proc.start(), proc.start())
     assert count == 1
     assert proc._process is not None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_start_never_loses_a_spawned_owned_child(tmp_path, monkeypatch):
+    """Cancellation after OS spawn but before returned ownership must be fenced."""
+    proc = controller(fixture_script(tmp_path))
+    original_spawn = asyncio.create_subprocess_exec
+    spawned = asyncio.Event()
+    release = asyncio.Event()
+    state = {}
+
+    async def delayed_return(*args, **kwargs):
+        child = await original_spawn(*args, **kwargs)
+        state["child"] = child
+        spawned.set()
+        await release.wait()
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_return)
+    starter = asyncio.create_task(proc.start())
+    try:
+        await asyncio.wait_for(spawned.wait(), timeout=3)
+        assert os.getpgid(state["child"].pid) == state["child"].pid
+        starter.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(starter, timeout=6)
+        # A returned spawn must not be lost to cancellation. Either it was
+        # completely reaped or an incomplete owner remains fenced.
+        child = state["child"]
+        assert (not is_live(child.pid)) or (
+            proc._process is child and proc.shutdown_incomplete
+        ), "owned subprocess was leaked without fail-closed ownership"
+    finally:
+        child = state.get("child")
+        if child is not None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            await asyncio.wait_for(child.wait(), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_repeated_start_cancellation_keeps_late_owned_spawn_fenced(
+    tmp_path, monkeypatch,
+):
+    """A second CancelledError must not discard a late native child."""
+    proc = controller(fixture_script(tmp_path))
+    original_spawn = asyncio.create_subprocess_exec
+    spawned = asyncio.Event()
+    release = asyncio.Event()
+    state = {}
+
+    async def spawn_then_wait(*args, **kwargs):
+        child = await original_spawn(*args, **kwargs)
+        state["child"] = child
+        spawned.set()
+        await release.wait()
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_then_wait)
+    starter = asyncio.create_task(proc.start())
+    try:
+        await asyncio.wait_for(spawned.wait(), timeout=3)
+        starter.cancel()
+        await until(lambda: proc.shutdown_incomplete)
+        # Interrupt even the cancellation recovery's pending launch wait.
+        starter.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(starter, timeout=5)
+        assert proc.shutdown_incomplete
+
+        # The shielded late task still captures and SIGKILLs its child; an
+        # explicit cleanup re-verifies group disappearance and clears fence.
+        await until(lambda: proc._process is state["child"])
+        await asyncio.wait_for(proc.stop(), timeout=8)
+        assert proc._process is None
+        assert not proc.shutdown_incomplete
+        assert not is_live(state["child"].pid)
+    finally:
+        child = state.get("child")
+        if child is not None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            await asyncio.wait_for(child.wait(), timeout=5)

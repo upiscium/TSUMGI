@@ -29,6 +29,18 @@ controller reports an incomplete shutdown. In particular, an old native
 server that still answers an HTTP health check cannot be re-admitted
 as a healthy Deployment merely because its wrapper PID is still live.
 
+A further cancellation race was reproduced with an actual disposable
+subprocess: cancelling `start()` after the OS child had been spawned
+but before `create_subprocess_exec()` returned caused the native-like
+child to be left live with `_process=None`. The launch is now shielded
+inside a separate owned task. That task assigns the process to the
+controller before completing; cancellation marks shutdown incomplete
+and sends group-scoped SIGKILL to a late process. The caller also
+attempts bounded cleanup, while repeated cancellation retains the
+pending launch/owner and cannot silently authorize a new GPU process.
+The original failing reproduction and a repeated-cancellation scenario
+are tested with real no-GPU synthetic processes.
+
 An additional ownership gap is explicitly fenced: even if the wrapper
 has exited, `start()` rejects a new native launch while the previous
 process owner remains bound, until `stop()` successfully verifies group
@@ -78,7 +90,9 @@ CUDA or a listening network service and verify:
 - forced cleanup failure leaves the owner bound and raises an error;
 - wrapper exited but owner not released prevents another GPU launch;
 - concurrent spawn/stop and duplicate start attempts are serialized;
-- stop cancellation attempts group-scoped SIGKILL without clearing owner.
+- stop cancellation attempts group-scoped SIGKILL without clearing owner;
+- start cancellation after actual OS spawn retains/cleans late ownership;
+- repeated cancellation does not discard a pending launch task.
 
 Run the full existing llama.cpp provider regression tests and Nix
 evaluation before marking any PR ready. Independent review and one

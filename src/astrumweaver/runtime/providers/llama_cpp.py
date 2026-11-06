@@ -623,6 +623,7 @@ class LlamaCppSubprocessController:
         self.reasoning_off = reasoning_off
         self.flash_attn = flash_attn
         self._process: asyncio.subprocess.Process | None = None
+        self._launch_task: asyncio.Task[asyncio.subprocess.Process] | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._stop_incomplete = False
 
@@ -753,17 +754,54 @@ class LlamaCppSubprocessController:
             env = dict(os.environ)
             if self.gpu_uuids:
                 env["CUDA_VISIBLE_DEVICES"] = ",".join(self.gpu_uuids)
-            try:
-                # Private session/group covers the launcher and its native child.
-                self._process = await asyncio.create_subprocess_exec(
+            # The asynchronous OS spawn can finish *after* its caller has
+            # been cancelled. Execute it in a shielded task which binds the
+            # child to this owner before returning its result.
+            async def bind_spawn() -> asyncio.subprocess.Process:
+                process = await asyncio.create_subprocess_exec(
                     *self.command(),
                     env=env,
                     start_new_session=True,
                 )
+                self._process = process
+                if self._stop_incomplete:
+                    # The caller was cancelled before spawn completed:
+                    # never leave a newly created native child un-fenced.
+                    self._signal_group(process.pid, signal.SIGKILL)
+                return process
+
+            launch = asyncio.create_task(bind_spawn())
+            self._launch_task = launch
+            try:
+                await asyncio.shield(launch)
+            except asyncio.CancelledError:
+                self._stop_incomplete = True
+                # Preserve owner registration even when the process becomes
+                # live after the cancellation; no second GPU launch permitted.
+                try:
+                    process = await asyncio.shield(launch)
+                except asyncio.CancelledError:
+                    # A repeated cancellation cannot discard the launch
+                    # task: bind_spawn will still register/kill its result.
+                    raise
+                except Exception:
+                    # The spawn failed before a subprocess was returned.
+                    if self._process is None:
+                        self._stop_incomplete = False
+                    raise
+                if self._group_exists(process.pid):
+                    self._signal_group(process.pid, signal.SIGKILL)
+                if await self._wait_group_quiet(process, process.pid, 4.0):
+                    self._process = None
+                    self._stop_incomplete = False
+                raise
             except OSError as exc:
                 raise RuntimeError(
                     "failed to start llama.cpp server process"
                 ) from exc
+            finally:
+                if launch.done():
+                    self._launch_task = None
 
     @staticmethod
     def _group_exists(pgid: int) -> bool:
@@ -799,6 +837,20 @@ class LlamaCppSubprocessController:
 
     async def stop(self) -> None:
         async with self._lifecycle_lock:
+            launch = self._launch_task
+            if launch is not None:
+                # A cancelled start can still be completing OS spawn. Do not
+                # report a no-op stop while it may allocate a native process.
+                self._stop_incomplete = True
+                try:
+                    await asyncio.wait_for(asyncio.shield(launch), timeout=8.0)
+                except (asyncio.TimeoutError, OSError):
+                    raise RuntimeError(
+                        "owned llama.cpp launch not yet resolved for cleanup"
+                    ) from None
+                finally:
+                    if launch.done():
+                        self._launch_task = None
             process = self._process
             if process is None:
                 return
