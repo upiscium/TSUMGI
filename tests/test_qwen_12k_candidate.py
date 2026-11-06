@@ -13,8 +13,12 @@ import subprocess
 import sys
 from uuid import uuid4
 
+import httpx
 import pytest
 
+from astrumweaver.control import InMemoryControlRepository
+from astrumweaver.control.api import create_app
+from astrumweaver.gateway.api import create_chat_router
 from astrumweaver.gateway.chat import (
     CHAT_CATALOG_SCHEMA, CHAT_OPERATION_SCHEMA, LLAMA_CPP_CHAT_ADAPTER,
     ChatGatewayError, ChatProfileCatalog,
@@ -865,3 +869,84 @@ def test_synthetic_evidence_digests_are_not_production_attestations():
     with pytest.raises((ServingContractError, ValueError)):
         synthetic_revision_chain(draft, execution="PENDING_UNREVIEWED")
     assert draft["admission"] == "DENIED_PENDING_REVIEW_AND_REAL_CANARY"
+
+
+
+@pytest.mark.asyncio
+async def test_synthetic_12k_http_gateway_denies_unauthorized_oversized_without_jobs():
+    """Contract-shaped *fake* 12K profile, in-memory HTTP only. Not native E2E."""
+    old_runtime, old_serving, old_catalog = fixtures()
+    before = deepcopy((old_runtime, old_serving, old_catalog))
+    proposed = make_draft(old_runtime, old_serving, old_catalog)
+    _, synthetic, _ = synthetic_revision_chain(proposed)
+    repo = InMemoryControlRepository()
+    token = "synthetic-test-client-only"
+    app = create_app(
+        repo, client_token=token, worker_token="synthetic-test-worker-only",
+        maintenance_interval_seconds=60,
+    )
+    app.include_router(
+        create_chat_router(
+            repo, synthetic, client_auth="bearer", client_token=token,
+            poll_interval_seconds=0.005,
+        )
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://synthetic"
+    ) as client:
+        denied_models = await client.get("/v1/models")
+        denied_chat = await client.post(
+            "/v1/chat/completions",
+            json={"model": qwen.PROFILE_ID, "messages": [
+                {"role": "user", "content": "synthetic"}
+            ]},
+        )
+        assert denied_models.status_code == denied_chat.status_code == 401
+
+        headers = {"authorization": f"Bearer {token}"}
+        models = await client.get("/v1/models", headers=headers)
+        assert models.status_code == 200
+        data = models.json()["data"]
+        assert len(data) == 1
+        assert data[0]["id"] == qwen.PROFILE_ID
+        assert data[0]["x_astrumweaver"]["effective_limits"] == qwen.TARGET_LIMITS
+        new = synthetic.get(qwen.PROFILE_ID)
+        assert data[0]["x_astrumweaver"]["deployment_revision"] == (
+            new.resolved.deployment.revision
+        )
+
+        # Output budget is checked at Gateway pre-admission, before a
+        # job or any native tokenizer/model interaction.
+        for stream in (False, True):
+            bad_output = await client.post(
+                "/v1/chat/completions", headers=headers,
+                json={
+                    "model": qwen.PROFILE_ID,
+                    "messages": [{"role": "user", "content": "synthetic"}],
+                    "max_tokens": qwen.TARGET_LIMITS["output_tokens"] + 1,
+                    "stream": stream,
+                },
+            )
+            assert bad_output.status_code == 400
+            assert bad_output.json()["error"]["code"] == "output_limit_exceeded"
+
+        small = json.dumps({
+            "model": qwen.PROFILE_ID,
+            "messages": [{"role": "user", "content": "synthetic"}],
+            "max_tokens": 1,
+        }).encode()
+        too_large = small[:-1] + b" " * 65536 + b"}"
+        assert len(too_large) > qwen.TARGET_LIMITS["request_bytes"]
+        denied_bytes = await client.post(
+            "/v1/chat/completions", headers={
+                **headers, "content-type": "application/json",
+            }, content=too_large,
+        )
+        assert denied_bytes.status_code == 413
+        assert denied_bytes.json()["error"]["code"] == "request_too_large"
+
+    assert repo.list_jobs() == []
+    assert (old_runtime, old_serving, old_catalog) == before
+    # The synthetic profile remains deliberately unqualified: no real
+    # 12K runtime, Postgres, Worker, GPU, auth service or admission receipt.
+    assert proposed["admission"] == "DENIED_PENDING_REVIEW_AND_REAL_CANARY"
