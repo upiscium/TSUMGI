@@ -676,3 +676,43 @@ def test_unreadable_proc_member_must_not_look_like_empty_owned_group(monkeypatch
         group.has_live_members()
     with pytest.raises(RuntimeError, match="unable to inspect"):
         group.signal_members(signal.SIGTERM)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_spawn_oserror_without_handle_remains_fenced(
+    tmp_path, monkeypatch,
+):
+    """An OSError without a process handle cannot prove descendants never ran."""
+    proc = controller(fixture_script(tmp_path))
+    entered = asyncio.Event()
+    release_spawn = asyncio.Event()
+
+    async def fails_before_creating_child(*args, **kwargs):
+        entered.set()
+        await release_spawn.wait()
+        raise OSError("synthetic exec error before process creation")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fails_before_creating_child)
+    starter = asyncio.create_task(proc.start())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    starter.cancel()
+    await until(lambda: proc.shutdown_incomplete)
+    # Second cancellation abandons the caller while shielded spawn still runs.
+    starter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(starter, timeout=2)
+    release_spawn.set()
+    await until(lambda: proc._launch_task is not None and proc._launch_task.done())
+    assert proc._process is None
+    assert proc._owned_group is None
+
+    # The caller has no way to prove whether an internal launcher briefly
+    # executed (and spawned a descendant) before reporting OSError. Fail
+    # closed rather than grant a second GPU process on incomplete evidence.
+    with pytest.raises(RuntimeError, match="launch not yet resolved"):
+        await proc.stop()
+    assert proc._process is None
+    assert proc._launch_task is None
+    assert proc.shutdown_incomplete
+    with pytest.raises(RuntimeError, match="shutdown has not completed"):
+        await proc.start()

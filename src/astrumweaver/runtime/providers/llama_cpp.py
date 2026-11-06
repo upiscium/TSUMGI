@@ -862,6 +862,9 @@ class LlamaCppSubprocessController:
                 try:
                     await asyncio.wait_for(asyncio.shield(launch), timeout=8.0)
                 except (asyncio.TimeoutError, OSError):
+                    # OSError without a returned Process handle is NOT proof
+                    # that no wrapper descendant was ever spawned. Keep the
+                    # owner fenced rather than accepting an unverified stop.
                     raise RuntimeError(
                         "owned llama.cpp launch not yet resolved for cleanup"
                     ) from None

@@ -29,6 +29,22 @@ controller reports an incomplete shutdown. In particular, an old native
 server that still answers an HTTP health check cannot be re-admitted
 as a healthy Deployment merely because its wrapper PID is still live.
 
+A repeated cancellation can also race a failing OS spawn. Even if
+`create_subprocess_exec()` eventually raises `OSError` **without
+returning a Process handle**, its internal subprocess launcher could
+have briefly executed and forked native descendants before the error.
+The controller therefore deliberately remains **fail closed**: a later
+`stop()` cannot certify cleanup merely from that exception and denies
+the next GPU launch. A disposable regression verifies this conservative
+boundary. Recovery from this unverified state requires a higher-trust
+service/cgroup containment proof or an operator-controlled restart,
+not a synthetic assumption of "no children".
+
+Kernel identity semantics: Linux `pidfd_send_signal(2)` documents that
+`/proc/pid` directory FDs are stable references to individual processes,
+but this does *not* attest to all descendants of a failed unreturned
+spawn: https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html
+
 A further cancellation race was reproduced with an actual disposable
 subprocess: cancelling `start()` after the OS child had been spawned
 but before `create_subprocess_exec()` returned caused the native-like
