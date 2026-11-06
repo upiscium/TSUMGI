@@ -39,7 +39,10 @@ and sends group-scoped SIGKILL to a late process. The caller also
 attempts bounded cleanup, while repeated cancellation retains the
 pending launch/owner and cannot silently authorize a new GPU process.
 The original failing reproduction and a repeated-cancellation scenario
-are tested with real no-GPU synthetic processes.
+are tested with real no-GPU synthetic processes. The successful
+cancelled-launch cleanup also closes its captured `/proc` leader FD;
+this was previously leaked even after the native child was reaped,
+and is now asserted in the disposable regression.
 
 An additional ownership gap is explicitly fenced: even if the wrapper
 has exited, `start()` rejects a new native launch while the previous

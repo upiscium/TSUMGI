@@ -400,6 +400,18 @@ async def test_cancelled_start_never_loses_a_spawned_owned_child(tmp_path, monke
     """Cancellation after OS spawn but before returned ownership must be fenced."""
     proc = controller(fixture_script(tmp_path))
     original_spawn = asyncio.create_subprocess_exec
+    original_capture = OwnedPosixGroup.capture
+    captured_anchors = []
+
+    def track_capture(pid):
+        anchor = original_capture(pid)
+        captured_anchors.append(anchor)
+        return anchor
+
+    monkeypatch.setattr(
+        "astrumweaver.runtime.providers.llama_cpp.OwnedPosixGroup.capture",
+        track_capture,
+    )
     spawned = asyncio.Event()
     release = asyncio.Event()
     state = {}
@@ -426,6 +438,13 @@ async def test_cancelled_start_never_loses_a_spawned_owned_child(tmp_path, monke
         assert (not is_live(child.pid)) or (
             proc._process is child and proc.shutdown_incomplete
         ), "owned subprocess was leaked without fail-closed ownership"
+        if proc._process is None:
+            # A successfully cleaned, cancelled launch must release the
+            # anchored /proc fd. Otherwise repeated cancels leak fds.
+            assert proc._owned_group is None
+            assert not proc.shutdown_incomplete
+            assert len(captured_anchors) == 1
+            assert captured_anchors[0].leader_fd == -1
     finally:
         child = state.get("child")
         if child is not None:

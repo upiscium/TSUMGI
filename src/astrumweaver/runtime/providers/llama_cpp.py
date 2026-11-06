@@ -805,6 +805,12 @@ class LlamaCppSubprocessController:
                 if self._group_exists(process.pid):
                     self._signal_group(process.pid, signal.SIGKILL)
                 if await self._wait_group_quiet(process, process.pid, 4.0):
+                    # Successful late-spawn cancellation must close the
+                    # capture-time /proc fd as well as release the process.
+                    # Otherwise each interrupted launch leaks an fd.
+                    if self._owned_group is not None:
+                        self._owned_group.close()
+                        self._owned_group = None
                     self._process = None
                     self._stop_incomplete = False
                 raise
