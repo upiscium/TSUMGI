@@ -12,6 +12,51 @@
 - Stop requires the exact launch nonce, checks the returned direct child's PID generation, UID and process group before SIGTERM, bounded wait, SIGKILL if required, and direct-child reaping. **Readiness additionally requires the pinned executable inode and fixed argv.** If the already-owned child re-execs to another executable (for example through a Nix/Python launcher), the runtime must reject READY but still stop that same child generation. Requiring the original executable inode at the *stop* boundary would fail to reap the child and leave an orphan; the split identity policies are deliberate. It also checks that the configured port is no longer listening before reporting success. If ownership cannot be verified it fails closed rather than signaling a potentially foreign process. Startup cancellation returns to the caller without waiting indefinitely for a delayed subprocess spawn. The same live asyncio event loop retains a pending spawn-and-reap task: if process creation eventually completes, it kills and reaps that returned subprocess. During this interval the controller permanently denies new launch, endpoint ownership and readiness; stop_owned times out with a cleanup-uncertain error rather than claiming success, and only returns normally after late reaping has completed. **This is a bounded runtime response, not a guarantee of child cleanup if Worker/event loop itself dies while spawn is still pending.** If a late subprocess creation reports an exception **without returning a child handle**, cleanup remains unverified and stop fails closed rather than claiming there was nothing to reap.
 - Filesystem and /proc reads are off the Worker asyncio event loop. Errors are fixed and redact paths, argv, PIDs, tokens, source text and native stderr.
 
+## #215 R4 — bounded stop/reap and reconciliation (source only)
+
+Run `TSUMGI-215-R4-20261106` starts from main
+`6d4f2df0d68cdd7238b8a0bbfa233965473fd7be`. R4 addresses two source-observed
+failure models: competing nested cleanup timeouts and external cancellation
+leaving STOPPED before cleanup was verified. Deliberately delayed post-exit
+inspection demonstrates the timeout mechanism; the cause of the historical
+**naturally intermittent failure remains unknown**.
+
+`stop_owned` establishes one loop-time cleanup deadline before acquiring its
+lock. It covers joining previous inspection work, generation/UID/PGID checks,
+TERM, a grace wait of half the remaining budget, conditional KILL, direct-child
+reap and fresh all-interface listener absence proof. No new full timeout is
+added after TERM. The launch stop budget must not exceed the runtime budget,
+including direct construction without source assembly. ManagedRuntime delegates
+this bounded controller contract without a competing outer process-stop timeout.
+An arbitrary injected controller that does not honor the contract is unqualified.
+
+A direct-child returncode alone is insufficient: `wait()` must complete and the
+configured port must be absent. If the child is observed exited after generation
+inspection, signaling is skipped but reap and port proof are still required.
+A live identity mismatch denies signaling. Changed executable/argv still denies
+READY without preventing cleanup of the exact recorded child generation. A
+foreign listener or rebind is never adopted or signaled and prevents successful
+cleanup while it remains present.
+
+Timeout/cancellation retains the owned handle, nonce and outstanding reap or
+inspection tasks. A shield preserves these tracked tasks, but the stop deadline
+bounds the caller's await. Cancelling `to_thread` cannot stop its OS thread, so
+the controller retains at most one cleanup inspection. Explicit same-nonce
+reconciliation must join it before starting another and perform a **fresh**
+post-reap scan; an old absence result is not reused as proof. Late task completion
+alone never clears ownership or restores admission. Failed/cancelled controllers
+permanently deny new launch/readiness even after successful reconciliation.
+Verified normal cleanup retains only its nonce receipt for idempotent repeat
+stop; a fresh normal launch invalidates that receipt.
+
+Newborn/late-spawn cleanup also bounds kill, reap and listener proof before
+clearing a returned handle. The existing delayed-spawn task may still wait for
+the subprocess creator to return one: `stop_owned` has a bounded response, not a
+guarantee that an unresponsive OS operation or a dead event loop can be cleaned
+up. Retained work requires the same live controller/event loop and explicit
+bounded reconciliation; a failed late-spawn task does not prove cleanup.
+pidfd/cgroup/descendant hardening remains a future operator gate, not an R4 change.
+
 ## Synthetic acceptance
 
 Tests launch a disposable **Python TCP listener** under an isolated Linux sandbox; they exercise genuine OS PID, UID, process groups, /proc socket inode correlation, stdout/stderr disconnection, start/stop, forced kill/reap, heartbeat responsiveness and model/source pin validation. No real VOICEVOX engine, model, voice, live GPU, production service or User text is accessed.

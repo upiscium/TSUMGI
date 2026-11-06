@@ -464,3 +464,216 @@ async def test_late_stage_receipt_after_cancel_cannot_publish_success(tmp_path):
         len(media.calls) == 1
     )  # Upload may already have occurred; never terminal success.
     assert not (await runtime.health()).ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["lock", "drain", "process", "close"])
+async def test_external_cleanup_cancel_latches_failure_and_retains_owned_nonce(
+    tmp_path, monkeypatch, phase
+):
+    runtime, engine, process, _ = make_runtime(tmp_path)
+    await runtime.start()
+    nonce = runtime._nonce
+    entered = asyncio.Event()
+    unblock = asyncio.Event()
+    cached = runtime.executor()
+    active = None
+
+    async def gated_stop(*, nonce):
+        entered.set()
+        await unblock.wait()
+        process.stop_nonces.append(nonce)
+        process.obs = None
+
+    async def gated_close():
+        entered.set()
+        await unblock.wait()
+        engine.closed += 1
+
+    async def stubborn_job():
+        entered.set()
+        try:
+            await unblock.wait()
+        except asyncio.CancelledError:
+            await unblock.wait()
+
+    if phase == "lock":
+        await runtime._lock.acquire()
+    elif phase == "drain":
+        active = asyncio.create_task(stubborn_job())
+        runtime._executor._inflight["test-only"] = active
+        await entered.wait()
+    elif phase == "process":
+        monkeypatch.setattr(process, "stop_owned", gated_stop)
+    else:
+        monkeypatch.setattr(engine, "close", gated_close)
+    task = asyncio.create_task(
+        runtime.release() if phase == "close" else runtime.stop()
+    )
+    try:
+        if phase in ("process", "close"):
+            await asyncio.wait_for(entered.wait(), 1)
+        else:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert (await runtime.health()).state is RuntimeHealthState.FAILED
+        assert runtime._cleanup_uncertain
+        assert not runtime._released
+        if phase != "close":
+            assert runtime._nonce == nonce
+        with pytest.raises(VoicevoxRuntimeFailure):
+            await asyncio.wait_for(runtime.start(), 0.5)
+        with pytest.raises(VoicevoxRuntimeFailure):
+            await cached.execute_audio(job(), FakeMedia())
+    finally:
+        unblock.set()
+        if phase == "lock":
+            runtime._lock.release()
+        if active is not None:
+            await active
+            runtime._executor._inflight.pop("test-only", None)
+        await runtime.release()
+    assert runtime._nonce is None
+    assert runtime._released
+    # Reconciliation is cleanup, never recovery of this failed instance.
+    assert (await runtime.health()).state is RuntimeHealthState.FAILED
+    await runtime.release()
+    assert engine.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_in_progress_is_not_verified_stopped_and_stale_probe_cannot_admit(
+    tmp_path, monkeypatch
+):
+    runtime, _engine, process, _ = make_runtime(tmp_path)
+    await runtime.start()
+    entered = asyncio.Event()
+    unblock = asyncio.Event()
+    original = process.stop_owned
+
+    async def gated_stop(*, nonce):
+        entered.set()
+        await unblock.wait()
+        await original(nonce=nonce)
+
+    monkeypatch.setattr(process, "stop_owned", gated_stop)
+    task = asyncio.create_task(runtime.stop())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        state = await runtime.health()
+        assert not state.ready
+        assert state.state is not RuntimeHealthState.STOPPED
+        with pytest.raises(VoicevoxRuntimeFailure):
+            runtime.executor()
+    finally:
+        unblock.set()
+        await task
+    assert (await runtime.health()).state is RuntimeHealthState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_late_ready_probe_cannot_overwrite_pending_stop(tmp_path, monkeypatch):
+    runtime, engine, process, _ = make_runtime(tmp_path)
+    await runtime.start()
+    probe_entered = asyncio.Event()
+    stop_entered = asyncio.Event()
+    probe_unblock = asyncio.Event()
+    stop_unblock = asyncio.Event()
+    original_probe = engine.bounded_json
+    original_stop = process.stop_owned
+
+    async def gated_probe(**kwargs):
+        probe_entered.set()
+        await probe_unblock.wait()
+        return await original_probe(**kwargs)
+
+    async def gated_stop(*, nonce):
+        stop_entered.set()
+        await stop_unblock.wait()
+        await original_stop(nonce=nonce)
+
+    monkeypatch.setattr(engine, "bounded_json", gated_probe)
+    monkeypatch.setattr(process, "stop_owned", gated_stop)
+    probe = asyncio.create_task(runtime.health())
+    stop = None
+    try:
+        await probe_entered.wait()
+        stop = asyncio.create_task(runtime.stop())
+        await stop_entered.wait()
+        probe_unblock.set()
+        assert not (await probe).ready
+        assert not (await runtime.health()).ready
+    finally:
+        probe_unblock.set()
+        stop_unblock.set()
+        await probe
+        if stop is not None:
+            await stop
+
+
+@pytest.mark.asyncio
+async def test_drain_timeout_still_stops_engine_but_retains_nonce_until_reconciled(
+    tmp_path,
+):
+    runtime, _engine, process, _ = make_runtime(tmp_path)
+    await runtime.start()
+    nonce = runtime._nonce
+    entered = asyncio.Event()
+    unblock = asyncio.Event()
+
+    async def stubborn_job():
+        entered.set()
+        try:
+            await unblock.wait()
+        except asyncio.CancelledError:
+            await unblock.wait()
+
+    active = asyncio.create_task(stubborn_job())
+    runtime._executor._inflight["test-only"] = active
+    await entered.wait()
+    try:
+        with pytest.raises(VoicevoxRuntimeFailure, match="owned_drain_failed"):
+            await runtime.stop()
+        assert process.obs is None  # Drain failure must not skip owned process stop.
+        assert runtime._nonce == nonce and runtime._cleanup_uncertain
+        assert (await runtime.health()).state is RuntimeHealthState.FAILED
+        with pytest.raises(VoicevoxRuntimeFailure):
+            await runtime.start()
+    finally:
+        unblock.set()
+        await active
+        runtime._executor._inflight.pop("test-only", None)
+        await runtime.release()
+    assert process.stop_nonces == [nonce, nonce]
+    assert not runtime._cleanup_uncertain
+    assert (await runtime.health()).state is RuntimeHealthState.FAILED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "exception"])
+async def test_engine_close_failure_is_bounded_redacted_and_non_startable(
+    tmp_path, monkeypatch, failure
+):
+    runtime, engine, _process, _ = make_runtime(tmp_path)
+    await runtime.start()
+    original = engine.close
+
+    async def bad_close():
+        if failure == "timeout":
+            await asyncio.Event().wait()
+        raise RuntimeError("private native args, path, token and text")
+
+    monkeypatch.setattr(engine, "close", bad_close)
+    with pytest.raises(VoicevoxRuntimeFailure) as error:
+        await asyncio.wait_for(runtime.release(), 0.7)
+    assert str(error.value) == "voicevox_engine_close_failed"
+    assert runtime._cleanup_uncertain and not runtime._released
+    assert (await runtime.health()).state is RuntimeHealthState.FAILED
+    with pytest.raises(VoicevoxRuntimeFailure):
+        await runtime.start()
+    monkeypatch.setattr(engine, "close", original)
+    await runtime.release()
+    assert engine.closed == 1
+    assert (await runtime.health()).state is RuntimeHealthState.FAILED

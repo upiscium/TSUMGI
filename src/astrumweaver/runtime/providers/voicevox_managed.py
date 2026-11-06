@@ -161,7 +161,13 @@ class VoicevoxProcessObservation:
 
 @runtime_checkable
 class VoicevoxOwnedProcessControl(Protocol):
-    """Implementations must enforce OS process/port identity and owned reap."""
+    """Implementations enforce OS identity, reap AND post-exit port absence.
+
+    stop_owned owns one cleanup deadline, at most config.stop_timeout_seconds,
+    including lock wait and inspections. Cancellation must retain ownership and
+    in-flight verification for explicit same-nonce reconciliation. The runtime
+    must not wrap this in a competing equal-duration process-stop timeout.
+    """
 
     async def endpoint_owner(self) -> int | None: ...
     async def inspect(self) -> VoicevoxProcessObservation | None: ...
@@ -339,6 +345,7 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
         self._nonce: str | None = None
         self._pid: int | None = None
         self._released = False
+        self._release_requested = False
         self._lock = asyncio.Lock()
         self._cleanup_uncertain = False
 
@@ -402,8 +409,22 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
             raise VoicevoxRuntimeFailure("voicevox_preflight_unavailable") from None
 
     async def start(self) -> None:
+        # A cancelled cleanup may still hold/wait for the lifecycle lock.
+        # Deny recovery before awaiting it as well as rechecking under it.
+        if (
+            self._released
+            or self._release_requested
+            or self._cleanup_uncertain
+            or self._state is RuntimeHealthState.FAILED
+        ):
+            raise VoicevoxRuntimeFailure("voicevox_runtime_unavailable")
         async with self._lock:
-            if self._released or self._state is RuntimeHealthState.FAILED:
+            if (
+                self._released
+                or self._release_requested
+                or self._cleanup_uncertain
+                or self._state is RuntimeHealthState.FAILED
+            ):
                 raise VoicevoxRuntimeFailure("voicevox_runtime_unavailable")
             if self._state is RuntimeHealthState.READY:
                 if (await self.health()).ready:
@@ -432,20 +453,31 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
                         await asyncio.sleep(0.05)
             except BaseException as error:
                 # Cancelled startup also must stop the exact process it launched.
+                self._state = RuntimeHealthState.FAILED
+                self._cleanup_uncertain = True
                 nonce = self._nonce
                 if nonce is not None:
                     try:
-                        async with asyncio.timeout(self._config.stop_timeout_seconds):
-                            await self._process.stop_owned(nonce=nonce)
-                    except Exception:  # noqa: BLE001 - untrusted controller, redacted
-                        self._cleanup_uncertain = True
-                self._state = RuntimeHealthState.FAILED
+                        await self._process.stop_owned(nonce=nonce)
+                    except BaseException as cleanup_error:
+                        if not isinstance(cleanup_error, Exception):
+                            raise
+                    else:
+                        self._nonce = None
+                        self._pid = None
+                        self._cleanup_uncertain = False
+                else:
+                    self._cleanup_uncertain = False
                 if not isinstance(error, Exception):
                     raise
                 raise VoicevoxRuntimeFailure("voicevox_start_failed") from None
 
     async def health(self) -> RuntimeHealth:
-        if self._state in (RuntimeHealthState.STOPPED, RuntimeHealthState.FAILED):
+        if self._state in (
+            RuntimeHealthState.STOPPED,
+            RuntimeHealthState.FAILED,
+            RuntimeHealthState.DEGRADED,
+        ):
             return self._health(self._state)
         cfg = self._config
         was_ready = self._state is RuntimeHealthState.READY
@@ -509,47 +541,96 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
             return self._fail("voicevox_probe_failed")
 
     async def stop(self) -> None:
-        async with self._lock:
-            # Revoke admission synchronously, before any await or process stop.
-            if self._state is not RuntimeHealthState.FAILED:
-                self._state = RuntimeHealthState.STOPPED
-            active = tuple(self._executor._inflight.values())
-            for task in active:
-                if not task.done():
-                    task.cancel()
-            drain_ok = True
-            if active:
-                _, pending = await asyncio.wait(
-                    active, timeout=self._config.stop_timeout_seconds
-                )
-                drain_ok = not pending
-            nonce = self._nonce
-            if nonce is not None:
-                try:
-                    async with asyncio.timeout(self._config.stop_timeout_seconds):
-                        await self._process.stop_owned(nonce=nonce)
-                except Exception:  # noqa: BLE001 - redacted process-controller error
-                    self._state = RuntimeHealthState.FAILED
-                    raise VoicevoxRuntimeFailure("voicevox_owned_stop_failed") from None
-                self._nonce = None
-                self._pid = None
-            if not drain_ok:
-                self._cleanup_uncertain = True
-                self._state = RuntimeHealthState.FAILED
-                raise VoicevoxRuntimeFailure("voicevox_owned_drain_failed")
+        self._revoke_for_cleanup()
+        try:
+            await self._acquire_cleanup_lock()
+            try:
+                await self._stop_locked()
+            finally:
+                self._lock.release()
+        except BaseException as error:
+            self._state = RuntimeHealthState.FAILED
+            self._cleanup_uncertain = True
+            if not isinstance(error, Exception):
+                raise
+            if isinstance(error, VoicevoxRuntimeFailure):
+                raise
+            raise VoicevoxRuntimeFailure("voicevox_owned_stop_failed") from None
+
+    def _revoke_for_cleanup(self) -> None:
+        # Before even waiting for the lifecycle lock: STOPPED means verified,
+        # not merely that a stop was requested. DEGRADED is non-admitting.
+        if self._state is not RuntimeHealthState.FAILED:
+            self._state = RuntimeHealthState.DEGRADED
+        self._cleanup_uncertain = True
+
+    async def _acquire_cleanup_lock(self) -> None:
+        async with asyncio.timeout(self._config.stop_timeout_seconds):
+            await self._lock.acquire()
+
+    async def _stop_locked(self) -> None:
+        active = tuple(self._executor._inflight.values())
+        for task in active:
+            if not task.done():
+                task.cancel()
+        drain_ok = True
+        if active:
+            _, pending = await asyncio.wait(
+                active, timeout=self._config.stop_timeout_seconds
+            )
+            drain_ok = not pending
+        nonce = self._nonce
+        if nonce is not None:
+            try:
+                # The process controller owns the entire cleanup deadline.
+                await self._process.stop_owned(nonce=nonce)
+            except Exception:  # noqa: BLE001 - redacted process-controller error
+                raise VoicevoxRuntimeFailure("voicevox_owned_stop_failed") from None
+        if not drain_ok:
+            # Keep the nonce even if process cleanup succeeded. A repeat stop
+            # must reconcile the same instance, not permit fresh startup.
+            raise VoicevoxRuntimeFailure("voicevox_owned_drain_failed")
+        self._nonce = None
+        self._pid = None
+        self._cleanup_uncertain = False
+        if self._state is not RuntimeHealthState.FAILED:
+            self._state = RuntimeHealthState.STOPPED
 
     async def release(self) -> None:
         if self._released:
             return
-        await self.stop()
-        close = getattr(self._engine, "close", None)
-        if inspect.iscoroutinefunction(close):
+        self._release_requested = True
+        self._revoke_for_cleanup()
+        try:
+            await self._acquire_cleanup_lock()
             try:
-                async with asyncio.timeout(self._config.stop_timeout_seconds):
-                    await close()
-            except Exception:  # noqa: BLE001 - sanitize engine transport errors
-                raise VoicevoxRuntimeFailure("voicevox_engine_close_failed") from None
-        self._released = True
+                if self._released:
+                    return
+                await self._stop_locked()
+                self._revoke_for_cleanup()
+                close = getattr(self._engine, "close", None)
+                if inspect.iscoroutinefunction(close):
+                    try:
+                        async with asyncio.timeout(self._config.stop_timeout_seconds):
+                            await close()
+                    except Exception:  # noqa: BLE001 - sanitize transport errors
+                        raise VoicevoxRuntimeFailure(
+                            "voicevox_engine_close_failed"
+                        ) from None
+                self._released = True
+                self._cleanup_uncertain = False
+                if self._state is not RuntimeHealthState.FAILED:
+                    self._state = RuntimeHealthState.STOPPED
+            finally:
+                self._lock.release()
+        except BaseException as error:
+            self._state = RuntimeHealthState.FAILED
+            self._cleanup_uncertain = True
+            if not isinstance(error, Exception):
+                raise
+            if isinstance(error, VoicevoxRuntimeFailure):
+                raise
+            raise VoicevoxRuntimeFailure("voicevox_owned_stop_failed") from None
 
     async def residency(self) -> ResidencyReport:
         return await self._executor.residency()
