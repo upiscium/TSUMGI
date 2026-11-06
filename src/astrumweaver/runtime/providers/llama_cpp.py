@@ -1913,6 +1913,12 @@ class LlamaCppManagedRuntime(ManagedRuntime):
                 raise RuntimeError(
                     "llama.cpp model does not advertise native decision output"
                 )
+            # Stop may have begun and failed while model discovery yielded.
+            # No awaited operation may follow the final readiness gate.
+            if self._owned_shutdown_incomplete():
+                raise RuntimeError("owned llama.cpp shutdown has not completed")
+            if not self.process.running:
+                raise RuntimeError("llama.cpp owned process exited before readiness")
         except Exception:
             if started_here:
                 with contextlib.suppress(Exception):
@@ -1922,16 +1928,18 @@ class LlamaCppManagedRuntime(ManagedRuntime):
     async def stop(self) -> None:
         await self.process.stop()
 
+    def _incomplete_shutdown_health(self) -> RuntimeHealth:
+        return RuntimeHealth(
+            state=RuntimeHealthState.FAILED,
+            ready=False,
+            detail="owned llama.cpp runtime shutdown incomplete",
+            metadata={"runtime_provider": LLAMA_CPP_PROVIDER_ID},
+        )
+
     async def health(self) -> RuntimeHealth:
         if self._owned_shutdown_incomplete():
-            # A native child can still answer HTTP while its parent has
-            # already failed to stop. Never report that as serving-ready.
-            return RuntimeHealth(
-                state=RuntimeHealthState.FAILED,
-                ready=False,
-                detail="owned llama.cpp runtime shutdown incomplete",
-                metadata={"runtime_provider": LLAMA_CPP_PROVIDER_ID},
-            )
+            # Native HTTP may continue answering during failed shutdown.
+            return self._incomplete_shutdown_health()
         reachable = await self._server_reachable()
         if not reachable:
             return RuntimeHealth(
@@ -1985,7 +1993,10 @@ class LlamaCppManagedRuntime(ManagedRuntime):
                     detail="configured model is not a native decision model",
                     metadata={"runtime_provider": LLAMA_CPP_PROVIDER_ID},
                 )
-        # An owned process may exit during the awaited inventory request.
+        # Every awaited inventory/decision request may overlap a failed
+        # stop. Recheck the owner after the *last* await before READY.
+        if self._owned_shutdown_incomplete():
+            return self._incomplete_shutdown_health()
         if not self.process.running:
             return RuntimeHealth(
                 state=RuntimeHealthState.STOPPED,

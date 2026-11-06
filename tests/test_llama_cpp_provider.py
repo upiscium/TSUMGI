@@ -1393,6 +1393,54 @@ async def test_managed_runtime_denies_ready_after_failed_owned_shutdown() -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["start", "health"])
+async def test_managed_runtime_does_not_admit_ready_after_concurrent_stop_failure(
+    operation: str,
+) -> None:
+    class GatedApi(FakeApi):
+        def __init__(self):
+            super().__init__(reachable=True)
+            self.entered = asyncio.Event()
+            self.unblock = asyncio.Event()
+
+        async def models(self) -> tuple[str, ...]:
+            self.entered.set()
+            await self.unblock.wait()
+            return await super().models()
+
+    api = GatedApi()
+    process = FakeProcess(api, running=True)
+    runtime = LlamaCppManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        startup_timeout_seconds=1.0,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers="auto", split_mode=LlamaCppSplitMode.NONE,
+            fit=True, tensor_split=None, fit_target_mb=None,
+            main_gpu=0, cpu_moe=False, n_cpu_moe=None, n_cpu_ffn=None,
+        ),
+    )
+
+    pending = asyncio.create_task(getattr(runtime, operation)())
+    await asyncio.wait_for(api.entered.wait(), timeout=3)
+    # A failed stop changes the owner fence while a health/model request
+    # is pending. No later success response may bypass that new state.
+    process.shutdown_incomplete = True
+    api.unblock.set()
+    if operation == "start":
+        with pytest.raises(RuntimeError, match="shutdown has not completed"):
+            await asyncio.wait_for(pending, timeout=3)
+    else:
+        status = await asyncio.wait_for(pending, timeout=3)
+        assert status.state is RuntimeHealthState.FAILED
+        assert status.ready is False
+        assert "shutdown incomplete" in (status.detail or "")
+
+
+@pytest.mark.asyncio
 async def test_managed_runtime_rejects_external_server() -> None:
     api = FakeApi(reachable=True)
     process = FakeProcess(api, running=False)

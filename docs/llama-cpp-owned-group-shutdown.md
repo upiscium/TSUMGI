@@ -160,3 +160,54 @@ stop/start remains a mandatory separate acceptance gate.
 The targeted source tests prove the behaviour of synthetic groups only,
 not kernel/GPU shutdown under actual model load. A higher-level service
 cgroup remains the final emergency cleanup owner.
+
+
+## R10: OpenCode independent review and bounded corrections (2026-11-06)
+
+An isolated OpenCode/GPT-6 Astra fast read-only reviewer was invoked on
+exact source head `3a7609ef9216b06c1baba135f0eeb7c326236218`. The
+review completed with **FINDINGS**, not PASS; its diff attachment
+could not be fully read and it explicitly did not certify real GPU
+termination. The report is preserved on Adam at
+`~/.local/state/tsumgi-review/issue-237/pr238-3a7609ef9216-astra-fast.txt`.
+
+Reproduced, corrected and covered by synthetic regressions in this
+follow-up (still **source-only**):
+
+- **P1 / same-session process-group drift:** a descendant can invoke
+  `setpgid(0,0)` while retaining the original session and cgroup.
+  Earlier scans ignored the changed group and could certify cleanup
+  while the Native descendant remained alive. A live member with the
+  original session ID but a different process group now triggers a
+  **fail-closed** error; no second GPU start is allowed. This does not
+  solve descendants that leave the session with `setsid()`.
+- **P2 / Ready race:** `health()` and `start()` originally checked the
+  incomplete-shutdown flag only **before** asynchronous native HTTP
+  health and model calls. A failed stop during the await could be
+  followed by Ready/success. Both now recheck the owner fence after
+  the **final** await, before reporting READY or successful startup.
+  Synthetic gated-API tests first failed on the prior head and then
+  passed after correction.
+
+**Unresolved P1 issues require architectural containment, not a
+cosmetic change:** (1) numeric group/session ID reuse after the
+original leader and all original members exit can select another
+group even with per-member stable PIDFDs; (2) `os.listdir('/proc')`
+plus individual inspection is not atomic—fork after enumeration can
+make an unseen child outlive the scanner. Stronger per-native-run
+cgroup v2 ownership is tracked by [Issue #240](https://github.com/upiscium/TSUMGI/issues/240);
+do not treat `OwnedPosixGroup` as high-assurance containment.
+
+Read-only Sirius facts: `astrumweaver-worker.service` uses
+`User=astrumweaver`, `KillMode=control-group`,
+`TimeoutStopSec=90s`, and **`Delegate=no`**. The unit cgroup is
+root-owned and the Worker account cannot write to its `cgroup.procs`.
+A private delegated cgroup cannot simply be created by the current
+unprivileged runtime. Systemd/cgroup authority, atomic initial process
+placement, complete subgroup empty verification and least-privilege
+controls must be reviewed before any source integration or deploy.
+
+**Gate:** #237 and PR #238 remain OPEN/Draft, not Ready/Merge. #230
+12K production promotion and the separately authorized physical
+Worker stop/restore are still blocked. The source-only tests do not
+constitute real GPU/driver evidence.

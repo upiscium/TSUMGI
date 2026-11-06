@@ -42,10 +42,12 @@ def fixture_script(tmp_path: Path) -> Path:
         "import os, signal, subprocess, sys, time\n"
         "from pathlib import Path\n"
         "if 'child' in sys.argv:\n"
+        "    if os.environ.get('TSUMGI_CHILD_MODE') == 'fork_setpgid':\n"
+        "        os.setpgid(0, 0)\n"
         "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
         "    while True: time.sleep(.05)\n"
         "mode = os.environ.get('TSUMGI_CHILD_MODE', 'plain')\n"
-        "if mode in ('fork', 'fork_exit'):\n"
+        "if mode in ('fork', 'fork_exit', 'fork_setpgid'):\n"
         "    child = subprocess.Popen([sys.executable, __file__, 'child'], "
         "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
         "stderr=subprocess.DEVNULL)\n"
@@ -748,3 +750,49 @@ async def test_one_cancel_then_ambiguous_spawn_oserror_stays_fail_closed(
         await proc.start()
     with pytest.raises(RuntimeError, match="launch requires explicit cleanup"):
         await proc.stop()
+
+
+
+@pytest.mark.asyncio
+async def test_native_child_changing_process_group_within_session_denies_release(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("TSUMGI_CHILD_MODE", "fork_setpgid")
+    pidfile = tmp_path / "escaped_group_child.pid"
+    monkeypatch.setenv("TSUMGI_CHILD_PIDFILE", str(pidfile))
+    proc = controller(fixture_script(tmp_path))
+    await proc.start()
+    leader = proc._process
+    assert leader is not None
+    child = None
+    try:
+        await until(pidfile.exists)
+        child = int(pidfile.read_text())
+        await until(lambda: os.getpgid(child) == child)
+        assert os.getsid(child) == leader.pid  # Same owned session.
+        assert child != leader.pid
+        leader.terminate()
+        await asyncio.wait_for(leader.wait(), timeout=5)
+        assert is_live(child)
+
+        # A child can keep the original session without its original PGID.
+        # The controller must not certify successful shutdown.
+        with pytest.raises(RuntimeError, match="escaped.*group"):
+            await proc.stop()
+        assert proc.shutdown_incomplete
+        assert proc._process is leader
+        with pytest.raises(RuntimeError, match="shutdown has not completed"):
+            await proc.start()
+    finally:
+        if child is not None:
+            try:
+                os.kill(child, signal.SIGKILL)  # Synthetic fixture PID only.
+            except ProcessLookupError:
+                pass
+            await until(lambda: not is_live(child), timeout=5)
+        if leader.returncode is None:
+            leader.kill()
+        await asyncio.wait_for(leader.wait(), timeout=5)
+        if proc._process is not None:
+            await asyncio.wait_for(proc.stop(), timeout=5)
+        assert proc._owned_group is None

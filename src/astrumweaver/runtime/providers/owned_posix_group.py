@@ -1,14 +1,15 @@
 """Bounded, process-identity-pinned signalling for a managed POSIX session.
 
-This is not a cgroup containment boundary. Each target is opened as a stable
-/proc/<pid> directory fd and signalled with pidfd_send_signal; numeric killpg
-is deliberately *not* used. The owner must be captured while its newly
-spawned session leader is still available. Linux Workers only.
+This is NOT a cgroup containment boundary or production-qualified cleanup.
+Each target is opened as a stable /proc/<pid> directory fd and signalled
+with pidfd_send_signal; numeric killpg is deliberately not used.
+The owner must be captured while its session leader is still available.
+Single /proc scans are non-atomic and numeric group/session IDs may be reused.
+See #240: a dedicated cgroup is required before live acceptance. Linux only.
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import signal
 from dataclasses import dataclass
 
@@ -103,16 +104,21 @@ class OwnedPosixGroup:
                     # cgroup; refuse a newly reused numeric group leader.
                     if int(name) == self.pgid and ticks != self.start_ticks:
                         raise RuntimeError("owned group leader PID was reused")
-                    if (
-                        group != self.pgid
-                        or session != self.pgid
-                        or state in {"Z", "X", "x"}
-                    ):
+                    if state in {"Z", "X", "x"}:
                         continue
+                    # A live process that retains the original session but
+                    # changes its process group (setpgid) still may own CUDA
+                    # resources. It must NOT disappear from cleanup accounting.
+                    if group != self.pgid and session != self.pgid:
+                        continue
+                    if group == self.pgid and session != self.pgid:
+                        raise RuntimeError("owned process group session changed")
                     if ticks < self.start_ticks:
                         raise RuntimeError("process predates owned session")
                     if _read_at(fd, "cgroup") != self.cgroup:
                         raise RuntimeError("owned group crossed cgroup boundary")
+                    if group != self.pgid:
+                        raise RuntimeError("owned session member escaped original group")
                     fds.append(fd)
                     fd = -1
                     if len(fds) > _MAX_MEMBERS:
