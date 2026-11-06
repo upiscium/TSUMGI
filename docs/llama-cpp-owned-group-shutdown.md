@@ -23,6 +23,15 @@ could exit early, leaving a descendant still holding GPU residency.
 
 ## Source-only correction and safety boundaries
 
+An additional ownership gap is explicitly fenced: even if the wrapper
+has exited, `start()` rejects a new native launch while the previous
+process owner remains bound, until `stop()` successfully verifies group
+cleanup and clears ownership. Launch and shutdown are serialized by a
+per-controller async lock, so a concurrent stop cannot race an
+in-progress spawn. Cancellation of shutdown sends group-scoped SIGKILL
+as a best-effort last resort and propagates cancellation **without**
+claiming a successful release.
+
 `LlamaCppSubprocessController.start()` now uses
 `asyncio.create_subprocess_exec(..., start_new_session=True)`, giving
 each newly launched wrapper an **owned POSIX session/process group**
@@ -57,7 +66,10 @@ CUDA or a listening network service and verify:
 - forked child ignoring SIGTERM, requiring bounded group SIGKILL;
 - wrapper exit while a native-like descendant is still alive;
 - missing/invalid group identity denied without unscoped signals;
-- forced cleanup failure leaves the owner bound and raises an error.
+- forced cleanup failure leaves the owner bound and raises an error;
+- wrapper exited but owner not released prevents another GPU launch;
+- concurrent spawn/stop and duplicate start attempts are serialized;
+- stop cancellation attempts group-scoped SIGKILL without clearing owner.
 
 Run the full existing llama.cpp provider regression tests and Nix
 evaluation before marking any PR ready. Independent review and one
@@ -66,3 +78,13 @@ are still required before deployment. The production 8K Worker and
 Control/Gateway profile must remain unchanged until that authorization.
 This fix does not independently qualify Qwen 12K Serving Contract
 revision promotion or Model Client limit changes tracked under #230.
+
+**Residual constraints:** A process that explicitly escapes its inherited
+process group using `setsid()` is not contained by this particular
+mechanism; the currently reviewed Qwen/Bonsai wrapper does not do so.
+POSIX process-group IDs are numeric and can be reused after the group
+completely disappears; unscoped PID/group signalling and identity reuse
+require careful review before this proposal is accepted for live usage.
+The targeted source tests prove the behaviour of synthetic groups only,
+not kernel/GPU shutdown under actual model load. A higher-level service
+cgroup remains the final emergency cleanup owner.

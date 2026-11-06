@@ -200,3 +200,119 @@ async def test_broken_group_identity_denies_unscoped_termination(tmp_path):
     with pytest.raises(RuntimeError, match="group identity unavailable"):
         await proc.stop()
     assert proc._process is not None
+
+
+@pytest.mark.asyncio
+async def test_exited_wrapper_requires_explicit_stop_before_new_start(tmp_path, monkeypatch):
+    proc = controller(fixture_script(tmp_path))
+
+    class Exited:
+        pid = 432111
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+    previous = Exited()
+    proc._process = previous
+
+    async def unexpected_spawn(*args, **kwargs):
+        pytest.fail("must not spawn another native process with old owner bound")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unexpected_spawn)
+    with pytest.raises(RuntimeError, match="must be stopped before restart"):
+        await proc.start()
+    assert proc._process is previous
+
+    monkeypatch.setattr(proc, "_group_exists", lambda pgid: False)
+    await proc.stop()
+    assert proc._process is None
+
+
+@pytest.mark.asyncio
+async def test_start_and_stop_are_serialized_while_spawn_in_progress(
+    tmp_path, monkeypatch,
+):
+    proc = controller(fixture_script(tmp_path))
+    entered = asyncio.Event()
+    release_spawn = asyncio.Event()
+
+    class Fake:
+        pid = 432111
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+    async def delayed_spawn(*args, **kwargs):
+        entered.set()
+        await release_spawn.wait()
+        return Fake()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(proc, "_group_exists", lambda pgid: False)
+    starter = asyncio.create_task(proc.start())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    stopper = asyncio.create_task(proc.stop())
+    await asyncio.sleep(0)
+    assert not stopper.done(), "stop must wait for the in-progress spawn"
+    release_spawn.set()
+    await asyncio.wait_for(asyncio.gather(starter, stopper), timeout=3)
+    assert proc._process is None
+
+
+@pytest.mark.asyncio
+async def test_stop_cancellation_sends_owned_kill_without_claiming_release(
+    tmp_path, monkeypatch,
+):
+    proc = controller(fixture_script(tmp_path))
+
+    class Fake:
+        pid = 567891
+        returncode = None
+
+    owner = Fake()
+    proc._process = owner
+    entered = asyncio.Event()
+    sent = []
+
+    async def blocked_wait(_process, _pgid, _timeout):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(proc, "_group_exists", lambda pgid: True)
+    monkeypatch.setattr(proc, "_wait_group_quiet", blocked_wait)
+    monkeypatch.setattr(
+        proc, "_signal_group", lambda pgid, sig: sent.append((pgid, sig)),
+    )
+    task = asyncio.create_task(proc.stop())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert sent == [
+        (owner.pid, signal.SIGTERM),
+        (owner.pid, signal.SIGKILL),
+    ]
+    assert proc._process is owner
+
+
+@pytest.mark.asyncio
+async def test_two_simultaneous_starts_spawn_only_one_owned_process(tmp_path, monkeypatch):
+    proc = controller(fixture_script(tmp_path))
+    count = 0
+
+    class Fake:
+        pid = 432111
+        returncode = None
+
+    async def spawn(*args, **kwargs):
+        nonlocal count
+        count += 1
+        await asyncio.sleep(0.01)
+        return Fake()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    await asyncio.gather(proc.start(), proc.start())
+    assert count == 1
+    assert proc._process is not None

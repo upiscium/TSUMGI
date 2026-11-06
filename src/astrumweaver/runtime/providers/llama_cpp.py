@@ -623,9 +623,12 @@ class LlamaCppSubprocessController:
         self.reasoning_off = reasoning_off
         self.flash_attn = flash_attn
         self._process: asyncio.subprocess.Process | None = None
+        self._lifecycle_lock = asyncio.Lock()
 
     @property
     def running(self) -> bool:
+        # The wrapper's process state is not proof its native child has exited.
+        # start() must separately reject any unreleased ownership.
         return self._process is not None and self._process.returncode is None
 
     def command(self) -> tuple[str, ...]:
@@ -729,25 +732,29 @@ class LlamaCppSubprocessController:
         return tuple(args)
 
     async def start(self) -> None:
-        if self.running:
-            return
-        env = dict(os.environ)
-        if self.gpu_uuids:
-            env["CUDA_VISIBLE_DEVICES"] = ",".join(self.gpu_uuids)
-        try:
-            # The native Qwen/Bonsai wrappers fork a llama-server child.
-            # A private session makes the *whole owned process group* the
-            # lifecycle unit; terminating only the wrapper can orphan GPU
-            # residency and leave systemd waiting for its cgroup to empty.
-            self._process = await asyncio.create_subprocess_exec(
-                *self.command(),
-                env=env,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            raise RuntimeError(
-                "failed to start llama.cpp server process"
-            ) from exc
+        async with self._lifecycle_lock:
+            if self._process is not None:
+                if self._process.returncode is None:
+                    return
+                # A wrapper may exit before its native child. Never begin
+                # another GPU process until explicit stop() verifies cleanup.
+                raise RuntimeError(
+                    "previous owned llama.cpp process must be stopped before restart"
+                )
+            env = dict(os.environ)
+            if self.gpu_uuids:
+                env["CUDA_VISIBLE_DEVICES"] = ",".join(self.gpu_uuids)
+            try:
+                # Private session/group covers the launcher and its native child.
+                self._process = await asyncio.create_subprocess_exec(
+                    *self.command(),
+                    env=env,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                raise RuntimeError(
+                    "failed to start llama.cpp server process"
+                ) from exc
 
     @staticmethod
     def _group_exists(pgid: int) -> bool:
@@ -782,24 +789,32 @@ class LlamaCppSubprocessController:
         return False
 
     async def stop(self) -> None:
-        process = self._process
-        if process is None:
-            return
-        pgid = process.pid
-        if type(pgid) is not int or pgid <= 1:
-            raise RuntimeError("owned llama.cpp process group identity unavailable")
-        # Even if the wrapper has already exited, its native descendants
-        # may still belong to the private session and hold CUDA resources.
-        if self._group_exists(pgid):
-            self._signal_group(pgid, signal.SIGTERM)
-        if not await self._wait_group_quiet(process, pgid, 8.0):
-            # Bound native processes that ignore TERM. Remaining group
-            # members are killed only within this fresh owned session.
-            self._signal_group(pgid, signal.SIGKILL)
-            if not await self._wait_group_quiet(process, pgid, 4.0):
-                # Do not claim cleanup/release if any owned child persists.
-                raise RuntimeError("owned llama.cpp process group did not stop")
-        self._process = None
+        async with self._lifecycle_lock:
+            process = self._process
+            if process is None:
+                return
+            pgid = process.pid
+            if type(pgid) is not int or pgid <= 1:
+                raise RuntimeError("owned llama.cpp process group identity unavailable")
+            # Even if the wrapper exited, its native descendants may still
+            # occupy CUDA in this dedicated group.
+            try:
+                if self._group_exists(pgid):
+                    self._signal_group(pgid, signal.SIGTERM)
+                if not await self._wait_group_quiet(process, pgid, 8.0):
+                    self._signal_group(pgid, signal.SIGKILL)
+                    if not await self._wait_group_quiet(process, pgid, 4.0):
+                        raise RuntimeError(
+                            "owned llama.cpp process group did not stop"
+                        )
+            except asyncio.CancelledError:
+                # A shutdown deadline must not leave an unbounded native
+                # child simply because its cleanup coroutine was cancelled.
+                # Keep the owner bound: completion is not yet verified.
+                if self._group_exists(pgid):
+                    self._signal_group(pgid, signal.SIGKILL)
+                raise
+            self._process = None
 
 
 class LlamaCppExecutor(JobExecutor):
