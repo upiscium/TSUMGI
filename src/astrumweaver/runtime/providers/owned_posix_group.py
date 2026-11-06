@@ -86,8 +86,14 @@ class OwnedPosixGroup:
                     continue
                 try:
                     fd = os.open(f"/proc/{name}", _DIR_FLAGS)
-                except (FileNotFoundError, ProcessLookupError, PermissionError):
+                except (FileNotFoundError, ProcessLookupError):
                     continue
+                except PermissionError as exc:
+                    # We cannot prove an unreadable PID is outside the
+                    # managed group. Fail closed rather than report quiet.
+                    raise RuntimeError(
+                        "unable to inspect all processes for owned group"
+                    ) from exc
                 try:
                     state, group, session, ticks = _stat_fields(
                         _read_at(fd, "stat")

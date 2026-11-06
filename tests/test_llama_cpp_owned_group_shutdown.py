@@ -640,3 +640,20 @@ async def test_unverified_initial_group_anchor_denies_future_launch(
     with pytest.raises(RuntimeError, match="group identity is unavailable"):
         await proc.stop()
     assert proc.shutdown_incomplete
+
+
+
+def test_unreadable_proc_member_must_not_look_like_empty_owned_group(monkeypatch):
+    import astrumweaver.runtime.providers.owned_posix_group as owned
+    # Completely synthetic /proc access; the group must not signal anybody.
+    group = OwnedPosixGroup(765432, 1, b"0::/managed\n", 999)
+    monkeypatch.setattr(owned.os, "listdir", lambda _path: ["12345678"])
+
+    def denied(_path, _flags, **_kwargs):
+        raise PermissionError("unreadable synthetic /proc entry")
+
+    monkeypatch.setattr(owned.os, "open", denied)
+    with pytest.raises(RuntimeError, match="unable to inspect"):
+        group.has_live_members()
+    with pytest.raises(RuntimeError, match="unable to inspect"):
+        group.signal_members(signal.SIGTERM)
