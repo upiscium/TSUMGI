@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 from collections.abc import Mapping
 
 import httpx
@@ -575,16 +576,12 @@ async def test_subprocess_environment_pins_gpu_uuid_set(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class Process:
-        returncode = None
-
-        def terminate(self) -> None:
-            self.returncode = 0
+        # Completed fake process: neither leader nor child group remains.
+        pid = 4321
+        returncode = 0
 
         async def wait(self) -> int:
             return 0
-
-        def kill(self) -> None:
-            self.returncode = -9
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
@@ -629,6 +626,11 @@ async def test_subprocess_environment_pins_gpu_uuid_set(monkeypatch) -> None:
     assert "stdout" not in captured["kwargs"]
     assert "stderr" not in captured["kwargs"]
 
+    assert captured["kwargs"]["start_new_session"] is True
+    monkeypatch.setattr(
+        os, "killpg",
+        lambda _group, _signal: (_ for _ in ()).throw(ProcessLookupError()),
+    )
     await controller.stop()
 
 

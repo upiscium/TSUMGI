@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
 import hashlib
 import stat
 from collections.abc import AsyncIterator, Mapping
@@ -734,26 +735,70 @@ class LlamaCppSubprocessController:
         if self.gpu_uuids:
             env["CUDA_VISIBLE_DEVICES"] = ",".join(self.gpu_uuids)
         try:
+            # The native Qwen/Bonsai wrappers fork a llama-server child.
+            # A private session makes the *whole owned process group* the
+            # lifecycle unit; terminating only the wrapper can orphan GPU
+            # residency and leave systemd waiting for its cgroup to empty.
             self._process = await asyncio.create_subprocess_exec(
                 *self.command(),
                 env=env,
+                start_new_session=True,
             )
         except OSError as exc:
             raise RuntimeError(
                 "failed to start llama.cpp server process"
             ) from exc
 
+    @staticmethod
+    def _group_exists(pgid: int) -> bool:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    @staticmethod
+    def _signal_group(pgid: int, sig: signal.Signals) -> None:
+        # start_new_session=True guarantees PGID == the spawned wrapper PID.
+        # Never signal the Worker's group, all GPUs, or any systemd unit.
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            pass
+
+    async def _wait_group_quiet(
+        self, process: asyncio.subprocess.Process, pgid: int, timeout: float,
+    ) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if process.returncode is not None and not self._group_exists(pgid):
+                await process.wait()
+                return True
+            await asyncio.sleep(0.05)
+        if process.returncode is not None and not self._group_exists(pgid):
+            await process.wait()
+            return True
+        return False
+
     async def stop(self) -> None:
         process = self._process
         if process is None:
             return
-        if process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=10.0)
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
+        pgid = process.pid
+        if type(pgid) is not int or pgid <= 1:
+            raise RuntimeError("owned llama.cpp process group identity unavailable")
+        # Even if the wrapper has already exited, its native descendants
+        # may still belong to the private session and hold CUDA resources.
+        if self._group_exists(pgid):
+            self._signal_group(pgid, signal.SIGTERM)
+        if not await self._wait_group_quiet(process, pgid, 8.0):
+            # Bound native processes that ignore TERM. Remaining group
+            # members are killed only within this fresh owned session.
+            self._signal_group(pgid, signal.SIGKILL)
+            if not await self._wait_group_quiet(process, pgid, 4.0):
+                # Do not claim cleanup/release if any owned child persists.
+                raise RuntimeError("owned llama.cpp process group did not stop")
         self._process = None
 
 
