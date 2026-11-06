@@ -53,15 +53,32 @@ successful explicit stop clears that fence. Cancellation sends group-scoped SIGK
 as a best-effort last resort and propagates cancellation **without**
 claiming a successful release.
 
-`LlamaCppSubprocessController.start()` now uses
-`asyncio.create_subprocess_exec(..., start_new_session=True)`, giving
-each newly launched wrapper an **owned POSIX session/process group**
-independent of the Worker. Stopping sends SIGTERM **only to that newly
-owned group**, observes **both** group disappearance and wrapper exit,
-and escalates to group-scoped SIGKILL if still present after eight
-seconds. A second bounded four-second wait must confirm group
-termination. Failure does **not** clear the internal process owner or
-report successful cleanup.
+`LlamaCppSubprocessController.start()` creates a private POSIX session
+(`start_new_session=True`) and binds the original Linux group leader's
+`/proc` identity and cgroup while it is available. Stopping **does not
+use numeric `killpg`**. The new `OwnedPosixGroup` helper enumerates
+members of only that original session, verifies its group number,
+session number, start-time bound and inherited cgroup, opens each
+candidate's own stable `/proc/<pid>` directory FD, and uses
+`signal.pidfd_send_signal(fd, SIGTERM|SIGKILL)` for the exact process.
+Those FDs protect against the member PID being recycled between its
+verification and signal delivery. The process group must disappear and
+the wrapper must be reaped before cleanup is reported successful.
+
+This is important because a Linux `pidfd_send_signal` call with the
+**process-group flag** on the *original leader's* PIDFD may return
+`ESRCH` after the wrapper is reaped, even while a native child remains
+in the old group. A disposable Adam test reproduced that failure; a
+second test proved that signalling the surviving child through its own
+`/proc` pidfd works after leader reaping. A group numeric PID/PGID can
+be recycled; a mismatched *live* group leader generation or cgroup
+causes an explicit fail-closed error.
+
+The controller escalates from per-member SIGTERM to per-member SIGKILL
+after an eight-second limit, then allows a further four seconds to
+confirm absence. Unverifiable identity, inaccessible `/proc` data,
+escaped descendants or persistent processes **must not** be reported
+as successful cleanup. The original ownership remains fenced.
 
 This is deliberately specific to managed llama.cpp; it does not run
 `pkill`, terminate unrelated GPUs or processes, stop an unrelated
@@ -92,7 +109,10 @@ CUDA or a listening network service and verify:
 - concurrent spawn/stop and duplicate start attempts are serialized;
 - stop cancellation attempts group-scoped SIGKILL without clearing owner;
 - start cancellation after actual OS spawn retains/cleans late ownership;
-- repeated cancellation does not discard a pending launch task.
+- repeated cancellation does not discard a pending launch task;
+- original group leader reaped, native-like child targeted by stable
+  per-member pidfd and no numeric killpg;
+- synthetic reused group leader and foreign cgroup refused before signals.
 
 Run the full existing llama.cpp provider regression tests and Nix
 evaluation before marking any PR ready. Independent review and one
@@ -105,9 +125,14 @@ revision promotion or Model Client limit changes tracked under #230.
 **Residual constraints:** A process that explicitly escapes its inherited
 process group using `setsid()` is not contained by this particular
 mechanism; the currently reviewed Qwen/Bonsai wrapper does not do so.
-POSIX process-group IDs are numeric and can be reused after the group
-completely disappears; unscoped PID/group signalling and identity reuse
-require careful review before this proposal is accepted for live usage.
+POSIX group/session IDs are numeric and can be reused after the old
+group disappears. Individual targets use stable pidfd references and the
+capture-time leader start bound; nevertheless, arbitrary newly reused
+groups whose old leader has already been reaped cannot be proven to be
+the original group from these fields alone. Do not treat this as formal
+containment: future higher-assurance admission may need an independently
+owned cgroup or a persistently held supervisor, and a real physical
+stop/start remains a mandatory separate acceptance gate.
 The targeted source tests prove the behaviour of synthetic groups only,
 not kernel/GPU shutdown under actual model load. A higher-level service
 cgroup remains the final emergency cleanup owner.

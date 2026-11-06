@@ -46,6 +46,8 @@ from ...gateway.decision import (
     DecisionGatewayError,
     validate_decision_provider_response,
 )
+from .owned_posix_group import OwnedPosixGroup
+
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -623,6 +625,7 @@ class LlamaCppSubprocessController:
         self.reasoning_off = reasoning_off
         self.flash_attn = flash_attn
         self._process: asyncio.subprocess.Process | None = None
+        self._owned_group: OwnedPosixGroup | None = None
         self._launch_task: asyncio.Task[asyncio.subprocess.Process] | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._stop_incomplete = False
@@ -763,7 +766,17 @@ class LlamaCppSubprocessController:
                     env=env,
                     start_new_session=True,
                 )
+                # Bind the immediate child before attempting Linux pidfd
+                # capture. If capture fails, keep ownership fenced so no
+                # replacement GPU process can silently launch.
                 self._process = process
+                try:
+                    self._owned_group = OwnedPosixGroup.capture(process.pid)
+                except Exception as exc:
+                    self._stop_incomplete = True
+                    raise RuntimeError(
+                        "cannot anchor owned llama.cpp process group"
+                    ) from exc
                 if self._stop_incomplete:
                     # The caller was cancelled before spawn completed:
                     # never leave a newly created native child un-fenced.
@@ -803,22 +816,20 @@ class LlamaCppSubprocessController:
                 if launch.done():
                     self._launch_task = None
 
-    @staticmethod
-    def _group_exists(pgid: int) -> bool:
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return False
-        return True
+    def _group_exists(self, pgid: int) -> bool:
+        owner = self._owned_group
+        if owner is None or pgid != owner.pgid:
+            raise RuntimeError("owned process group identity is unavailable")
+        return owner.has_live_members()
 
-    @staticmethod
-    def _signal_group(pgid: int, sig: signal.Signals) -> None:
-        # start_new_session=True guarantees PGID == the spawned wrapper PID.
-        # Never signal the Worker's group, all GPUs, or any systemd unit.
-        try:
-            os.killpg(pgid, sig)
-        except ProcessLookupError:
-            pass
+    def _signal_group(self, pgid: int, sig: signal.Signals) -> None:
+        # Never signal a reused numeric PGID, the Worker's own group, or
+        # another GPU user. Scan only the originally owned POSIX session,
+        # then signal each exact child via a stable /proc directory pidfd.
+        owner = self._owned_group
+        if owner is None or pgid != owner.pgid:
+            raise RuntimeError("owned process group identity is unavailable")
+        owner.signal_members(sig)
 
     async def _wait_group_quiet(
         self, process: asyncio.subprocess.Process, pgid: int, timeout: float,
@@ -853,6 +864,10 @@ class LlamaCppSubprocessController:
                         self._launch_task = None
             process = self._process
             if process is None:
+                if self._stop_incomplete:
+                    raise RuntimeError(
+                        "owned llama.cpp launch requires explicit cleanup"
+                    )
                 return
             # Never admit a new GPU launch after a failed or cancelled stop,
             # including when the immediate wrapper is still alive.
@@ -878,6 +893,9 @@ class LlamaCppSubprocessController:
                 if self._group_exists(pgid):
                     self._signal_group(pgid, signal.SIGKILL)
                 raise
+            if self._owned_group is not None:
+                self._owned_group.close()
+                self._owned_group = None
             self._process = None
             self._stop_incomplete = False
 

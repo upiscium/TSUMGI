@@ -575,6 +575,19 @@ def test_multi_gpu_command_uses_visible_devices_and_tensor_split() -> None:
 async def test_subprocess_environment_pins_gpu_uuid_set(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
+    class FakeGroup:
+        def __init__(self, pgid):
+            self.pgid = pgid
+        def has_live_members(self):
+            return False
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "astrumweaver.runtime.providers.llama_cpp.OwnedPosixGroup.capture",
+        lambda pgid: FakeGroup(pgid),
+    )
+
     class Process:
         # Completed fake process: neither leader nor child group remains.
         pid = 4321

@@ -14,8 +14,25 @@ from astrumweaver.runtime.providers.llama_cpp import (
     LlamaCppSplitMode,
     LlamaCppSubprocessController,
 )
+from astrumweaver.runtime.providers.owned_posix_group import OwnedPosixGroup
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX session only")
+
+
+class FakeGroupAnchor:
+    def __init__(self, pid):
+        self.pgid = pid
+        self.closed = False
+
+    def has_live_members(self):
+        return False
+
+    def signal_members(self, _sig):
+        pass
+
+    def close(self):
+        self.closed = True
+
 
 
 def fixture_script(tmp_path: Path) -> Path:
@@ -282,6 +299,10 @@ async def test_exited_wrapper_requires_explicit_stop_before_new_start(tmp_path, 
 async def test_start_and_stop_are_serialized_while_spawn_in_progress(
     tmp_path, monkeypatch,
 ):
+    monkeypatch.setattr(
+        "astrumweaver.runtime.providers.llama_cpp.OwnedPosixGroup.capture",
+        lambda pid: FakeGroupAnchor(pid),
+    )
     proc = controller(fixture_script(tmp_path))
     entered = asyncio.Event()
     release_spawn = asyncio.Event()
@@ -351,6 +372,10 @@ async def test_stop_cancellation_sends_owned_kill_without_claiming_release(
 
 @pytest.mark.asyncio
 async def test_two_simultaneous_starts_spawn_only_one_owned_process(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "astrumweaver.runtime.providers.llama_cpp.OwnedPosixGroup.capture",
+        lambda pid: FakeGroupAnchor(pid),
+    )
     proc = controller(fixture_script(tmp_path))
     count = 0
 
@@ -457,3 +482,161 @@ async def test_repeated_start_cancellation_keeps_late_owned_spawn_fenced(
             except ProcessLookupError:
                 pass
             await asyncio.wait_for(child.wait(), timeout=5)
+
+
+
+@pytest.mark.asyncio
+async def test_pidfd_member_signals_survive_reaped_group_leader(tmp_path, monkeypatch):
+    script = fixture_script(tmp_path)
+    pidfile = tmp_path / "child.pid"
+    env = {**os.environ, "TSUMGI_CHILD_MODE": "fork",
+           "TSUMGI_CHILD_PIDFILE": str(pidfile)}
+    leader = await asyncio.create_subprocess_exec(
+        str(script), start_new_session=True,
+        env=env, stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    group = None
+    try:
+        group = OwnedPosixGroup.capture(leader.pid)
+        await until(pidfile.exists)
+        child = int(pidfile.read_text())
+        assert is_live(child)
+        assert os.getpgid(child) == leader.pid
+        # Reap the wrapper, leaving the TERM-ignoring native-like child.
+        leader.terminate()
+        await asyncio.wait_for(leader.wait(), timeout=5)
+        assert is_live(child)
+
+        with monkeypatch.context() as patch:
+            def forbid_numeric_group_signal(*_args):
+                raise AssertionError("numeric killpg must not be used")
+            patch.setattr(os, "killpg", forbid_numeric_group_signal)
+            assert group.has_live_members()
+            group.signal_members(signal.SIGKILL)
+            await until(lambda: not is_live(child))
+            assert not group.has_live_members()
+    finally:
+        if group is not None:
+            try:
+                group.signal_members(signal.SIGKILL)
+            except (ProcessLookupError, RuntimeError):
+                pass
+            group.close()
+        if leader.returncode is None:
+            try: os.killpg(leader.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+        await asyncio.wait_for(leader.wait(), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_pidfd_member_scan_fails_closed_on_identity_or_cgroup_drift(
+    tmp_path,
+):
+    script = fixture_script(tmp_path)
+    leader = await asyncio.create_subprocess_exec(
+        str(script), start_new_session=True,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    group = None
+    try:
+        group = OwnedPosixGroup.capture(leader.pid)
+        group.start_ticks += 1
+        with pytest.raises(RuntimeError, match="leader PID was reused"):
+            group.signal_members(signal.SIGTERM)
+        group.start_ticks -= 1
+
+        group.cgroup = b"0::/not-the-original-managed-cgroup\n"
+        with pytest.raises(RuntimeError, match="cgroup boundary"):
+            group.signal_members(signal.SIGTERM)
+    finally:
+        if group is not None:
+            group.close()
+        try: os.killpg(leader.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        await asyncio.wait_for(leader.wait(), timeout=5)
+
+
+def test_pidfd_parse_rejects_invalid_process_stat_and_closed_group(tmp_path):
+    from astrumweaver.runtime.providers.owned_posix_group import _stat_fields
+    with pytest.raises(RuntimeError, match="stat record"):
+        _stat_fields(b"not-a-proc-stat-record")
+    with pytest.raises(RuntimeError, match="stat record"):
+        _stat_fields(b"123 (x) S 0")
+    owner = OwnedPosixGroup(987654, 1, b"no-group", -1)
+    with pytest.raises(RuntimeError, match="released"):
+        owner.signal_members(signal.SIGTERM)
+
+
+@pytest.mark.asyncio
+async def test_pidfd_members_do_not_signal_other_session_in_same_cgroup(tmp_path):
+    """Sibling sessions are not owned even when they share systemd cgroup."""
+    script = fixture_script(tmp_path)
+    owned = await asyncio.create_subprocess_exec(
+        str(script), start_new_session=True,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    sibling = await asyncio.create_subprocess_exec(
+        str(script), start_new_session=True,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    group = None
+    try:
+        group = OwnedPosixGroup.capture(owned.pid)
+        assert os.getpgid(sibling.pid) != group.pgid
+        group.signal_members(signal.SIGTERM)
+        await asyncio.wait_for(owned.wait(), timeout=5)
+        assert sibling.returncode is None
+        assert is_live(sibling.pid)
+    finally:
+        if group is not None:
+            try:
+                group.signal_members(signal.SIGKILL)
+            except (ProcessLookupError, RuntimeError):
+                pass
+            group.close()
+        if owned.returncode is None:
+            owned.kill()
+        if sibling.returncode is None:
+            sibling.kill()
+        await asyncio.wait_for(
+            asyncio.gather(owned.wait(), sibling.wait()), timeout=5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_unverified_initial_group_anchor_denies_future_launch(
+    tmp_path, monkeypatch,
+):
+    proc = controller(fixture_script(tmp_path))
+
+    class SyntheticProcess:
+        pid = 999999
+        returncode = None
+
+    async def no_real_spawn(*_args, **_kwargs):
+        return SyntheticProcess()
+
+    def fail_capture(_pid):
+        raise FileNotFoundError("new group leader already disappeared")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", no_real_spawn)
+    monkeypatch.setattr(
+        "astrumweaver.runtime.providers.llama_cpp.OwnedPosixGroup.capture",
+        fail_capture,
+    )
+    with pytest.raises(RuntimeError, match="cannot anchor owned"):
+        await proc.start()
+    assert proc.shutdown_incomplete
+    with pytest.raises(RuntimeError, match="shutdown has not completed"):
+        await proc.start()
+    with pytest.raises(RuntimeError, match="group identity is unavailable"):
+        await proc.stop()
+    assert proc.shutdown_incomplete
