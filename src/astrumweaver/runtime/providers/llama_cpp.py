@@ -628,9 +628,13 @@ class LlamaCppSubprocessController:
 
     @property
     def running(self) -> bool:
-        # The wrapper's process state is not proof its native child has exited.
-        # start() must separately reject any unreleased ownership.
+        # This reports the wrapper state only. Managed Runtime admission
+        # separately checks shutdown_incomplete before trusting health/alias.
         return self._process is not None and self._process.returncode is None
+
+    @property
+    def shutdown_incomplete(self) -> bool:
+        return self._stop_incomplete
 
     def command(self) -> tuple[str, ...]:
         parsed = urlsplit(self.base_url)
@@ -1773,9 +1777,18 @@ class LlamaCppManagedRuntime(ManagedRuntime):
     async def _server_reachable(self) -> bool:
         return await self.api.health()
 
+    def _owned_shutdown_incomplete(self) -> bool:
+        # Fake/custom controllers predate this optional source-only guard.
+        # The real managed subprocess controller exposes it explicitly.
+        return self.process.shutdown_incomplete if isinstance(
+            self.process, LlamaCppSubprocessController
+        ) else bool(getattr(self.process, "shutdown_incomplete", False))
+
     async def start(self) -> None:
         if self._closed:
             raise RuntimeError("llama.cpp runtime has already been released")
+        if self._owned_shutdown_incomplete():
+            raise RuntimeError("owned llama.cpp shutdown has not completed")
 
         reachable = await self._server_reachable()
         if reachable and not self.process.running:
@@ -1830,6 +1843,15 @@ class LlamaCppManagedRuntime(ManagedRuntime):
         await self.process.stop()
 
     async def health(self) -> RuntimeHealth:
+        if self._owned_shutdown_incomplete():
+            # A native child can still answer HTTP while its parent has
+            # already failed to stop. Never report that as serving-ready.
+            return RuntimeHealth(
+                state=RuntimeHealthState.FAILED,
+                ready=False,
+                detail="owned llama.cpp runtime shutdown incomplete",
+                metadata={"runtime_provider": LLAMA_CPP_PROVIDER_ID},
+            )
         reachable = await self._server_reachable()
         if not reachable:
             return RuntimeHealth(

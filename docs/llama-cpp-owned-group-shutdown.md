@@ -23,6 +23,12 @@ could exit early, leaving a descendant still holding GPU residency.
 
 ## Source-only correction and safety boundaries
 
+The managed Runtime now also rejects `start()` and returns
+`RuntimeHealthState.FAILED` with `ready=False` whenever the owned
+controller reports an incomplete shutdown. In particular, an old native
+server that still answers an HTTP health check cannot be re-admitted
+as a healthy Deployment merely because its wrapper PID is still live.
+
 An additional ownership gap is explicitly fenced: even if the wrapper
 has exited, `start()` rejects a new native launch while the previous
 process owner remains bound, until `stop()` successfully verifies group

@@ -1167,6 +1167,7 @@ class FakeProcess:
         self.exit_on_start = exit_on_start
         self.starts = 0
         self.stops = 0
+        self.shutdown_incomplete = False
 
     @property
     def running(self) -> bool:
@@ -1340,6 +1341,42 @@ async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readin
 
     assert process.starts == 1
     assert process.stops == 1
+
+
+@pytest.mark.asyncio
+async def test_managed_runtime_denies_ready_after_failed_owned_shutdown() -> None:
+    # An HTTP-ready native process after failed TERM/KILL is *not* a
+    # legitimate managed Runtime, even if its wrapper PID remains alive.
+    api = FakeApi(reachable=True)
+    process = FakeProcess(api, running=True)
+    process.shutdown_incomplete = True
+    runtime = LlamaCppManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        startup_timeout_seconds=1.0,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers="auto",
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=True,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+    )
+    health = await runtime.health()
+    assert health.state is RuntimeHealthState.FAILED
+    assert health.ready is False
+    assert "shutdown incomplete" in (health.detail or "")
+    with pytest.raises(RuntimeError, match="shutdown has not completed"):
+        await runtime.start()
+    assert process.starts == 0
+    assert process.running is True
 
 
 @pytest.mark.asyncio
