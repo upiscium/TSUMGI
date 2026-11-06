@@ -371,3 +371,49 @@ service-impacting 8K restore and full 12K native runtime canary still
 require a separately bounded maintenance/rollback procedure. The
 separate GPU 24-hour monitoring automation is still scheduled but is
 not used as a precondition for this source and backup work.
+
+## R5: read-only two-GPU VRAM observation (source-only, no 12K launch)
+
+`tools/qwen_12k_vram_probe.py` is an *optional telemetry probe for an
+already approved, active* 12K native canary. This source change **does
+not** authorize starting that canary, changing the Runtime, stopping
+systemd, or admitting a new logical profile. The probe invokes only the
+fixed read-only NVML query `nvidia-smi --query-gpu=uuid,memory.total,memory.free,memory.used --format=csv,noheader,nounits`.
+It never sends prompts or Tool requests to the model, changes GPU
+settings, writes files or calls Control. Only run it within a separately
+approved maintenance window when the exact native 12K runtime is already
+active, with an *operator-controlled* known long-prefill stimulus and
+the exact two reviewed Sirius GPU UUIDs. Do not use `--phase prefill`
+as an assertion that the interval actually overlapped a prefill.
+
+A bounded example, intentionally using redacted placeholders:
+
+    python3 tools/qwen_12k_vram_probe.py --read-only \
+      --expected-gpu-uuid GPU-REVIEWED-UUID-0 \
+      --expected-gpu-uuid GPU-REVIEWED-UUID-1 \
+      --phase prefill --samples 300 --interval-ms 200
+
+The placeholders must be replaced with the **full matching NVIDIA GPU
+UUIDs** from a reviewed read-only mapping. The process samples exactly
+these two GPUs and rejects extra, missing or reordered-inconsistent
+metrics, malformed UUIDs, impossible memory totals, NVML failures and
+partial series. Its standard output is a bounded JSON summary with
+per-reviewed-GPU minimum free MiB in the supplied UUID order, **without
+raw UUIDs or model paths**. It includes **unauthenticated host-clock
+start/end Unix timestamps** to aid manual comparison against an
+independently recorded prefill request, not to prove temporal overlap.
+Exit 0 indicates only the *observed*
+VRAM gate was not violated, exit 3 a measured sub-2048 MiB minimum,
+and exit 2 a blocked/invalid observation. If either GPU reaches only
+2047 MiB free, the observed VRAM gate fails.
+
+An idle-only run deliberately reports `NOT_APPLICABLE_IDLE_ONLY`.
+Even a `PASS` prefill run is **NOT production qualification**:
+sampling may have missed a short CUDA allocation peak, the declared
+prefill interval is not independently attested, and the probe cannot
+verify actual 12K context, pinned model/build identity, 7,841-token
+tokenizer input, real Chat/Tool outcomes, strict over-limit rejection,
+systemd restarts, queued Job fencing, Control contract revisions, or
+actual 8K restoration. These mandatory acceptance gates must be
+reviewed **separately** with genuine live canary evidence and the
+operator-approved reverse-order rollback.
