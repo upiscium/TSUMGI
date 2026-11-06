@@ -798,9 +798,10 @@ class LlamaCppSubprocessController:
                     # task: bind_spawn will still register/kill its result.
                     raise
                 except Exception:
-                    # The spawn failed before a subprocess was returned.
-                    if self._process is None:
-                        self._stop_incomplete = False
+                    # An unreturned asynchronous spawn failure is not proof
+                    # that a native descendant was never created. Preserve
+                    # the incomplete-shutdown fence even if no Process handle
+                    # was delivered; higher-trust recovery is required.
                     raise
                 if self._group_exists(process.pid):
                     self._signal_group(process.pid, signal.SIGKILL)

@@ -716,3 +716,35 @@ async def test_cancelled_spawn_oserror_without_handle_remains_fenced(
     assert proc.shutdown_incomplete
     with pytest.raises(RuntimeError, match="shutdown has not completed"):
         await proc.start()
+
+
+@pytest.mark.asyncio
+async def test_one_cancel_then_ambiguous_spawn_oserror_stays_fail_closed(
+    tmp_path, monkeypatch,
+):
+    """A single cancellation must not erase the uncertain late child fence."""
+    proc = controller(fixture_script(tmp_path))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def unknown_spawn(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        raise OSError("synthetic ambiguous native launch failure")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unknown_spawn)
+    task = asyncio.create_task(proc.start())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    task.cancel()
+    await until(lambda: proc.shutdown_incomplete)
+    release.set()
+    with pytest.raises(OSError):
+        await asyncio.wait_for(task, timeout=3)
+
+    assert proc._process is None
+    assert proc._owned_group is None
+    assert proc.shutdown_incomplete
+    with pytest.raises(RuntimeError, match="shutdown has not completed"):
+        await proc.start()
+    with pytest.raises(RuntimeError, match="launch requires explicit cleanup"):
+        await proc.stop()

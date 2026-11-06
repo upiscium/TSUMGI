@@ -36,7 +36,12 @@ have briefly executed and forked native descendants before the error.
 The controller therefore deliberately remains **fail closed**: a later
 `stop()` cannot certify cleanup merely from that exception and denies
 the next GPU launch. A disposable regression verifies this conservative
-boundary. Recovery from this unverified state requires a higher-trust
+boundary. In particular, after **one cancellation** the `start()`
+exception handler must never clear `_stop_incomplete` merely because
+`_process=None`; this was a second fail-open path still present after
+the earlier two-cancellation test. A new one-cancel/OSError negative
+regression first reproduced that false unfence, then passed after it
+was removed. Recovery from this unverified state requires a higher-trust
 service/cgroup containment proof or an operator-controlled restart,
 not a synthetic assumption of "no children".
 
