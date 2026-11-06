@@ -1,8 +1,10 @@
 """Offline Qwen 8K -> 12K draft: no real deployment evidence is invented."""
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from dataclasses import replace
+from datetime import timedelta
 import hashlib
 import importlib.util
 import json
@@ -16,7 +18,14 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository
+from astrumweaver import JobResult, ResourceShape, WorkerSpec
+from astrumweaver.control import (
+    InMemoryControlRepository, JobStatus, JobSubmission,
+    WorkerRegistration, utc_now,
+)
+from astrumweaver.control.repository import (
+    ConflictError, NoCompatibleDeployment,
+)
 from astrumweaver.control.api import create_app
 from astrumweaver.gateway.api import create_chat_router
 from astrumweaver.gateway.chat import (
@@ -950,3 +959,218 @@ async def test_synthetic_12k_http_gateway_denies_unauthorized_oversized_without_
     # The synthetic profile remains deliberately unqualified: no real
     # 12K runtime, Postgres, Worker, GPU, auth service or admission receipt.
     assert proposed["admission"] == "DENIED_PENDING_REVIEW_AND_REAL_CANARY"
+
+
+
+def test_synthetic_12k_control_admission_rejects_live_8k_worker_until_rebound():
+    """Real in-memory Control admission, fake evidence and Workers only."""
+    runtime, serving, catalog = fixtures()
+    snapshot = deepcopy((runtime, serving, catalog))
+    old_declaration = ServingDeploymentDeclaration.from_dict(serving)
+    proposal = make_draft(runtime, serving, catalog)
+    synthetic_12k_declaration, synthetic_catalog, _ = synthetic_revision_chain(
+        proposal
+    )
+    selected = synthetic_catalog.get(qwen.PROFILE_ID)
+    repository = InMemoryControlRepository()
+
+    # A genuinely present and ONLINE old 8K worker is not a compatible
+    # advertisement for the newly revisioned 12K logical profile.
+    old_epoch = "11111111-1111-4111-8111-111111111111"
+    repository.register_worker(
+        WorkerRegistration(
+            spec=WorkerSpec(
+                worker_id="synthetic-eight-k",
+                worker_class="offline-contract-test",
+                resources=ResourceShape(),
+                capabilities=frozenset({"llm.chat"}),
+            ),
+            serving=old_declaration.advertisement(epoch=old_epoch),
+        )
+    )
+    submission = JobSubmission(
+        capability="llm.chat",
+        payload={
+            "schema_version": "synthetic-only-not-a-real-native-chat-job",
+        },
+        serving=selected.binding,
+        deadline_at=utc_now() + timedelta(seconds=45),
+        max_attempts=1,
+        idempotency_key="qwen12k-synthetic-revision-boundary",
+    )
+    with pytest.raises(NoCompatibleDeployment):
+        repository.submit_job(submission)
+    assert repository.list_jobs() == []
+    assert repository.get_worker("synthetic-eight-k").active_jobs == 0
+
+    # Only an explicitly new (synthetic!) 12K Worker advertisement, with
+    # its matching Deployment/ServingContract revisions, may admit this
+    # 12K-bound request. It is not physical readiness evidence.
+    new_epoch = "22222222-2222-4222-8222-222222222222"
+    repository.register_worker(
+        WorkerRegistration(
+            spec=WorkerSpec(
+                worker_id="synthetic-twelve-k",
+                worker_class="offline-contract-test",
+                resources=ResourceShape(),
+                capabilities=frozenset({"llm.chat"}),
+            ),
+            serving=synthetic_12k_declaration.advertisement(epoch=new_epoch),
+        )
+    )
+    accepted = repository.submit_job(submission)
+    assert accepted.status is JobStatus.QUEUED
+    assert accepted.serving == selected.binding
+    assert len(repository.list_jobs()) == 1
+
+    # Old 8K Worker must never claim the accepted 12K-bound request.
+    assert repository.claim_next_job(
+        "synthetic-eight-k", runtime_instance_epoch=old_epoch,
+    ) is None
+    claim = repository.claim_next_job(
+        "synthetic-twelve-k", runtime_instance_epoch=new_epoch,
+    )
+    assert claim is not None
+    assert claim.job_id == accepted.job_id
+    assert claim.status is JobStatus.RUNNING
+    assert claim.claimed_runtime_instance_epoch == new_epoch
+    assert claim.claimed_deployment_revision == (
+        synthetic_12k_declaration.deployment.revision
+    )
+    assert claim.claimed_serving_contract_revision == (
+        synthetic_12k_declaration.contracts[0].revision
+    )
+    repository.cancel_job(claim.job_id)
+    assert repository.get_job(claim.job_id).status is JobStatus.CANCELLED
+    assert (runtime, serving, catalog) == snapshot
+    assert proposal["admission"] == "DENIED_PENDING_REVIEW_AND_REAL_CANARY"
+
+
+
+@pytest.mark.asyncio
+async def test_synthetic_12k_http_control_rejects_8k_then_accepts_matching_worker():
+    """HTTP→Control→fake Worker revision/epoch proof. No native serving."""
+    runtime, original_serving, original_catalog = fixtures()
+    preserved = deepcopy((runtime, original_serving, original_catalog))
+    draft = make_draft(runtime, original_serving, original_catalog)
+    declaration12, catalog12, _ = synthetic_revision_chain(draft)
+    declaration8 = ServingDeploymentDeclaration.from_dict(original_serving)
+    repo = InMemoryControlRepository()
+    epoch8 = "11111111-1111-4111-8111-111111111111"
+    epoch12 = "22222222-2222-4222-8222-222222222222"
+
+    def register(worker_id, declaration, epoch):
+        repo.register_worker(
+            WorkerRegistration(
+                spec=WorkerSpec(
+                    worker_id=worker_id,
+                    worker_class="offline-contract-test",
+                    resources=ResourceShape(),
+                    capabilities=frozenset({"llm.chat"}),
+                ),
+                serving=declaration.advertisement(epoch=epoch),
+            )
+        )
+
+    register("fake-eight-k", declaration8, epoch8)
+    app = create_app(
+        repo, client_token="synthetic-client-only",
+        worker_token="synthetic-worker-only",
+        maintenance_interval_seconds=60,
+    )
+    app.include_router(
+        create_chat_router(
+            repo, catalog12, client_auth="bearer",
+            client_token="synthetic-client-only",
+            poll_interval_seconds=0.005,
+        )
+    )
+    headers = {"authorization": "Bearer synthetic-client-only"}
+    body = {
+        "model": qwen.PROFILE_ID,
+        "messages": [{"role": "user", "content": "synthetic-only"}],
+        "max_tokens": 64,
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://synthetic"
+    ) as client:
+        # A live, registered old 8K advertisement is insufficient.
+        stale = await asyncio.wait_for(
+            client.post("/v1/chat/completions", headers=headers, json=body),
+            timeout=5,
+        )
+        assert stale.status_code == 503
+        assert stale.json()["error"]["code"] == "no_compatible_deployment"
+        assert repo.list_jobs() == []
+
+        # A new synthetic 12K Runtime epoch and exact revision pair may be
+        # admitted; the fake Worker returns a controlled result, not a model.
+        register("fake-twelve-k", declaration12, epoch12)
+        # The correct revision is not enough: the per-instance epoch must
+        # also match before the Worker may claim a Job.
+        with pytest.raises(ConflictError):
+            repo.claim_next_job(
+                "fake-twelve-k", runtime_instance_epoch=epoch8,
+            )
+
+        async def fake_twelve_k_worker():
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 3
+            claim = None
+            while claim is None and loop.time() < deadline:
+                # Old 8K instance must never steal the 12K-bound Job.
+                assert repo.claim_next_job(
+                    "fake-eight-k", runtime_instance_epoch=epoch8,
+                ) is None
+                claim = repo.claim_next_job(
+                    "fake-twelve-k", runtime_instance_epoch=epoch12,
+                )
+                if claim is None:
+                    await asyncio.sleep(0.005)
+            assert claim is not None, "synthetic 12K Job not admitted"
+            assert claim.claimed_runtime_instance_epoch == epoch12
+            assert claim.claimed_deployment_revision == (
+                declaration12.deployment.revision
+            )
+            assert claim.claimed_serving_contract_revision == (
+                declaration12.contracts[0].revision
+            )
+            repo.complete_job(
+                claim.job_id,
+                JobResult(outputs={
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "fake-only"},
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {
+                        "prompt_tokens": 2, "completion_tokens": 1,
+                        "total_tokens": 3,
+                    },
+                }),
+                worker_id="fake-twelve-k",
+                lease_token=claim.lease_token or "",
+                runtime_instance_epoch=epoch12,
+            )
+
+        worker = asyncio.create_task(fake_twelve_k_worker())
+        try:
+            success = await asyncio.wait_for(
+                client.post("/v1/chat/completions", headers=headers, json=body),
+                timeout=5,
+            )
+            await asyncio.wait_for(worker, timeout=3)
+        finally:
+            if not worker.done():
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+
+        assert success.status_code == 200
+        assert success.json()["choices"][0]["message"]["content"] == "fake-only"
+        rows = repo.list_jobs()
+        assert len(rows) == 1
+        assert rows[0].status is JobStatus.SUCCEEDED
+        assert rows[0].serving == catalog12.get(qwen.PROFILE_ID).binding
+        assert rows[0].claimed_runtime_instance_epoch == epoch12
+    assert (runtime, original_serving, original_catalog) == preserved
+    assert draft["admission"] == "DENIED_PENDING_REVIEW_AND_REAL_CANARY"

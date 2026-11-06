@@ -574,3 +574,37 @@ Control/Worker cutover remain pending independent acceptance.
 
 Production Qwen remains at 8K. This source change does not authorize
 a deploy, merge, config update or OpenCode client limit promotion.
+
+
+## R11: synthetic HTTP/Control 8K-vs-12K Worker admission (2026-11-06)
+
+This source-only test is an **offline logical admission rehearsal** for
+the coherent 8K→12K cutover. It uses the real TSUMGI FastAPI Gateway,
+`InMemoryControlRepository` and per-instance serving bindings. Both
+Worker advertisements and all model/config/validation digests are
+**synthetic fixtures only**; no model, native tokenizer, PostgreSQL,
+GPU, production service or real evidence receipt is accessed.
+
+The test starts with an ONLINE Worker advertising the **old** 8K
+Deployment+Contract. A request for the new synthetic 12K logical
+profile must return HTTP 503 `no_compatible_deployment`, with
+**no Job created**, even though the old Worker is online. Separately,
+a direct Control test verifies the same fail-closed boundary.
+
+Next, a *fake* 12K Worker advertises a newly derived Deployment and
+Contract revision and a distinct RuntimeInstance epoch. Only the
+matching 12K binding can submit and claim the Job; the old Worker
+cannot claim it, and the 12K Worker rejects a stale instance epoch.
+A controlled fake JobResult is returned through the HTTP endpoint,
+and the resulting synthetic Job is recorded as SUCCEEDED with exact
+12K deployment/contract revision and epoch. That is **not** evidence
+that Qwen generated the response or can execute 12K prompts.
+
+This constrains the later real cutover: do not advertise new
+12K client limits while only the previous 8K Worker is registered;
+require matching immutable provenance and validation evidence for
+the 12K Runtime/Control profile, verify live Worker readiness and
+epoch fencing, then prove actual input-token and Tool/stream behavior
+at context boundary under a separately authorized reversible
+maintenance window. A synthetic Revision hash that passes the
+schema is **never sufficient** for promotion. PR remains Draft.
