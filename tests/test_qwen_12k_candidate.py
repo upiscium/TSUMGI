@@ -23,6 +23,7 @@ from astrumweaver.runtime import RuntimeDeploymentSpec
 from astrumweaver.serving import (
     DeploymentIdentity, LogicalServingProfile,
     ServingContract, ServingContractError, ServingDeploymentDeclaration,
+    resolve_profile,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -427,7 +428,11 @@ def test_cli_only_reports_shape_and_never_outputs_model_paths(tmp_path: Path):
     for name, data in [("runtime", runtime), ("serving", serving), ("control", catalog)]:
         (tmp_path / f"{name}.json").write_text(json.dumps(data))
     (tmp_path / "reviewed-pin.json").write_text(json.dumps(reviewed_pin()))
-    env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
+    # Keep the isolated test environment's read-only dependency path for
+    # subprocess CLI smoke; never depend on a host-global Python install.
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, (
+        str(ROOT / "src"), os.environ.get("PYTHONPATH"),
+    ))))
     result = subprocess.run(
         [sys.executable, str(TOOL), "--runtime", str(tmp_path / "runtime.json"),
          "--serving", str(tmp_path / "serving.json"),
@@ -662,7 +667,9 @@ def test_8k_snapshot_cli_check_capture_verify_rehearse(tmp_path: Path):
         ("control.toml", "--control-toml"),
     ):
         args.extend((opt, str(files[name])))
-    env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, (
+        str(ROOT / "src"), os.environ.get("PYTHONPATH"),
+    ))))
 
     def invoke(*parts: str):
         ret = subprocess.run(
@@ -684,3 +691,177 @@ def test_8k_snapshot_cli_check_capture_verify_rehearse(tmp_path: Path):
             invoke("capture", "--snapshot-dir", str(root), *args)
     finally:
         shutil.rmtree(root)
+
+
+
+# This is a synthetic, in-memory proof of the revision-chain shape.
+# It does NOT establish the provenance of an actual 12K execution digest,
+# canary validation record, GPU artifact or real serving eligibility.
+def synthetic_revision_chain(draft, *, execution=None, evidence=None):
+    execution = digest("8") if execution is None else execution
+    evidence = digest("9") if evidence is None else evidence
+    identity_raw = deepcopy(draft["serving_UNLOADABLE_draft"]["deployment"])
+    identity_raw["execution_config_sha256"] = execution
+    identity = DeploymentIdentity(**identity_raw)
+
+    contract_raw = deepcopy(
+        draft["serving_UNLOADABLE_draft"]["contracts"][0]["contract"]
+    )
+    contract_raw["deployment_revision"] = identity.revision
+    contract_raw["validation_evidence_sha256"] = evidence
+    contract = ServingContract(**contract_raw)
+    serving = ServingDeploymentDeclaration(identity, (contract,))
+
+    catalog_raw = deepcopy(draft["control_UNLOADABLE_draft"])
+    matches = [
+        row for row in catalog_raw["profiles"]
+        if row["profile"]["profile_id"] == qwen.PROFILE_ID
+    ]
+    assert len(matches) == 1
+    record = matches[0]
+    profile_raw = record["profile"]
+    profile_raw["deployment_revision"] = identity.revision
+    profile_raw["serving_contract_revision"] = contract.revision
+    profile = LogicalServingProfile(**profile_raw)
+
+    record["deployment"] = identity.to_dict()
+    record["contract"] = contract.to_dict()
+    record["profile"] = profile.to_dict()
+    catalog = ChatProfileCatalog.from_dict(catalog_raw)
+    return serving, catalog, catalog_raw
+
+
+def test_synthetic_12k_revision_chain_validates_exact_target_and_fences_8k():
+    runtime, original_serving, original_catalog = fixtures(explicit_profile_limits=True)
+    before = deepcopy((runtime, original_serving, original_catalog))
+    draft = make_draft(runtime, original_serving, original_catalog)
+    declared, catalog, catalog_raw = synthetic_revision_chain(draft)
+    assert (runtime, original_serving, original_catalog) == before
+    assert len(catalog.profiles) == 1
+    original = ServingDeploymentDeclaration.from_dict(original_serving)
+    assert declared.deployment.revision != original.deployment.revision
+    assert declared.contracts[0].revision != original.contracts[0].revision
+    q = catalog.get(qwen.PROFILE_ID)
+    assert q.resolved.profile_revision != (
+        ChatProfileCatalog.from_dict(original_catalog).get(qwen.PROFILE_ID).resolved.profile_revision
+    )
+    assert q.resolved.deployment == declared.deployment
+    assert q.resolved.contract == declared.contracts[0]
+    assert dict(q.resolved.effective_limits) == qwen.TARGET_LIMITS
+    assert q.resolved.profile.profile_id == qwen.PROFILE_ID
+    assert (q.resolved.profile.deployment_revision == declared.deployment.revision)
+    assert q.resolved.profile.serving_contract_revision == declared.contracts[0].revision
+    assert declared.deployment.execution_config_sha256 == digest("8")
+    assert declared.contracts[0].validation_evidence_sha256 == digest("9")
+    assert RuntimeDeploymentSpec.from_dict(draft["runtime_draft"]).provider_config[
+        "context_size"
+    ] == 12288
+    assert ChatProfileCatalog.from_dict(catalog_raw).models_response()["data"][0][
+        "x_astrumweaver"
+    ]["effective_limits"]["input_tokens"] == 10240
+
+
+@pytest.mark.parametrize(("request_limit","value"), [
+    ("input_tokens", 10240),
+    ("output_tokens", 2048),
+    ("total_tokens", 12288),
+    ("request_bytes", 65536),
+])
+def test_synthetic_12k_admission_accepts_boundary_but_rejects_one_more(request_limit, value):
+    runtime, serving, catalog = fixtures()
+    draft = make_draft(runtime, serving, catalog)
+    _, new_catalog, _ = synthetic_revision_chain(draft)
+    selected = new_catalog.get(qwen.PROFILE_ID)
+    model = selected.resolved
+    ok = resolve_profile(
+        model.profile, model.contract, model.deployment,
+        requested_usage={request_limit: value},
+    )
+    assert ok.profile_revision == model.profile_revision
+    with pytest.raises(ServingContractError, match="limit-exceeded"):
+        resolve_profile(
+            model.profile, model.contract, model.deployment,
+            requested_usage={request_limit: value + 1},
+        )
+
+
+def test_synthetic_12k_revision_chain_refuses_stale_8k_contract_and_profile():
+    runtime, original_serving, original_catalog = fixtures()
+    draft = make_draft(runtime, original_serving, original_catalog)
+    new_serving, _, new_catalog_raw = synthetic_revision_chain(draft)
+    old_id = original_serving["deployment"]
+    new_id = new_serving.deployment.to_dict()
+    with pytest.raises((ServingContractError, ValueError)):
+        ServingDeploymentDeclaration.from_dict({
+            **new_serving.to_dict(), "deployment": old_id,
+        })
+    original_row = original_catalog["profiles"][0]
+    record = new_catalog_raw["profiles"][0]
+    tamper = deepcopy(new_catalog_raw)
+    tamper["profiles"][0]["profile"] = deepcopy(original_row["profile"])
+    with pytest.raises(ChatGatewayError):
+        ChatProfileCatalog.from_dict(tamper)
+    tamper = deepcopy(new_catalog_raw)
+    tamper["profiles"][0]["contract"] = deepcopy(original_row["contract"])
+    with pytest.raises(ChatGatewayError):
+        ChatProfileCatalog.from_dict(tamper)
+    tamper = deepcopy(new_catalog_raw)
+    tamper["profiles"][0]["deployment"] = deepcopy(old_id)
+    with pytest.raises(ChatGatewayError):
+        ChatProfileCatalog.from_dict(tamper)
+    assert new_id != old_id
+
+
+def test_synthetic_12k_revision_chain_does_not_modify_unrelated_catalog_profile():
+    runtime, serving, catalog = fixtures()
+    unrelated = deepcopy(catalog["profiles"][0])
+    other = DeploymentIdentity(
+        provider_id="llama-cpp",
+        runtime_artifact_sha256=digest("a"),
+        adapter_artifact_sha256=digest("b"),
+        model_artifact_sha256=digest("c"),
+        execution_config_sha256=digest("d"),
+        quantization="Q4_K_M",
+        tokenizer_artifact_sha256=digest("e"),
+        template_artifact_sha256=digest("f"),
+    )
+    other_contract = ServingContract(
+        deployment_revision=other.revision,
+        capability="llm.chat",
+        operation_schema=CHAT_OPERATION_SCHEMA,
+        features=frozenset({"tools"}),
+        limits=qwen.BASE_LIMITS,
+        validation_evidence_sha256=digest("a"),
+    )
+    other_profile = LogicalServingProfile(
+        profile_id="bonsai2-27b",
+        deployment_revision=other.revision,
+        serving_contract_revision=other_contract.revision,
+        capability="llm.chat",
+        operation_schema=CHAT_OPERATION_SCHEMA,
+        required_features=frozenset({"tools"}),
+    )
+    unrelated.update(
+        deployment=other.to_dict(),
+        contract=other_contract.to_dict(),
+        profile=other_profile.to_dict(),
+    )
+    catalog["profiles"].append(unrelated)
+    before = deepcopy(catalog)
+    _, new_catalog, new_catalog_raw = synthetic_revision_chain(
+        make_draft(runtime, serving, catalog)
+    )
+    assert len(new_catalog.profiles) == 2
+    assert new_catalog_raw["profiles"][1] == unrelated
+    assert catalog == before
+
+
+def test_synthetic_evidence_digests_are_not_production_attestations():
+    runtime, serving, catalog = fixtures()
+    draft = make_draft(runtime, serving, catalog)
+    for bad in ("PENDING_REAL_12K_CANARY_EVIDENCE", "sha256:not-a-digest"):
+        with pytest.raises((ServingContractError, ValueError)):
+            synthetic_revision_chain(draft, evidence=bad)
+    with pytest.raises((ServingContractError, ValueError)):
+        synthetic_revision_chain(draft, execution="PENDING_UNREVIEWED")
+    assert draft["admission"] == "DENIED_PENDING_REVIEW_AND_REAL_CANARY"

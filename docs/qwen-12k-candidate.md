@@ -493,3 +493,49 @@ correction, non-disruptive root-cause investigation of slow shutdown,
 actual reviewed contract identity/evidence construction, a separately
 approved coherent Gateway/Worker/Control cutover and its own rollback.
 Do not promote 16K based on this result.
+
+
+## R9: synthetic-only Serving revision chain validation (2026-11-06)
+
+The R8 Sirius native canary shows that 12K context is feasible under
+a bounded single-slot synthetic workload. It **does not** supply the
+independently reviewed immutable validation evidence needed to admit a
+12K Worker/Gateway deployment in production.
+
+The new *test-only* source fixture in
+`tests/test_qwen_12k_candidate.py` demonstrates the next layer without
+touching live hosts, credentials, model files or public profiles:
+
+- Starting from synthetic 8K Runtime/Serving/Control artifacts, build
+  the intentionally non-admissible 12K draft already provided by
+  `qwen_12k_candidate.py`. Substitute **synthetic, obviously
+  unreviewed** execution-config and validation-evidence digests in
+  memory only, for **domain-shape verification**, not attestation.
+- Recompute distinct canonical `DeploymentIdentity.revision`,
+  `ServingContract.revision`, and
+  `LogicalServingProfile.revision` using TSUMGI's real schema classes.
+  Reload the resulting fully bound synthetic declaration and Control
+  catalog, verifying exact **10,240 input / 2,048 output / 12,288
+  total / 65,536 request bytes**.
+- Confirm that each bounded usage value is accepted precisely at its
+  limit and rejected at `limit + 1`; stale 8K deployment, contract
+  or profile revisions fail closed. Unrelated Bonsai catalog members
+  remain untouched and the original 8K objects stay immutable.
+- Keep negative tests for invalid `PENDING_*` and malformed digests,
+  and adapt isolated CLI test subprocesses to retain the *test-only*
+  Python dependency path rather than depending on global Python
+  packages.
+
+The runnable fixtures deliberately manufacture evidence *only in
+test memory*. This demonstrates internal consistency, **not** that a
+real operator-authorized 12K Serving Contract is valid, and is not a
+license to copy synthetic SHA values into production manifests.
+
+**Still required:** independent GGUF/runtime/adapter provenance,
+independent 12K execution configuration SHA and signed/reviewed
+canary-evidence receipt; the actual Worker/Control logical-profile
+revision alignment, strict long-chat/Tool admission checks, cancellations
+and denied-auth tests under a separately approved service maintenance
+window; operational remediation #237 and actual rollback. Only after
+accepted Worker/Control readiness may the OpenCode provider context
+limit be raised. #230 remains OPEN and this PR remains Draft.
