@@ -402,9 +402,12 @@ per-reviewed-GPU minimum free MiB in the supplied UUID order, **without
 raw UUIDs or model paths**. It includes **unauthenticated host-clock
 start/end Unix timestamps** to aid manual comparison against an
 independently recorded prefill request, not to prove temporal overlap.
-Exit 0 indicates only the *observed*
-VRAM gate was not violated, exit 3 a measured sub-2048 MiB minimum,
-and exit 2 a blocked/invalid observation. If either GPU reaches only
+Exit 0 indicates only that the *reported prefill-phase samples* did
+not violate the VRAM floor — it never establishes actual 12K readiness.
+Exit 3 indicates a measured sub-2048 MiB minimum; exit 2 indicates
+a blocked/invalid observation; **exit 4 indicates idle-only observation
+without any valid prefill gate**, deliberately nonzero to prevent a
+naive exit-code-only production promotion. If either GPU reaches only
 2047 MiB free, the observed VRAM gate fails immediately and the tool
 returns without additional samples (but **does not** stop the model).
 The probe enforces a maximum **actual** 180-second observation wall

@@ -207,7 +207,14 @@ def main() -> int:
         print(json.dumps({"status": "BLOCKED", "reason": "read-only-vram-probe-failed"}))
         return 2
     print(json.dumps(result, sort_keys=True))
-    return 3 if result["observed_vram_gate"] == "FAIL" else 0
+    # Idle-only is intentionally not qualified as a prefill peak check.
+    if result["observed_vram_gate"] == "FAIL":
+        return 3
+    if result["observed_vram_gate"] == "NOT_APPLICABLE_IDLE_ONLY":
+        return 4
+    if result["observed_vram_gate"] != "PASS":
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

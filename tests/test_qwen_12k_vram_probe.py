@@ -229,6 +229,33 @@ def test_cli_peak_failure_returns_distinct_exit_code_and_no_raw_uuid(capsys):
     assert UUIDS[0] not in json.dumps(report)
 
 
+def test_cli_idle_only_has_nonzero_not_applicable_exit(capsys):
+    with mock.patch.object(sys, "argv", [
+        "probe", "--read-only", "--expected-gpu-uuid", UUIDS[0],
+        "--expected-gpu-uuid", UUIDS[1], "--phase", "idle",
+    ]), mock.patch.object(module, "observe", return_value={
+        "status": "VRAM_OBSERVATION_ONLY_NOT_12K_QUALIFIED",
+        "observed_vram_gate": "NOT_APPLICABLE_IDLE_ONLY",
+        "production_qualified": False,
+    }):
+        assert module.main() == 4
+    result = json.loads(capsys.readouterr().out)
+    assert result["observed_vram_gate"] == "NOT_APPLICABLE_IDLE_ONLY"
+    assert result["production_qualified"] is False
+
+
+def test_cli_unknown_observation_result_fails_closed(capsys):
+    with mock.patch.object(sys, "argv", [
+        "probe", "--read-only", "--expected-gpu-uuid", UUIDS[0],
+        "--expected-gpu-uuid", UUIDS[1], "--phase", "prefill",
+    ]), mock.patch.object(module, "observe", return_value={
+        "observed_vram_gate": "UNEXPECTED",
+        "production_qualified": False,
+    }):
+        assert module.main() == 2
+    assert json.loads(capsys.readouterr().out)["production_qualified"] is False
+
+
 def test_cli_native_failure_suppresses_sensitive_diagnostics(capsys):
     with mock.patch.object(sys, "argv", [
         "probe", "--read-only", "--expected-gpu-uuid", UUIDS[0],
