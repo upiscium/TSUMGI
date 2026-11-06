@@ -32,6 +32,12 @@ def sample(a: int = 4350, b: int = 3349, *, reverse: bool = False) -> bytes:
     return ("\n".join(values) + "\n").encode("ascii")
 
 
+def test_crlf_is_accepted_without_normalizing_malformed_records():
+    result = module.parse_sample(sample().replace(b"\n", b"\r\n"), UUIDS)
+    assert result[UUIDS[0]] == 4350
+    assert result[UUIDS[1]] == 3349
+
+
 def test_parse_exact_two_expected_gpus_with_stable_uuid_order():
     assert list(module.parse_sample(sample(reverse=True), UUIDS).values()) == [3349, 4350]
     assert module.parse_sample(sample(reverse=True), UUIDS) == {
@@ -102,6 +108,52 @@ def test_peak_below_floor_denied_despite_other_gpu_headroom():
     assert result["production_qualified"] is False
 
 
+def test_fail_fast_does_not_keep_sampling_after_first_unsafe_gpu():
+    rows = [sample(), sample(4100, 2047)]
+    result = module.observe(
+        UUIDS, phase="prefill", samples=30, interval_ms=100,
+        query=lambda: rows.pop(0), sleep=lambda _: None,
+    )
+    assert result["observed_vram_gate"] == "FAIL"
+    assert result["sample_count"] == 2
+    assert result["requested_sample_count"] == 30
+    assert result["stopped_at_first_floor_violation"] is True
+
+
+def test_idle_below_floor_is_failure_not_a_usable_baseline():
+    result = module.observe(
+        UUIDS, phase="idle", samples=5, interval_ms=100,
+        query=lambda: sample(1900, 3300), sleep=lambda _: None,
+    )
+    assert result["observed_vram_gate"] == "FAIL"
+    assert result["sample_count"] == 1
+
+
+def test_slow_nvml_cannot_extend_total_observation_without_bound():
+    fake_elapsed = [0.0]
+    def slow_query():
+        fake_elapsed[0] += 75.0
+        return sample()
+    with pytest.raises(ValueError, match="sampling-wall-time-exceeded"):
+        module.observe(
+            UUIDS, phase="prefill", samples=5, interval_ms=100,
+            query=slow_query, sleep=lambda _: None,
+            clock=lambda: fake_elapsed[0],
+        )
+
+
+def test_slow_sleep_cannot_extend_total_observation_without_bound():
+    fake_elapsed = [0.0]
+    def slow_sleep(_):
+        fake_elapsed[0] += 181.0
+    with pytest.raises(ValueError, match="sampling-wall-time-exceeded"):
+        module.observe(
+            UUIDS, phase="prefill", samples=5, interval_ms=100,
+            query=lambda: sample(), sleep=slow_sleep,
+            clock=lambda: fake_elapsed[0],
+        )
+
+
 def test_idle_only_never_reports_peak_pass():
     result = module.observe(
         UUIDS, phase="idle", samples=5, interval_ms=100,
@@ -143,7 +195,7 @@ def test_fixed_read_only_command_is_used_and_process_reaped():
     with mock.patch.object(module.subprocess, "Popen", side_effect=fake_popen):
         assert module.query_nvidia_smi() == sample()
     assert calls[0][0] == [
-        "nvidia-smi", "--query-gpu=uuid,memory.total,memory.free,memory.used",
+        "/usr/bin/nvidia-smi", "--query-gpu=uuid,memory.total,memory.free,memory.used",
         "--format=csv,noheader,nounits",
     ]
     assert calls[0][1]["stdin"] == subprocess.DEVNULL

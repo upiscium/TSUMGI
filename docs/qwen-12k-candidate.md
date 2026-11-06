@@ -378,7 +378,7 @@ not used as a precondition for this source and backup work.
 already approved, active* 12K native canary. This source change **does
 not** authorize starting that canary, changing the Runtime, stopping
 systemd, or admitting a new logical profile. The probe invokes only the
-fixed read-only NVML query `nvidia-smi --query-gpu=uuid,memory.total,memory.free,memory.used --format=csv,noheader,nounits`.
+fixed read-only NVML query `/usr/bin/nvidia-smi --query-gpu=uuid,memory.total,memory.free,memory.used --format=csv,noheader,nounits`. The executable is the exact, root-owned Sirius system binary, not a `PATH` search; check the installed path in read-only preflight before attempting a canary.
 It never sends prompts or Tool requests to the model, changes GPU
 settings, writes files or calls Control. Only run it within a separately
 approved maintenance window when the exact native 12K runtime is already
@@ -405,7 +405,12 @@ independently recorded prefill request, not to prove temporal overlap.
 Exit 0 indicates only the *observed*
 VRAM gate was not violated, exit 3 a measured sub-2048 MiB minimum,
 and exit 2 a blocked/invalid observation. If either GPU reaches only
-2047 MiB free, the observed VRAM gate fails.
+2047 MiB free, the observed VRAM gate fails immediately and the tool
+returns without additional samples (but **does not** stop the model).
+The probe enforces a maximum **actual** 180-second observation wall
+time including NVML subprocess delays; an overrun blocks the result
+instead of reporting partial PASS. An **idle** measurement below
+2048 MiB fails; a passing idle reading remains unqualified.
 
 An idle-only run deliberately reports `NOT_APPLICABLE_IDLE_ONLY`.
 Even a `PASS` prefill run is **NOT production qualification**:

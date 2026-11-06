@@ -16,8 +16,9 @@ import time
 from typing import Callable, Sequence
 
 GPU_UUID = re.compile(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
+# Sirius's reviewed root-owned executable; do not resolve from caller PATH.
 COMMAND = [
-    "nvidia-smi", "--query-gpu=uuid,memory.total,memory.free,memory.used",
+    "/usr/bin/nvidia-smi", "--query-gpu=uuid,memory.total,memory.free,memory.used",
     "--format=csv,noheader,nounits",
 ]
 MIN_FREE_MIB = 2048
@@ -121,6 +122,7 @@ def observe(
     interval_ms: int,
     query: Callable[[], bytes] = query_nvidia_smi,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
     if phase not in ("idle", "prefill"):
         raise ValueError("unknown-observation-phase")
@@ -134,13 +136,30 @@ def observe(
     ):
         raise ValueError("expected-exactly-two-reviewed-gpus")
     started_unix_ms = int(time.time() * 1000)
+    started = clock()
     minimum = {uuid: sys.maxsize for uuid in expected_uuids}
+    observed = 0
+    stopped_at_first_floor_violation = False
     for i in range(samples):
+        # Bound the *actual* elapsed time, not only nominal sleep intervals:
+        # an individually bounded NVML call can still be slow on every sample.
+        if (clock() - started) * 1000 >= MAX_DURATION_MS:
+            raise ValueError("sampling-wall-time-exceeded")
         current = parse_sample(query(), expected_uuids)
+        if (clock() - started) * 1000 > MAX_DURATION_MS:
+            raise ValueError("sampling-wall-time-exceeded")
+        observed += 1
         for uuid in expected_uuids:
             minimum[uuid] = min(minimum[uuid], current[uuid])
+        if any(minimum[uuid] < MIN_FREE_MIB for uuid in expected_uuids):
+            # End observation immediately on an unsafe sample; this does NOT
+            # stop the model or serve as automatic production rollback.
+            stopped_at_first_floor_violation = True
+            break
         if i + 1 < samples:
             sleep(interval_ms / 1000.0)
+    if (clock() - started) * 1000 > MAX_DURATION_MS:
+        raise ValueError("sampling-wall-time-exceeded")
     finished_unix_ms = int(time.time() * 1000)
     minima = [minimum[uuid] for uuid in expected_uuids]
     capacity_passed = all(free >= MIN_FREE_MIB for free in minima)
@@ -150,13 +169,17 @@ def observe(
         "status": "VRAM_OBSERVATION_ONLY_NOT_12K_QUALIFIED",
         "phase": phase,
         "gpu_count": 2,
-        "sample_count": samples,
+        "sample_count": observed,
+        "requested_sample_count": samples,
+        "stopped_at_first_floor_violation": stopped_at_first_floor_violation,
+        "max_actual_elapsed_ms": MAX_DURATION_MS,
         "sample_interval_ms": interval_ms,
         "min_free_mib_per_reviewed_gpu": minima,
         "min_free_floor_mib": MIN_FREE_MIB,
         "observed_vram_gate": (
-            "NOT_APPLICABLE_IDLE_ONLY" if phase == "idle"
-            else "PASS" if capacity_passed else "FAIL"
+            "FAIL" if not capacity_passed
+            else "NOT_APPLICABLE_IDLE_ONLY" if phase == "idle"
+            else "PASS"
         ),
         "actual_12k_context_verified": False,
         "prefill_overlap_independently_verified": False,
