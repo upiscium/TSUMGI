@@ -411,3 +411,90 @@ def test_disabled_discovery_does_not_evaluate_even_extreme_timeout():
         )
     )
     assert probe._config.enabled is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("style_type", ["talk", "streaming_talk", None])
+async def test_compatible_talk_style_variants_are_observed(style_type):
+    """Upstream treats omitted type as talk and streaming_talk as talk-capable."""
+    speaker = _speaker()
+    if style_type is None:
+        del speaker["styles"][0]["type"]
+    else:
+        speaker["styles"][0]["type"] = style_type
+
+    async with fake_engine(
+        lambda path: (
+            json.dumps([speaker]).encode("utf-8")
+            if path == "/speakers"
+            else b'"0.15.0"'
+        )
+    ) as (port, requests):
+        observed = await _probe(port).probe_once()
+
+    assert observed.status is VoicevoxDiscoveryStatus.COMPATIBLE
+    assert observed.snapshot is not None
+    assert [
+        (entry.speaker_uuid, entry.style_id) for entry in observed.snapshot.styles
+    ] == [("7ffcb7ce-00ec-4bdc-82cd-45a8889e43ff", 8)]
+    assert observed.ready is False and observed.can_apply is False
+    assert requests == [b"GET /version HTTP/1.1", b"GET /speakers HTTP/1.1"]
+
+
+@pytest.mark.asyncio
+async def test_mixed_talk_and_streaming_talk_styles_are_observed_together():
+    """The official talk-character catalog may contain both talk styles."""
+    speaker = _speaker()
+    speaker["styles"].append({"name": "stream", "id": 17, "type": "streaming_talk"})
+    async with fake_engine(
+        lambda path: (
+            json.dumps([speaker]).encode("utf-8")
+            if path == "/speakers"
+            else b'"0.15.0"'
+        )
+    ) as (port, _):
+        observed = await _probe(port).probe_once()
+
+    assert observed.status is VoicevoxDiscoveryStatus.COMPATIBLE
+    assert observed.snapshot is not None
+    assert {style.style_id for style in observed.snapshot.styles} == {8, 17}
+    assert observed.ready is False and observed.can_apply is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "style_type", ["sing", "singing_teacher", "frame_decode", "other", None, "", 0]
+)
+async def test_singing_unknown_and_malformed_types_are_rejected(style_type):
+    """No singing or invented style is interpreted as ordinary synthesis."""
+    speaker = _speaker()
+    speaker["styles"][0]["type"] = style_type
+    async with fake_engine(
+        lambda path: (
+            json.dumps([speaker]).encode("utf-8")
+            if path == "/speakers"
+            else b'"0.15.0"'
+        )
+    ) as (port, _):
+        observed = await _probe(port).probe_once()
+
+    assert observed.status is VoicevoxDiscoveryStatus.INCOMPATIBLE
+    assert observed.snapshot is None
+    assert observed.ready is False and observed.can_apply is False
+
+
+@pytest.mark.asyncio
+async def test_mixed_talk_and_singing_catalog_remains_fail_closed():
+    speaker = _speaker()
+    speaker["styles"].append({"name": "sing", "id": 17, "type": "sing"})
+    async with fake_engine(
+        lambda path: (
+            json.dumps([speaker]).encode("utf-8")
+            if path == "/speakers"
+            else b'"0.15.0"'
+        )
+    ) as (port, _):
+        observed = await _probe(port).probe_once()
+
+    assert observed.status is VoicevoxDiscoveryStatus.INCOMPATIBLE
+    assert observed.snapshot is None and not observed.ready and not observed.can_apply

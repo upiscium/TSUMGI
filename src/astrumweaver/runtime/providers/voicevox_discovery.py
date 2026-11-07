@@ -160,10 +160,10 @@ def _catalog(
                 type(style_id) is not int
                 or not 0 <= style_id < 2**31
                 or style_id in ids
-                or choice.get("type", "talk") != "talk"
+                or choice.get("type", "talk") not in ("talk", "streaming_talk")
             ):
-                # Do not mistake VOICEVOX singers or unknown styles for
-                # a compatible text-to-speech numeric speaker selection.
+                # Both upstream talk and streaming_talk support synthesis;
+                # omit-type defaults to talk. Reject singers and unknown styles.
                 raise ValueError("incompatible style")
             ids.add(style_id)
             styles.append(
