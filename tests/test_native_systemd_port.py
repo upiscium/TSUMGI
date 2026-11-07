@@ -595,3 +595,62 @@ async def test_cancelled_caller_cannot_cancel_unconfirmed_manager_operation(tmp_
     await asyncio.sleep(0)
     assert not broker._pending_manager_calls
     assert store.list_reservations()[0].phase is NativeLedgerPhase.UNKNOWN_FENCED
+
+
+@pytest.mark.asyncio
+async def test_pending_manager_limit_denies_new_gpu_before_reservation(tmp_path):
+    """A lost Manager reply must not permit unbounded pending operations."""
+    first = request()
+    second = replace(
+        request(),
+        gpu_uuids=("GPU-00000000-0000-0000-0000-000000000002",),
+    )
+    manager = FakeManager(wait_for_release=True)
+    store = ledger(tmp_path)
+    broker = NativeBrokerDispatchCoordinator(
+        store,
+        manager,
+        manager_ack_timeout_seconds=0.02,
+        max_pending_manager_calls=1,
+    )
+    try:
+        with pytest.raises(NativeManagerPortError, match="reply unconfirmed"):
+            await broker.dispatch_once(first, reviewed(first), trusted_peer_uid=UID)
+        assert len(broker._pending_manager_calls) == 1
+        with pytest.raises(NativeManagerPortError, match="pending manager"):
+            await broker.dispatch_once(
+                second, reviewed(second), trusted_peer_uid=UID,
+            )
+        assert len(manager.calls) == 1
+        rows = store.list_reservations()
+        assert len(rows) == 1
+        assert rows[0].run_id == first.run_id
+        assert rows[0].phase is NativeLedgerPhase.UNKNOWN_FENCED
+    finally:
+        manager.release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*tuple(broker._pending_manager_calls)), timeout=2,
+        )
+        await asyncio.sleep(0)
+
+    assert not broker._pending_manager_calls
+    # The other GPU may be reserved after its *separate* pending slot frees,
+    # but the first run must remain fenced forever without trusted release.
+    second_receipt = await broker.dispatch_once(
+        second, reviewed(second), trusted_peer_uid=UID,
+    )
+    assert second_receipt.phase is NativeLedgerPhase.UNKNOWN_FENCED
+    assert len(manager.calls) == 2
+    by_run = {row.run_id: row for row in store.list_reservations()}
+    assert by_run[first.run_id].phase is NativeLedgerPhase.UNKNOWN_FENCED
+    assert by_run[second.run_id].phase is NativeLedgerPhase.UNKNOWN_FENCED
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, False, 17, None, "3", 1.5])
+def test_pending_manager_limit_cannot_be_unbounded_or_non_integer(tmp_path, invalid):
+    with pytest.raises(ValueError, match="max_pending_manager_calls"):
+        NativeBrokerDispatchCoordinator(
+            ledger(tmp_path),
+            FakeManager(),
+            max_pending_manager_calls=invalid,
+        )

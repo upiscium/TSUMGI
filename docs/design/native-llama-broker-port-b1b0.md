@@ -147,9 +147,23 @@ reconciles the exact run/unit with PID1.
 
 This is an **acknowledgement wait bound only**. It is not a systemd
 service start/stop deadline, is not a trusted manager completion
-receipt, and is not proof of kernel cgroup containment. A future
-broker must also limit/account for unresolved in-flight operations,
-especially across Broker crashes, before any production activation.
+receipt, and is not proof of kernel cgroup containment.
+
+A new negative regression also demonstrated that an unresolved Manager
+call could occupy its Task indefinitely while the same coordinator
+accepted more *different-GPU* starts, reserving yet more GPUs and
+creating yet more pending Tasks. The coordinator now limits its
+**local in-memory pending Manager operations** to an integer in
+[1, 16], default 8, and rejects an additional request **before
+reserving any new GPU**. When a late Manager task actually finishes,
+the local slot becomes reusable, but its original GPU remains
+UNKNOWN_FENCED regardless of whether a Job reply arrived.
+
+This is not a system-wide protection: multiple coordinators or a
+Broker restart can bypass a *local* Task count. A future real Broker
+must enforce a global persisted in-flight limit, ownership of late
+operations across a crash, and trusted PID1 reconciliation before
+production activation. The change does not add any GPU release path.
 
 Read-only environment compatibility observation: Adam currently runs
 systemd **261**, while Sirius has systemd **255**, and the latter
@@ -158,3 +172,37 @@ Adam-side property introspection is therefore **not evidence** that
 Sirius will accept this draft's D-Bus property/variant combination.
 Require isolated systemd-255-target compatibility tests under a
 separately approved Phase B1b1 before any real system bus connection.
+
+
+## Target systemd-255 read-only compatibility evidence (2026-11-07)
+
+Sirius runs systemd `255 (255.4-1ubuntu8.17)` while the Adam
+development host runs systemd `261 (261.3)`. A **read-only** Sirius
+`busctl --system introspect` confirmed the existing PID1 Manager
+exports `StartTransientUnit` with signature
+`ssa(sv)a(sa(sv)) -> o`, `GetUnitByControlGroup(s)->o`,
+`GetUnitByInvocationID(ay)->o` and `JobRemoved(uoss)` signal.
+The existing Worker Unit exposes `ControlGroup`, `ExecStart`,
+`DevicePolicy`, `NoNewPrivileges`, `ProtectControlGroups`,
+`ProtectHome`, `ProtectSystem`, `PrivateTmp`, `Slice`
+and related introspectable read-only properties. That supports the
+*interface name and method signature* used by the offline port.
+
+It **does not prove** that systemd 255 accepts the proposed complete
+Transient Unit property set or D-Bus wire encoding. In particular,
+`ExecStart` is exposed as a richer runtime readback type than the
+transient property input shape, and `DevicePolicy=closed` is not
+sufficient to give Native GPU access. The existing Sirius Worker
+uses `Delegate=no` and `ProtectControlGroups=yes` and must
+remain unchanged.
+
+The systemd 255 manual also distinguishes transient `.service`
+execution managed by PID1 from `.scope` execution initiated by
+the caller; using `Type=exec` is supported in the 255 release.
+See https://www.freedesktop.org/software/systemd/man/255/systemd-run.html .
+
+**No real Sirius `StartTransientUnit` invocation was made**,
+no service or cgroup was created, and no privileged container test
+has passed. A disposable systemd-255+LXC compatibility canary and
+independent authorization review remain mandatory before any B1b1
+real transport or production activation.

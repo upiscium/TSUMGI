@@ -160,6 +160,7 @@ class NativeBrokerDispatchCoordinator:
         manager: NativeSystemdManagerPort,
         *,
         manager_ack_timeout_seconds: float = 30.0,
+        max_pending_manager_calls: int = 8,
     ) -> None:
         if not isinstance(ledger, NativeRunReservationLedger):
             raise NativeManagerPortError("native ledger required")
@@ -173,9 +174,17 @@ class NativeBrokerDispatchCoordinator:
             raise ValueError(
                 "manager_ack_timeout_seconds must be finite, positive and <= 30"
             )
+        if (
+            type(max_pending_manager_calls) is not int
+            or not 1 <= max_pending_manager_calls <= 16
+        ):
+            raise ValueError(
+                "max_pending_manager_calls must be an integer from 1 to 16"
+            )
         self._ledger = ledger
         self._manager = manager
         self._manager_ack_timeout_seconds = manager_ack_timeout_seconds
+        self._max_pending_manager_calls = max_pending_manager_calls
         # Retain unresolved Manager calls until their tasks finish. A
         # timeout/cancel can never prove PID1 did not create the service.
         # The persistent ledger keeps that run UNKNOWN_FENCED regardless.
@@ -210,6 +219,15 @@ class NativeBrokerDispatchCoordinator:
         plan = StartTransientUnitPlan.for_request(
             request, policy, trusted_peer_uid=trusted_peer_uid,
         )
+        # This same-event-loop coordinator must not accumulate an unbounded
+        # number of Manager operations that can remain alive after the caller
+        # times out. Reject *before* consuming another durable GPU reservation.
+        # This is a local backpressure guard only: a future real Broker needs
+        # a global persisted in-flight limit and restart reconciliation.
+        if len(self._pending_manager_calls) >= self._max_pending_manager_calls:
+            raise NativeManagerPortError(
+                "pending manager operation limit reached; reconciliation required"
+            )
         try:
             reservation = self._ledger.reserve(
                 request, policy.allowlist, trusted_peer_uid=trusted_peer_uid,
