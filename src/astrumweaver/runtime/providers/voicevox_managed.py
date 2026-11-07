@@ -338,7 +338,10 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
             config=config.adapter,
             api=engine,
             active=lambda: (
-                self._state is RuntimeHealthState.READY and not self._released
+                self._state is RuntimeHealthState.READY
+                and not self._released
+                and not self._release_requested
+                and not self._cleanup_uncertain
             ),
         )
         self._state = RuntimeHealthState.STOPPED
@@ -434,6 +437,16 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
                 raise VoicevoxRuntimeFailure("voicevox_runtime_unavailable")
             try:
                 await self._preflight()
+                # _preflight awaits untrusted file/process checks while the
+                # lifecycle lock is held. An independent stop/release can
+                # revoke admission before it acquires that same lock.
+                if (
+                    self._released
+                    or self._release_requested
+                    or self._cleanup_uncertain
+                    or self._state is not RuntimeHealthState.STOPPED
+                ):
+                    raise VoicevoxRuntimeFailure("voicevox_runtime_unavailable")
                 self._nonce = str(uuid4())
                 self._state = RuntimeHealthState.STARTING
                 async with asyncio.timeout(self._config.startup_timeout_seconds):
@@ -523,6 +536,12 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
                 owner_after = await self._process.endpoint_owner()
                 if type(owner_after) is not int or owner_after != obs.pid:
                     return self._fail("voicevox_foreign_endpoint")
+                if self._cleanup_uncertain or self._release_requested or self._released:
+                    # Never restore readiness from a stale probe after a
+                    # stop/release request, even if state was overwritten.
+                    if self._state is not RuntimeHealthState.FAILED:
+                        self._state = RuntimeHealthState.DEGRADED
+                    return self._health(self._state)
                 if (
                     self._state
                     not in (RuntimeHealthState.READY, RuntimeHealthState.STARTING)
@@ -636,6 +655,11 @@ class VoicevoxOwnedManagedRuntime(ManagedRuntime):
         return await self._executor.residency()
 
     def executor(self) -> VoicevoxExecutor:
-        if self._released or self._state is not RuntimeHealthState.READY:
+        if (
+            self._released
+            or self._release_requested
+            or self._cleanup_uncertain
+            or self._state is not RuntimeHealthState.READY
+        ):
             raise VoicevoxRuntimeFailure("voicevox_runtime_not_ready")
         return self._executor

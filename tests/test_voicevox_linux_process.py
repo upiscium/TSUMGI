@@ -1039,3 +1039,67 @@ async def test_post_exit_foreign_rebind_retains_handle_without_foreign_signals(
     finally:
         if ctl._proc is not None:
             await ctl.stop_owned(nonce=nonce)
+
+
+@pytest.mark.asyncio
+async def test_failed_late_spawn_reap_retries_owned_handle_after_listener_clears(
+    tmp_path, monkeypatch
+):
+    """One failed terminal late-reap must not poison same-nonce reconciliation."""
+    import astrumweaver.runtime.providers.voicevox_linux_process as module
+
+    cfg, pin, _runner, _controller = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    ctl = LinuxVoicevoxOwnedProcessControl(
+        launch_spec=replace(pin, stop_timeout_seconds=0.25), config=cfg
+    )
+    spawn_entered = asyncio.Event()
+    unblock_spawn = asyncio.Event()
+    foreign = {"listening": False}
+    original_spawn = asyncio.create_subprocess_exec
+    original_listener = module._listener_sockets
+
+    async def delayed_spawn(*args, **kwargs):
+        spawn_entered.set()
+        await unblock_spawn.wait()
+        proc = await original_spawn(*args, **kwargs)
+        foreign["listening"] = True  # Synthetic post-reap foreign port rebind.
+        return proc
+
+    def listener_after_reap(port):
+        if foreign["listening"]:
+            return (("synthetic-foreign-listener",),)
+        return original_listener(port)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(module, "_listener_sockets", listener_after_reap)
+    launching = asyncio.create_task(ctl.launch(config=cfg, nonce=nonce))
+    try:
+        await asyncio.wait_for(spawn_entered.wait(), 2)
+        launching.cancel()
+        await asyncio.wait_for(asyncio.gather(launching, return_exceptions=True), 1)
+        unblock_spawn.set()
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await asyncio.wait_for(ctl._pending_spawn_cleanup, 3)
+        proc = ctl._proc
+        assert proc is not None and proc.returncode is not None
+        assert ctl._aborted and ctl._nonce == nonce
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await ctl.stop_owned(nonce=nonce)
+        assert ctl._proc is proc  # Retain original owned handle while port bound.
+        foreign["listening"] = False
+        await ctl.stop_owned(nonce=nonce)
+        assert ctl._proc is None
+        assert ctl._pending_spawn_cleanup is None
+        assert ctl._verified_nonce == nonce
+        await ctl.stop_owned(nonce=nonce)  # Same verified proof stays idempotent.
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await ctl.launch(config=cfg, nonce=nonce)
+    finally:
+        unblock_spawn.set()
+        foreign["listening"] = False
+        await asyncio.gather(launching, return_exceptions=True)
+        if ctl._pending_spawn_cleanup is not None:
+            await asyncio.gather(ctl._pending_spawn_cleanup, return_exceptions=True)
+        if ctl._proc is not None:
+            await ctl._reap_newborn()

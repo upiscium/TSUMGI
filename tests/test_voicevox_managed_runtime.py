@@ -677,3 +677,60 @@ async def test_engine_close_failure_is_bounded_redacted_and_non_startable(
     await runtime.release()
     assert engine.closed == 1
     assert (await runtime.health()).state is RuntimeHealthState.FAILED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_action", ["stop", "release"])
+async def test_cleanup_requested_during_start_preflight_never_restores_admission(
+    tmp_path, monkeypatch, cleanup_action
+):
+    """A stop/release request must fence startup even while start holds its lock."""
+    runtime, engine, process, _cfg = make_runtime(tmp_path)
+    entered = asyncio.Event()
+    unblock = asyncio.Event()
+    original_preflight = runtime._preflight
+    seen_ready_during_cleanup = []
+    original_health = runtime._health
+
+    async def gated_preflight():
+        entered.set()
+        await unblock.wait()
+        await original_preflight()
+
+    def record_health(state, code=None):
+        if state is RuntimeHealthState.READY and runtime._cleanup_uncertain:
+            seen_ready_during_cleanup.append(state)
+        return original_health(state, code)
+
+    monkeypatch.setattr(runtime, "_preflight", gated_preflight)
+    monkeypatch.setattr(runtime, "_health", record_health)
+    starter = asyncio.create_task(runtime.start())
+    cleanup = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        cleanup = asyncio.create_task(getattr(runtime, cleanup_action)())
+        await asyncio.sleep(0)  # Let stop/release revoke before lock acquisition.
+        assert runtime._cleanup_uncertain
+        assert (await runtime.health()).state is RuntimeHealthState.DEGRADED
+        with pytest.raises(VoicevoxRuntimeFailure):
+            runtime.executor()
+        unblock.set()
+        with pytest.raises(VoicevoxRuntimeFailure, match="voicevox_start_failed"):
+            await asyncio.wait_for(starter, 1)
+        await asyncio.wait_for(cleanup, 1)
+        assert process.launch_calls == 0
+        assert process.obs is None
+        assert seen_ready_during_cleanup == []
+        assert (await runtime.health()).state is RuntimeHealthState.FAILED
+        with pytest.raises(VoicevoxRuntimeFailure):
+            await runtime.start()
+        assert runtime._nonce is None
+        if cleanup_action == "release":
+            assert runtime._released and engine.closed == 1
+    finally:
+        unblock.set()
+        await asyncio.gather(starter, return_exceptions=True)
+        if cleanup is not None:
+            await asyncio.gather(cleanup, return_exceptions=True)
+        if not runtime._released:
+            await runtime.release()

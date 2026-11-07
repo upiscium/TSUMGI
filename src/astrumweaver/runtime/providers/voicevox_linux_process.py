@@ -631,7 +631,24 @@ class LinuxVoicevoxOwnedProcessControl:
                     if self._pending_spawn_cleanup is not None:
                         if nonce != self._aborted_nonce:
                             _fail()
-                        await asyncio.shield(self._pending_spawn_cleanup)
+                        pending = self._pending_spawn_cleanup
+                        if not pending.done():
+                            # Wait for the task's completion, not its result.
+                            # Failure may leave a returned owned handle that
+                            # must be reconciled with a fresh port scan.
+                            # asyncio.wait does not cancel this owned task if
+                            # our bounded stop attempt is interrupted.
+                            await asyncio.wait((pending,))
+                        if not pending.done():
+                            _fail()
+                        if pending.cancelled() or pending.exception() is not None:
+                            if self._proc is None or self._nonce != nonce:
+                                _fail()  # Unknown spawn effects: fail closed.
+                            # Retry with the *same* owned handle and a fresh
+                            # bounded post-reap listener proof, not the stale
+                            # exception from the completed cleanup task.
+                            await self._reap_newborn()
+                        self._pending_spawn_cleanup = None
                         return
                     if self._proc is None:
                         if nonce == self._verified_nonce:
