@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 from collections.abc import Mapping
 
 import httpx
@@ -574,17 +575,26 @@ def test_multi_gpu_command_uses_visible_devices_and_tensor_split() -> None:
 async def test_subprocess_environment_pins_gpu_uuid_set(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    class Process:
-        returncode = None
+    class FakeGroup:
+        def __init__(self, pgid):
+            self.pgid = pgid
+        def has_live_members(self):
+            return False
+        def close(self):
+            pass
 
-        def terminate(self) -> None:
-            self.returncode = 0
+    monkeypatch.setattr(
+        "astrumweaver.runtime.providers.llama_cpp.OwnedPosixGroup.capture",
+        lambda pgid: FakeGroup(pgid),
+    )
+
+    class Process:
+        # Completed fake process: neither leader nor child group remains.
+        pid = 4321
+        returncode = 0
 
         async def wait(self) -> int:
             return 0
-
-        def kill(self) -> None:
-            self.returncode = -9
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
@@ -629,6 +639,11 @@ async def test_subprocess_environment_pins_gpu_uuid_set(monkeypatch) -> None:
     assert "stdout" not in captured["kwargs"]
     assert "stderr" not in captured["kwargs"]
 
+    assert captured["kwargs"]["start_new_session"] is True
+    monkeypatch.setattr(
+        os, "killpg",
+        lambda _group, _signal: (_ for _ in ()).throw(ProcessLookupError()),
+    )
     await controller.stop()
 
 
@@ -1165,6 +1180,7 @@ class FakeProcess:
         self.exit_on_start = exit_on_start
         self.starts = 0
         self.stops = 0
+        self.shutdown_incomplete = False
 
     @property
     def running(self) -> bool:
@@ -1338,6 +1354,90 @@ async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readin
 
     assert process.starts == 1
     assert process.stops == 1
+
+
+@pytest.mark.asyncio
+async def test_managed_runtime_denies_ready_after_failed_owned_shutdown() -> None:
+    # An HTTP-ready native process after failed TERM/KILL is *not* a
+    # legitimate managed Runtime, even if its wrapper PID remains alive.
+    api = FakeApi(reachable=True)
+    process = FakeProcess(api, running=True)
+    process.shutdown_incomplete = True
+    runtime = LlamaCppManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        startup_timeout_seconds=1.0,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers="auto",
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=True,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+    )
+    health = await runtime.health()
+    assert health.state is RuntimeHealthState.FAILED
+    assert health.ready is False
+    assert "shutdown incomplete" in (health.detail or "")
+    with pytest.raises(RuntimeError, match="shutdown has not completed"):
+        await runtime.start()
+    assert process.starts == 0
+    assert process.running is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["start", "health"])
+async def test_managed_runtime_does_not_admit_ready_after_concurrent_stop_failure(
+    operation: str,
+) -> None:
+    class GatedApi(FakeApi):
+        def __init__(self):
+            super().__init__(reachable=True)
+            self.entered = asyncio.Event()
+            self.unblock = asyncio.Event()
+
+        async def models(self) -> tuple[str, ...]:
+            self.entered.set()
+            await self.unblock.wait()
+            return await super().models()
+
+    api = GatedApi()
+    process = FakeProcess(api, running=True)
+    runtime = LlamaCppManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        startup_timeout_seconds=1.0,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers="auto", split_mode=LlamaCppSplitMode.NONE,
+            fit=True, tensor_split=None, fit_target_mb=None,
+            main_gpu=0, cpu_moe=False, n_cpu_moe=None, n_cpu_ffn=None,
+        ),
+    )
+
+    pending = asyncio.create_task(getattr(runtime, operation)())
+    await asyncio.wait_for(api.entered.wait(), timeout=3)
+    # A failed stop changes the owner fence while a health/model request
+    # is pending. No later success response may bypass that new state.
+    process.shutdown_incomplete = True
+    api.unblock.set()
+    if operation == "start":
+        with pytest.raises(RuntimeError, match="shutdown has not completed"):
+            await asyncio.wait_for(pending, timeout=3)
+    else:
+        status = await asyncio.wait_for(pending, timeout=3)
+        assert status.state is RuntimeHealthState.FAILED
+        assert status.ready is False
+        assert "shutdown incomplete" in (status.detail or "")
 
 
 @pytest.mark.asyncio

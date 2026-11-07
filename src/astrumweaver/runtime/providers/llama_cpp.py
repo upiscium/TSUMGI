@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
 import hashlib
 import stat
 from collections.abc import AsyncIterator, Mapping
@@ -45,6 +46,8 @@ from ...gateway.decision import (
     DecisionGatewayError,
     validate_decision_provider_response,
 )
+from .owned_posix_group import OwnedPosixGroup
+
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -622,10 +625,20 @@ class LlamaCppSubprocessController:
         self.reasoning_off = reasoning_off
         self.flash_attn = flash_attn
         self._process: asyncio.subprocess.Process | None = None
+        self._owned_group: OwnedPosixGroup | None = None
+        self._launch_task: asyncio.Task[asyncio.subprocess.Process] | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._stop_incomplete = False
 
     @property
     def running(self) -> bool:
+        # This reports the wrapper state only. Managed Runtime admission
+        # separately checks shutdown_incomplete before trusting health/alias.
         return self._process is not None and self._process.returncode is None
+
+    @property
+    def shutdown_incomplete(self) -> bool:
+        return self._stop_incomplete
 
     def command(self) -> tuple[str, ...]:
         parsed = urlsplit(self.base_url)
@@ -728,33 +741,173 @@ class LlamaCppSubprocessController:
         return tuple(args)
 
     async def start(self) -> None:
-        if self.running:
-            return
-        env = dict(os.environ)
-        if self.gpu_uuids:
-            env["CUDA_VISIBLE_DEVICES"] = ",".join(self.gpu_uuids)
-        try:
-            self._process = await asyncio.create_subprocess_exec(
-                *self.command(),
-                env=env,
-            )
-        except OSError as exc:
-            raise RuntimeError(
-                "failed to start llama.cpp server process"
-            ) from exc
+        async with self._lifecycle_lock:
+            if self._stop_incomplete:
+                raise RuntimeError(
+                    "previous owned llama.cpp shutdown has not completed"
+                )
+            if self._process is not None:
+                if self._process.returncode is None:
+                    return
+                # A wrapper may exit before its native child. Never begin
+                # another GPU process until explicit stop() verifies cleanup.
+                raise RuntimeError(
+                    "previous owned llama.cpp process must be stopped before restart"
+                )
+            env = dict(os.environ)
+            if self.gpu_uuids:
+                env["CUDA_VISIBLE_DEVICES"] = ",".join(self.gpu_uuids)
+            # The asynchronous OS spawn can finish *after* its caller has
+            # been cancelled. Execute it in a shielded task which binds the
+            # child to this owner before returning its result.
+            async def bind_spawn() -> asyncio.subprocess.Process:
+                process = await asyncio.create_subprocess_exec(
+                    *self.command(),
+                    env=env,
+                    start_new_session=True,
+                )
+                # Bind the immediate child before attempting Linux pidfd
+                # capture. If capture fails, keep ownership fenced so no
+                # replacement GPU process can silently launch.
+                self._process = process
+                try:
+                    self._owned_group = OwnedPosixGroup.capture(process.pid)
+                except Exception as exc:
+                    self._stop_incomplete = True
+                    raise RuntimeError(
+                        "cannot anchor owned llama.cpp process group"
+                    ) from exc
+                if self._stop_incomplete:
+                    # The caller was cancelled before spawn completed:
+                    # never leave a newly created native child un-fenced.
+                    self._signal_group(process.pid, signal.SIGKILL)
+                return process
+
+            launch = asyncio.create_task(bind_spawn())
+            self._launch_task = launch
+            try:
+                await asyncio.shield(launch)
+            except asyncio.CancelledError:
+                self._stop_incomplete = True
+                # Preserve owner registration even when the process becomes
+                # live after the cancellation; no second GPU launch permitted.
+                try:
+                    process = await asyncio.shield(launch)
+                except asyncio.CancelledError:
+                    # A repeated cancellation cannot discard the launch
+                    # task: bind_spawn will still register/kill its result.
+                    raise
+                except Exception:
+                    # An unreturned asynchronous spawn failure is not proof
+                    # that a native descendant was never created. Preserve
+                    # the incomplete-shutdown fence even if no Process handle
+                    # was delivered; higher-trust recovery is required.
+                    raise
+                if self._group_exists(process.pid):
+                    self._signal_group(process.pid, signal.SIGKILL)
+                if await self._wait_group_quiet(process, process.pid, 4.0):
+                    # Successful late-spawn cancellation must close the
+                    # capture-time /proc fd as well as release the process.
+                    # Otherwise each interrupted launch leaks an fd.
+                    if self._owned_group is not None:
+                        self._owned_group.close()
+                        self._owned_group = None
+                    self._process = None
+                    self._stop_incomplete = False
+                raise
+            except OSError as exc:
+                raise RuntimeError(
+                    "failed to start llama.cpp server process"
+                ) from exc
+            finally:
+                if launch.done():
+                    self._launch_task = None
+
+    def _group_exists(self, pgid: int) -> bool:
+        owner = self._owned_group
+        if owner is None or pgid != owner.pgid:
+            raise RuntimeError("owned process group identity is unavailable")
+        return owner.has_live_members()
+
+    def _signal_group(self, pgid: int, sig: signal.Signals) -> None:
+        # Never signal a reused numeric PGID, the Worker's own group, or
+        # another GPU user. Scan only the originally owned POSIX session,
+        # then signal each exact child via a stable /proc directory pidfd.
+        owner = self._owned_group
+        if owner is None or pgid != owner.pgid:
+            raise RuntimeError("owned process group identity is unavailable")
+        owner.signal_members(sig)
+
+    async def _wait_group_quiet(
+        self, process: asyncio.subprocess.Process, pgid: int, timeout: float,
+    ) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if process.returncode is not None and not self._group_exists(pgid):
+                await process.wait()
+                return True
+            await asyncio.sleep(0.05)
+        if process.returncode is not None and not self._group_exists(pgid):
+            await process.wait()
+            return True
+        return False
 
     async def stop(self) -> None:
-        process = self._process
-        if process is None:
-            return
-        if process.returncode is None:
-            process.terminate()
+        async with self._lifecycle_lock:
+            launch = self._launch_task
+            if launch is not None:
+                # A cancelled start can still be completing OS spawn. Do not
+                # report a no-op stop while it may allocate a native process.
+                self._stop_incomplete = True
+                try:
+                    await asyncio.wait_for(asyncio.shield(launch), timeout=8.0)
+                except (asyncio.TimeoutError, OSError):
+                    # OSError without a returned Process handle is NOT proof
+                    # that no wrapper descendant was ever spawned. Keep the
+                    # owner fenced rather than accepting an unverified stop.
+                    raise RuntimeError(
+                        "owned llama.cpp launch not yet resolved for cleanup"
+                    ) from None
+                finally:
+                    if launch.done():
+                        self._launch_task = None
+            process = self._process
+            if process is None:
+                if self._stop_incomplete:
+                    raise RuntimeError(
+                        "owned llama.cpp launch requires explicit cleanup"
+                    )
+                return
+            # Never admit a new GPU launch after a failed or cancelled stop,
+            # including when the immediate wrapper is still alive.
+            self._stop_incomplete = True
+            pgid = process.pid
+            if type(pgid) is not int or pgid <= 1:
+                raise RuntimeError("owned llama.cpp process group identity unavailable")
+            # Even if the wrapper exited, its native descendants may still
+            # occupy CUDA in this dedicated group.
             try:
-                await asyncio.wait_for(process.wait(), timeout=10.0)
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
-        self._process = None
+                if self._group_exists(pgid):
+                    self._signal_group(pgid, signal.SIGTERM)
+                if not await self._wait_group_quiet(process, pgid, 8.0):
+                    self._signal_group(pgid, signal.SIGKILL)
+                    if not await self._wait_group_quiet(process, pgid, 4.0):
+                        raise RuntimeError(
+                            "owned llama.cpp process group did not stop"
+                        )
+            except asyncio.CancelledError:
+                # A shutdown deadline must not leave an unbounded native
+                # child simply because its cleanup coroutine was cancelled.
+                # Keep the owner bound: completion is not yet verified.
+                if self._group_exists(pgid):
+                    self._signal_group(pgid, signal.SIGKILL)
+                raise
+            if self._owned_group is not None:
+                self._owned_group.close()
+                self._owned_group = None
+            self._process = None
+            self._stop_incomplete = False
 
 
 class LlamaCppExecutor(JobExecutor):
@@ -1704,9 +1857,18 @@ class LlamaCppManagedRuntime(ManagedRuntime):
     async def _server_reachable(self) -> bool:
         return await self.api.health()
 
+    def _owned_shutdown_incomplete(self) -> bool:
+        # Fake/custom controllers predate this optional source-only guard.
+        # The real managed subprocess controller exposes it explicitly.
+        return self.process.shutdown_incomplete if isinstance(
+            self.process, LlamaCppSubprocessController
+        ) else bool(getattr(self.process, "shutdown_incomplete", False))
+
     async def start(self) -> None:
         if self._closed:
             raise RuntimeError("llama.cpp runtime has already been released")
+        if self._owned_shutdown_incomplete():
+            raise RuntimeError("owned llama.cpp shutdown has not completed")
 
         reachable = await self._server_reachable()
         if reachable and not self.process.running:
@@ -1751,6 +1913,12 @@ class LlamaCppManagedRuntime(ManagedRuntime):
                 raise RuntimeError(
                     "llama.cpp model does not advertise native decision output"
                 )
+            # Stop may have begun and failed while model discovery yielded.
+            # No awaited operation may follow the final readiness gate.
+            if self._owned_shutdown_incomplete():
+                raise RuntimeError("owned llama.cpp shutdown has not completed")
+            if not self.process.running:
+                raise RuntimeError("llama.cpp owned process exited before readiness")
         except Exception:
             if started_here:
                 with contextlib.suppress(Exception):
@@ -1760,7 +1928,18 @@ class LlamaCppManagedRuntime(ManagedRuntime):
     async def stop(self) -> None:
         await self.process.stop()
 
+    def _incomplete_shutdown_health(self) -> RuntimeHealth:
+        return RuntimeHealth(
+            state=RuntimeHealthState.FAILED,
+            ready=False,
+            detail="owned llama.cpp runtime shutdown incomplete",
+            metadata={"runtime_provider": LLAMA_CPP_PROVIDER_ID},
+        )
+
     async def health(self) -> RuntimeHealth:
+        if self._owned_shutdown_incomplete():
+            # Native HTTP may continue answering during failed shutdown.
+            return self._incomplete_shutdown_health()
         reachable = await self._server_reachable()
         if not reachable:
             return RuntimeHealth(
@@ -1814,7 +1993,10 @@ class LlamaCppManagedRuntime(ManagedRuntime):
                     detail="configured model is not a native decision model",
                     metadata={"runtime_provider": LLAMA_CPP_PROVIDER_ID},
                 )
-        # An owned process may exit during the awaited inventory request.
+        # Every awaited inventory/decision request may overlap a failed
+        # stop. Recheck the owner after the *last* await before READY.
+        if self._owned_shutdown_incomplete():
+            return self._incomplete_shutdown_health()
         if not self.process.running:
             return RuntimeHealth(
                 state=RuntimeHealthState.STOPPED,
