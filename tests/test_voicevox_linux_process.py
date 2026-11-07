@@ -1103,3 +1103,103 @@ async def test_failed_late_spawn_reap_retries_owned_handle_after_listener_clears
             await asyncio.gather(ctl._pending_spawn_cleanup, return_exceptions=True)
         if ctl._proc is not None:
             await ctl._reap_newborn()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "after_reap", [False, True], ids=["while-stopping", "after-stopped"]
+)
+async def test_owner_scan_started_before_stop_cannot_publish_stale_pid(
+    tmp_path, monkeypatch, after_reap
+):
+    """A previously verified PID is not an admission proof across a stop request."""
+    _cfg, _pin, _runner, controller = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    await controller.launch(config=_cfg, nonce=nonce)
+    await ready(controller)
+    owned_pid = controller._proc.pid
+    entered = threading.Event()
+    release_scan = threading.Event()
+    original = controller._read_owner
+
+    def paused_scan(port):
+        observed = original(port)
+        assert observed == owned_pid
+        entered.set()
+        assert release_scan.wait(3), "test-owned scan must be released"
+        return observed
+
+    monkeypatch.setattr(controller, "_read_owner", paused_scan)
+    owner_probe = asyncio.create_task(controller.endpoint_owner())
+    stop_task = None
+    lock_held = False
+    try:
+        async with asyncio.timeout(2):
+            while not entered.is_set():
+                await asyncio.sleep(0.002)
+        if not after_reap:
+            await controller._lock.acquire()
+            lock_held = True
+        stop_task = asyncio.create_task(controller.stop_owned(nonce=nonce))
+        async with asyncio.timeout(1):
+            while not controller._stopping:
+                await asyncio.sleep(0)
+        if after_reap:
+            await asyncio.wait_for(stop_task, 2)
+            assert controller._proc is None
+            assert not controller._stopping
+        else:
+            assert not stop_task.done() and controller._stopping
+        release_scan.set()
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await asyncio.wait_for(owner_probe, 2)
+    finally:
+        release_scan.set()
+        if lock_held and controller._lock.locked():
+            controller._lock.release()
+        await asyncio.gather(owner_probe, return_exceptions=True)
+        if stop_task is not None:
+            await asyncio.wait_for(stop_task, 3)
+        if controller._proc is not None:
+            await controller.stop_owned(nonce=nonce)
+    assert controller._proc is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_overlapping_stop_does_not_clear_active_stop_fence(tmp_path):
+    """A cancelled lock waiter cannot revoke another stop's admission denial."""
+    _cfg, _pin, _runner, controller = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    await controller.launch(config=_cfg, nonce=nonce)
+    await ready(controller)
+    original_proc = controller._proc
+    await controller._lock.acquire()
+    first = asyncio.create_task(controller.stop_owned(nonce=nonce))
+    second = None
+    try:
+        async with asyncio.timeout(1):
+            while not controller._stopping:
+                await asyncio.sleep(0)
+        assert not first.done()
+        second = asyncio.create_task(controller.stop_owned(nonce=nonce))
+        await asyncio.sleep(0)
+        assert not second.done()
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        # The first request still owns the pending cleanup intent.
+        assert not first.done()
+        assert controller._stopping
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await controller.endpoint_owner()
+    finally:
+        if controller._lock.locked():
+            controller._lock.release()
+        await asyncio.wait_for(first, 3)
+        if second is not None:
+            await asyncio.gather(second, return_exceptions=True)
+        if controller._proc is not None:
+            await controller.stop_owned(nonce=nonce)
+    assert original_proc.returncode is not None
+    assert controller._proc is None
+    assert not controller._stopping

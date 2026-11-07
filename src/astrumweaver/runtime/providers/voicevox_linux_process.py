@@ -309,6 +309,12 @@ class LinuxVoicevoxOwnedProcessControl:
         self._pending_verification: asyncio.Task | None = None
         self._pending_reap: asyncio.Task[int] | None = None
         self._verified_nonce: str | None = None
+        # Every admitted stop request fences new owner observations until
+        # its own completion. Do not let a cancelled lock waiter clear a
+        # concurrent stop's fence; the epoch also invalidates in-flight
+        # inspections after a stop completed between two awaits.
+        self._stop_requests = 0
+        self._stop_epoch = 0
         self._stopping = False
 
     @staticmethod
@@ -351,13 +357,17 @@ class LinuxVoicevoxOwnedProcessControl:
         return proc.pid
 
     async def endpoint_owner(self) -> int | None:
+        observed_epoch = self._stop_epoch
         if self._aborted or self._stopping:
             _fail()
         # Config is frozen at construction: ManagedRuntime preflight calls
         # endpoint_owner BEFORE launch. Never admit a second/foreign listener.
         cfg = self._config
         try:
-            return await asyncio.to_thread(self._read_owner, self._port(cfg))
+            owner = await asyncio.to_thread(self._read_owner, self._port(cfg))
+            if self._aborted or self._stopping or self._stop_epoch != observed_epoch:
+                _fail()  # Reject stale scans even when stop already completed.
+            return owner
         except Exception:  # noqa: BLE001 - no path/hostname/error leak
             raise VoicevoxOwnedProcessError() from None
 
@@ -622,6 +632,8 @@ class LinuxVoicevoxOwnedProcessControl:
         deadline = (
             asyncio.get_running_loop().time() + self._launch_spec.stop_timeout_seconds
         )
+        self._stop_requests += 1
+        self._stop_epoch += 1
         self._stopping = True
         try:
             # The ONLY whole process-cleanup deadline: lock, prior inspection,
@@ -664,7 +676,8 @@ class LinuxVoicevoxOwnedProcessControl:
                 raise
             raise VoicevoxOwnedProcessError() from None
         finally:
-            self._stopping = False
+            self._stop_requests -= 1
+            self._stopping = self._stop_requests > 0
 
     async def _signal_owned(self, proc: asyncio.subprocess.Process, sig: int) -> None:
         if proc.returncode is not None:
