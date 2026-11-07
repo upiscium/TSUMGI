@@ -270,3 +270,28 @@ real GPU/model/Worker, or alter Sirius/Control/DB. It establishes
 method/property compatibility and a dummy process cgroup identity on
 one systemd-255 sandbox, **not** correctness under Qwen/CUDA load,
 nor successful recursive empty verification on shutdown.
+
+## R4 — two-tier delegated Supervisor / atomic clone3 feasibility
+
+New GPU-free ephemeral systemd-255 experiments on arca-sandbox showed
+that a trusted Supervisor running in a monitor sibling and starting
+an unprivileged Native child through clone3(CLONE_INTO_CGROUP)
+can reliably observe its native sibling populated=1 then
+populated=0 while retaining the same cgroup/events-file identities.
+An orphaned setsid grandchild ignoring TERM was recovered by
+cgroup.kill scoped only to the native sibling, while the parent
+monitor stayed alive. This is a disposable root/delegated fixture,
+not a production permission change.
+
+See native-llama-two-tier-cgroup-r4.md for the exact evidence,
+new offline-only validation contract and critical missing
+seal/repopulation, trusted launcher, Broker authority and durable
+release proof. The current flat B1b0 StartTransientUnitPlan MUST NOT
+be activated or automatically changed to Delegate=yes.
+
+The R4 negative test also proved that even a correctly observed
+native populated=0 can become populated=1 AGAIN at the same cgroup
+inode when an authorized Supervisor launches a new child before
+sealing. After that negative control, the Supervisor emptied and
+removed the native subgroup while the monitor stayed active.
+This is why no stop-release path was added to this Draft PR.
