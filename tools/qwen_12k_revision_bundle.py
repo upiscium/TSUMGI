@@ -13,6 +13,7 @@ import json
 import re
 from collections.abc import Mapping
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from qwen_12k_candidate import (
@@ -21,6 +22,7 @@ from qwen_12k_candidate import (
     TARGET_LIMITS,
     build_unqualified_candidate,
 )
+from qwen_12k_journal_proof import inspect_journal_projection
 
 from astrumweaver.gateway.chat import ChatProfileCatalog
 from astrumweaver.serving import (
@@ -64,6 +66,8 @@ def build_review_required_revisions(
     *,
     execution_review: Mapping[str, Any],
     native_canary_record: Mapping[str, Any],
+    journal_bytes: bytes | None = None,
+    expected_journal_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Validate the revision chain, not the authenticity of external evidence.
 
@@ -155,7 +159,28 @@ def build_review_required_revisions(
         and all(type(x) is int and 2048 <= x <= 131_072 for x in free.values()),
         "canary-record-vram-floor-or-gpus-invalid",
     )
-    evidence_sha = _digest(dict(native_canary_record))
+    if (journal_bytes is None) != (expected_journal_sha256 is None):
+        raise ValueError("journal-content-and-source-sha-must-be-paired")
+    journal_inspection = None
+    evidence_source: dict[str, Any] = dict(native_canary_record)
+    if journal_bytes is not None:
+        journal_inspection = inspect_journal_projection(
+            journal_bytes, expected_sha256=expected_journal_sha256,
+        )
+        _require(
+            journal_inspection["context_size_logged"]
+            == native_canary_record["native_context_size"]
+            and journal_inspection["uncached_7841_prompt_logged"] is True
+            and journal_inspection["10052_prompt_logged"] is True
+            and native_canary_record["max_input_tokens"] == 10_052,
+            "journal-and-native-canary-report-inconsistent",
+        )
+        evidence_source = {
+            "schema_version": "qwen12k-reported-native-plus-journal-v1",
+            "reported_native_canary": dict(native_canary_record),
+            "journal_inspection": journal_inspection,
+        }
+    evidence_sha = _digest(evidence_source)
     _require(evidence_sha != original.contracts[0].validation_evidence_sha256,
              "canary-evidence-reuses-8k-digest")
 
@@ -212,6 +237,8 @@ def build_review_required_revisions(
         "proposed_profile_revision": profile.revision,
         "execution_record_sha256": execution_sha,
         "native_canary_record_sha256": evidence_sha,
+        "journal_trace_attached": journal_inspection is not None,
+        "journal_provenance": journal_inspection,
         "runtime_proposal": runtime,
         "serving_proposal": serving.to_dict(),
         "catalog_proposal": raw_catalog,
@@ -280,6 +307,13 @@ def _write_private_review_bundle(directory: str, proposal: Mapping[str, Any]) ->
             os.close(folder_fd)
 
 
+def _read_limited_journal(path: str) -> bytes:
+    source = Path(path)
+    if not 0 < source.stat().st_size <= 256 * 1024:
+        raise ValueError("journal-source-size-invalid")
+    return source.read_bytes()
+
+
 def main() -> int:
     import argparse
 
@@ -292,6 +326,8 @@ def main() -> int:
     parser.add_argument(
         "--output-dir", help="new /tmp/tsumgi-qwen12k-review-* directory",
     )
+    parser.add_argument("--journal-json")
+    parser.add_argument("--journal-expected-sha256")
     args = parser.parse_args()
     try:
         proposal = build_review_required_revisions(
@@ -301,6 +337,11 @@ def main() -> int:
             _read_limited_object(args.reviewed_pin),
             execution_review=_read_limited_object(args.execution_review),
             native_canary_record=_read_limited_object(args.native_canary_record),
+            journal_bytes=(
+                None if args.journal_json is None
+                else _read_limited_journal(args.journal_json)
+            ),
+            expected_journal_sha256=args.journal_expected_sha256,
         )
         if args.output_dir:
             _write_private_review_bundle(args.output_dir, proposal)
@@ -319,6 +360,7 @@ def main() -> int:
         ],
         "profile_revision": proposal["proposed_profile_revision"],
         "private_review_files_written": bool(args.output_dir),
+        "journal_trace_attached": proposal["journal_trace_attached"],
     }, sort_keys=True))
     return 0
 

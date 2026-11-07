@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from copy import deepcopy
@@ -252,3 +253,63 @@ def test_operator_cli_refuses_other_output_directories(tmp_path):
         bundle._write_private_review_bundle(str(tmp_path / "review"), proposal)
     with pytest.raises(ValueError, match="private-tmp"):
         bundle._write_private_review_bundle("/etc/astrumweaver/review", proposal)
+
+
+
+def test_journal_backed_report_changes_only_evidence_revision():
+    from test_qwen_12k_journal_proof import canonical, fixture_records
+
+    runtime, serving, catalog = fixtures()
+    execution, canary = records(runtime, serving, catalog)
+    reported_only = build(runtime, serving, catalog, execution, canary)
+    journal = canonical(fixture_records())
+    journal_sha = hashlib.sha256(journal).hexdigest()
+    augmented = bundle.build_review_required_revisions(
+        runtime, serving, catalog, reviewed_pin(),
+        execution_review=execution, native_canary_record=canary,
+        journal_bytes=journal, expected_journal_sha256=journal_sha,
+    )
+    assert augmented["journal_trace_attached"] is True
+    assert augmented["journal_provenance"]["journal_event_count"] == 12
+    assert augmented["journal_provenance"]["unit_nonzero_exit_observed"] is True
+    assert augmented["journal_provenance"]["source_authenticated"] is False
+    assert augmented["journal_provenance"]["gpu_release_proven"] is False
+    assert augmented["reviewed_receipts_authenticated"] is False
+    assert augmented["kernel_lifecycle_or_gateway_accepted"] is False
+    assert augmented["native_canary_record_sha256"] != (
+        reported_only["native_canary_record_sha256"]
+    )
+    assert augmented["proposed_deployment_revision"] == (
+        reported_only["proposed_deployment_revision"]
+    )
+    assert augmented["proposed_serving_contract_revision"] != (
+        reported_only["proposed_serving_contract_revision"]
+    )
+    ServingDeploymentDeclaration.from_dict(augmented["serving_proposal"])
+    ChatProfileCatalog.from_dict(augmented["catalog_proposal"])
+
+
+def test_journal_pair_required_and_mismatches_refused():
+    from test_qwen_12k_journal_proof import canonical, fixture_records
+
+    runtime, serving, catalog = fixtures()
+    execution, canary = records(runtime, serving, catalog)
+    journal = canonical(fixture_records())
+    args = (runtime, serving, catalog, reviewed_pin())
+    def invoke(**kw):
+        return bundle.build_review_required_revisions(
+            *args, execution_review=execution, native_canary_record=canary,
+            **kw,
+        )
+    with pytest.raises(ValueError, match="paired"):
+        invoke(journal_bytes=journal)
+    with pytest.raises(ValueError, match="paired"):
+        invoke(expected_journal_sha256=hashlib.sha256(journal).hexdigest())
+    with pytest.raises(ValueError, match="digest mismatch"):
+        invoke(journal_bytes=journal, expected_journal_sha256="0" * 64)
+    canary["max_input_tokens"] = 10240
+    with pytest.raises(ValueError, match="journal-and-native"):
+        invoke(
+            journal_bytes=journal,
+            expected_journal_sha256=hashlib.sha256(journal).hexdigest(),
+        )
