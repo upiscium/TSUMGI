@@ -466,3 +466,132 @@ async def test_offline_dbus_lost_ack_cannot_retry_manager_start(tmp_path):
     with pytest.raises(NativeManagerPortError, match="already reserved"):
         await coordinator.dispatch_once(req, reviewed(req), trusted_peer_uid=UID)
     assert len(transport.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_manager_no_reply_is_bounded_and_gpu_remains_fenced(tmp_path):
+    """Without a bound, a hanging PID1 adapter stalls dispatch forever."""
+    req = request()
+    manager = FakeManager(wait_for_release=True)
+    store = ledger(tmp_path)
+    broker = NativeBrokerDispatchCoordinator(
+        store, manager, manager_ack_timeout_seconds=0.03,
+    )
+    try:
+        with pytest.raises(NativeManagerPortError, match="reply unconfirmed"):
+            await asyncio.wait_for(
+                broker.dispatch_once(req, reviewed(req), trusted_peer_uid=UID),
+                timeout=2.0,
+            )
+        assert len(manager.calls) == 1
+        assert store.list_reservations()[0].phase is NativeLedgerPhase.UNKNOWN_FENCED
+        with pytest.raises(NativeManagerPortError, match="already reserved"):
+            await broker.dispatch_once(req, reviewed(req), trusted_peer_uid=UID)
+        assert len(manager.calls) == 1
+    finally:
+        manager.release.set()
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, False, float("nan"), float("inf"), None, "1"])
+def test_manager_ack_timeout_rejects_unbounded_or_invalid_values(tmp_path, invalid):
+    manager = FakeManager()
+    with pytest.raises(ValueError, match="manager_ack_timeout_seconds"):
+        NativeBrokerDispatchCoordinator(
+            ledger(tmp_path), manager, manager_ack_timeout_seconds=invalid,
+        )
+
+
+@pytest.mark.asyncio
+async def test_manager_ignoring_cancellation_cannot_extend_ack_wait(tmp_path):
+    """wait_for(task) alone may exceed its deadline if adapter ignores cancel."""
+
+    class CancellationResistantManager(FakeManager):
+        async def start_transient_unit(self, plan):
+            self.calls.append(plan)
+            self.entered.set()
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                # Simulate in-flight bus transaction completing after client
+                # cancellation, without assuming PID1 did not start a unit.
+                await self.release.wait()
+            return "/org/freedesktop/systemd1/job/431"
+
+    req = request()
+    manager = CancellationResistantManager(wait_for_release=True)
+    store = ledger(tmp_path)
+    broker = NativeBrokerDispatchCoordinator(
+        store, manager, manager_ack_timeout_seconds=0.02,
+    )
+    dispatch = asyncio.create_task(
+        broker.dispatch_once(req, reviewed(req), trusted_peer_uid=UID)
+    )
+    try:
+        await asyncio.wait_for(manager.entered.wait(), 2)
+        await asyncio.sleep(0.1)
+        assert dispatch.done(), "manager suppressed cancellation and hung ACK"
+        with pytest.raises(NativeManagerPortError, match="reply unconfirmed"):
+            await dispatch
+        assert store.list_reservations()[0].phase is NativeLedgerPhase.UNKNOWN_FENCED
+        with pytest.raises(NativeManagerPortError, match="already reserved"):
+            await broker.dispatch_once(req, reviewed(req), trusted_peer_uid=UID)
+        assert len(manager.calls) == 1
+    finally:
+        manager.release.set()
+        if not dispatch.done():
+            await asyncio.wait_for(dispatch, timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_late_manager_ack_does_not_auto_unfence_after_timeout(tmp_path):
+    req = request()
+    manager = FakeManager(wait_for_release=True)
+    store = ledger(tmp_path)
+    broker = NativeBrokerDispatchCoordinator(
+        store, manager, manager_ack_timeout_seconds=0.02,
+    )
+    with pytest.raises(NativeManagerPortError, match="reply unconfirmed"):
+        await broker.dispatch_once(req, reviewed(req), trusted_peer_uid=UID)
+    assert len(broker._pending_manager_calls) == 1
+    assert store.list_reservations()[0].phase is NativeLedgerPhase.UNKNOWN_FENCED
+    manager.release.set()
+    await asyncio.wait_for(
+        asyncio.gather(*tuple(broker._pending_manager_calls)),
+        timeout=2.0,
+    )
+    # A callback may still be scheduled after Task completion.
+    await asyncio.sleep(0)
+    assert not broker._pending_manager_calls
+    assert store.list_reservations()[0].phase is NativeLedgerPhase.UNKNOWN_FENCED
+    with pytest.raises(NativeManagerPortError, match="already reserved"):
+        await broker.dispatch_once(req, reviewed(req), trusted_peer_uid=UID)
+    assert len(manager.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_caller_cannot_cancel_unconfirmed_manager_operation(tmp_path):
+    req = request()
+    manager = FakeManager(wait_for_release=True)
+    store = ledger(tmp_path)
+    broker = NativeBrokerDispatchCoordinator(
+        store, manager, manager_ack_timeout_seconds=0.5,
+    )
+    caller = asyncio.create_task(
+        broker.dispatch_once(req, reviewed(req), trusted_peer_uid=UID)
+    )
+    try:
+        await asyncio.wait_for(manager.entered.wait(), timeout=2)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert len(manager.calls) == 1
+        assert len(broker._pending_manager_calls) == 1
+        assert store.list_reservations()[0].phase is NativeLedgerPhase.UNKNOWN_FENCED
+    finally:
+        manager.release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*tuple(broker._pending_manager_calls)), timeout=2,
+        )
+    await asyncio.sleep(0)
+    assert not broker._pending_manager_calls
+    assert store.list_reservations()[0].phase is NativeLedgerPhase.UNKNOWN_FENCED

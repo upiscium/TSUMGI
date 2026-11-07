@@ -60,9 +60,13 @@ The `NativeBrokerDispatchCoordinator.dispatch_once` sequence is:
    the first Manager-port call. If the commit fails, do not invoke
    Manager. The prelaunch reservation remains durable.
 4. Issue precisely one `start_transient_unit` through the injected
-   manager interface. A lost response, fake transport error or
-   cancellation never releases/retries the GPU owner. An invalid
-   Job object path is rejected while the ledger remains FENCED.
+   manager interface, with a positive, finite Manager **reply** timeout
+   bounded at 30 seconds (default 30). A missing/late response,
+   timeout, fake transport error or cancellation never releases/retries
+   the GPU owner. The future PID1 operation may still have been queued
+   when the caller times out; this timeout is **not** proof of failure
+   or a replacement launch authorization. An invalid Job object path
+   is rejected while the ledger remains FENCED.
 5. Even if a valid Job path is returned, emit only a
    `NativeStartPendingReceipt` with `UNKNOWN_FENCED`, **never** a
    READY/RELEASED state or real containment proof.
@@ -120,3 +124,37 @@ fence-to-fake-transport integration, but **there is no concrete
 transport connecting to PID1**. It cannot authenticate `SO_PEERCRED`,
 attest the real transient unit or grant a GPU permission. No positive
 hardware/systemd acceptance is claimed.
+
+## R1 hardening — Manager response bound and target version mismatch
+
+An isolated negative test first failed on the original B1b0 source:
+`NativeBrokerDispatchCoordinator` had **no Manager acknowledgement
+deadline** and could wait indefinitely for a hung fake Manager call.
+The source-only coordinator now bounds this *caller reply wait* to a
+finite, strictly positive value **no greater than 30 seconds**,
+defaulting to 30 seconds. A second negative regression exposed a
+subtle AsyncIO problem: directly using
+`wait_for(manager.start_transient_unit())` still hangs after the
+deadline when the Manager coroutine catches and suppresses
+cancellation. The corrected code creates a separately tracked Manager
+task and awaits `wait_for(shield(task))`, so the calling coroutine
+times out promptly without asserting that the underlying request
+was cancelled or that the service never started. A late task
+completion/error is harvested only to avoid leaking task exceptions;
+it cannot mark READY, free the GPU, or authorize retry. The durable
+`UNKNOWN_FENCED` owner remains intact until a future trusted broker
+reconciles the exact run/unit with PID1.
+
+This is an **acknowledgement wait bound only**. It is not a systemd
+service start/stop deadline, is not a trusted manager completion
+receipt, and is not proof of kernel cgroup containment. A future
+broker must also limit/account for unresolved in-flight operations,
+especially across Broker crashes, before any production activation.
+
+Read-only environment compatibility observation: Adam currently runs
+systemd **261**, while Sirius has systemd **255**, and the latter
+does not provide `systemd-analyze transient-settings`. Success of
+Adam-side property introspection is therefore **not evidence** that
+Sirius will accept this draft's D-Bus property/variant combination.
+Require isolated systemd-255-target compatibility tests under a
+separately approved Phase B1b1 before any real system bus connection.

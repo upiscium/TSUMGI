@@ -12,6 +12,8 @@ placement, process exit, or an authorization to retry a lost launch.
 from __future__ import annotations
 
 import asyncio
+import logging
+import math
 import re
 from dataclasses import dataclass
 from typing import Protocol
@@ -23,6 +25,7 @@ from .native_cgroup_ledger import (
     NativeRunReservationLedger,
 )
 
+_log = logging.getLogger(__name__)
 _JOB_OBJECT = re.compile(r"/org/freedesktop/systemd1/job/[1-9][0-9]*\Z")
 _MAX_ARG_COUNT = 32
 _MAX_ARG_BYTES = 8192
@@ -155,13 +158,44 @@ class NativeBrokerDispatchCoordinator:
         self,
         ledger: NativeRunReservationLedger,
         manager: NativeSystemdManagerPort,
+        *,
+        manager_ack_timeout_seconds: float = 30.0,
     ) -> None:
         if not isinstance(ledger, NativeRunReservationLedger):
             raise NativeManagerPortError("native ledger required")
         if not callable(getattr(manager, "start_transient_unit", None)):
             raise NativeManagerPortError("native manager port required")
+        if (
+            type(manager_ack_timeout_seconds) not in {float, int}
+            or not math.isfinite(manager_ack_timeout_seconds)
+            or not 0 < manager_ack_timeout_seconds <= 30.0
+        ):
+            raise ValueError(
+                "manager_ack_timeout_seconds must be finite, positive and <= 30"
+            )
         self._ledger = ledger
         self._manager = manager
+        self._manager_ack_timeout_seconds = manager_ack_timeout_seconds
+        # Retain unresolved Manager calls until their tasks finish. A
+        # timeout/cancel can never prove PID1 did not create the service.
+        # The persistent ledger keeps that run UNKNOWN_FENCED regardless.
+        self._pending_manager_calls: set[asyncio.Task[str]] = set()
+
+    def _finish_manager_call(self, task: asyncio.Task[str]) -> None:
+        self._pending_manager_calls.discard(task)
+        # Harvest a late error so the event loop doesn't warn about an
+        # unhandled task exception. NEVER turn a late job path into READY
+        # or free the durably reserved GPU; B1b1 needs trusted reconciliation.
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            _log.warning("native manager operation cancelled; ownership stays fenced")
+        except Exception as exc:  # noqa: BLE001 - harvest all late task failures
+            # Keep untrusted error text out of logs; no claim of GPU release.
+            _log.warning(
+                "native manager operation ended with %s; ownership stays fenced",
+                type(exc).__name__,
+            )
 
     async def dispatch_once(
         self,
@@ -201,10 +235,22 @@ class NativeBrokerDispatchCoordinator:
 
         # Even a successful job path does not prove the service began or that
         # the cgroup contains the native process. Unknown manager outcomes,
-        # cancellations or malformatted replies leave the durable ledger
+        # cancellations or malformed replies leave the durable ledger
         # UNKNOWN_FENCED and forbid retry. No cleanup or auto-unfencing here.
+        #
+        # asyncio.wait_for(coroutine) is NOT reliably bounded if the
+        # coroutine suppresses cancellation. Keep the manager operation in
+        # a separate owned task and shield it: only the CALLER's reply wait
+        # expires. The underlying D-Bus request may still complete later,
+        # so the persistent run's GPU fence must NOT be cleared.
+        operation = asyncio.create_task(self._manager.start_transient_unit(plan))
+        self._pending_manager_calls.add(operation)
+        operation.add_done_callback(self._finish_manager_call)
         try:
-            job_path = await self._manager.start_transient_unit(plan)
+            job_path = await asyncio.wait_for(
+                asyncio.shield(operation),
+                timeout=self._manager_ack_timeout_seconds,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
