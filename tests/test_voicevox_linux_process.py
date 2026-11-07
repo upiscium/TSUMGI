@@ -102,6 +102,49 @@ async def ready(controller: LinuxVoicevoxOwnedProcessControl, *, seconds=3.0):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "nonce",
+    [
+        pytest.param(None, id="none"),
+        pytest.param(0, id="integer"),
+        pytest.param(False, id="boolean"),
+        pytest.param(b"01234567-89ab-4cde-8123-0123456789ab", id="bytes"),
+        pytest.param([], id="list"),
+        pytest.param("", id="empty"),
+        pytest.param("private-malformed-value", id="malformed"),
+        pytest.param("01234567-89AB-4CDE-8123-0123456789AB", id="uppercase"),
+        pytest.param("0123456789ab4cde81230123456789ab", id="no-hyphens"),
+        pytest.param("01234567-89ab-4cde-8123-0123456789ag", id="non-hex"),
+        pytest.param("01234567-89ab-4cde-8123-0123456789ab\n", id="newline"),
+        pytest.param("ffffffff-ffff-ffff-ffff-ffffffffffff", id="foreign-valid"),
+    ],
+)
+async def test_unstarted_stop_rejects_unproven_nonce_without_side_effects(
+    tmp_path, monkeypatch, nonce
+):
+    import astrumweaver.runtime.providers.voicevox_linux_process as module
+
+    _cfg, _pin, _runner, controller = setup(tmp_path)
+    assert controller._proc is None
+    assert controller._nonce is None
+    assert controller._verified_nonce is None
+    assert controller._aborted_nonce is None
+    before = vars(controller).copy()
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("unstarted stop must not spawn, signal or inspect listeners")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden)
+    monkeypatch.setattr(module.os, "killpg", forbidden)
+    monkeypatch.setattr(module, "_listener_sockets", forbidden)
+    with pytest.raises(VoicevoxOwnedProcessError) as error:
+        await controller.stop_owned(nonce=nonce)
+    assert str(error.value) == "VOICEVOX owned process unavailable"
+    assert vars(controller) == before
+    assert not controller._lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_real_child_pid_uid_exec_inode_and_socket_inode_roundtrip(tmp_path):
     cfg, _launch, _runner, controller = setup(tmp_path)
     assert await controller.endpoint_owner() is None
@@ -126,6 +169,12 @@ async def test_real_child_pid_uid_exec_inode_and_socket_inode_roundtrip(tmp_path
     assert proc.returncode is not None and controller._proc is None
     assert await controller.inspect() is None
     assert await controller.endpoint_owner() is None
+    assert controller._verified_nonce == nonce
+    await controller.stop_owned(nonce=nonce)
+    with pytest.raises(VoicevoxOwnedProcessError):
+        await controller.stop_owned(nonce="ffffffff-ffff-ffff-ffff-ffffffffffff")
+    assert controller._verified_nonce == nonce
+    assert controller._proc is None
 
 
 @pytest.mark.asyncio

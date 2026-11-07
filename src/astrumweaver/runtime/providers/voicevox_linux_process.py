@@ -611,6 +611,12 @@ class LinuxVoicevoxOwnedProcessControl:
         await asyncio.shield(self._pending_reap)
 
     async def stop_owned(self, *, nonce: str) -> None:
+        if (
+            type(nonce) is not str
+            or len(nonce) != 36
+            or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", nonce)
+        ):
+            _fail()
         if nonce not in (self._nonce, self._verified_nonce, self._aborted_nonce):
             _fail()  # A foreign request has no authority over this instance.
         deadline = (
