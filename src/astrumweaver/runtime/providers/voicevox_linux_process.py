@@ -288,6 +288,7 @@ class LinuxVoicevoxOwnedProcessControl:
             or type(launch_spec) is not VoicevoxLinuxLaunchSpec
             or type(config) is not VoicevoxOwnedRuntimeSpec
             or launch_spec.executable_path != config.executable_path
+            or launch_spec.stop_timeout_seconds > config.stop_timeout_seconds
         ):
             raise ValueError("Linux VOICEVOX process controller unavailable")
         self._launch_spec = launch_spec
@@ -305,6 +306,16 @@ class LinuxVoicevoxOwnedProcessControl:
         self._aborted = False
         self._aborted_nonce: str | None = None
         self._pending_spawn_cleanup: asyncio.Task[None] | None = None
+        self._pending_verification: asyncio.Task | None = None
+        self._pending_reap: asyncio.Task[int] | None = None
+        self._verified_nonce: str | None = None
+        # Every admitted stop request fences new owner observations until
+        # its own completion. Do not let a cancelled lock waiter clear a
+        # concurrent stop's fence; the epoch also invalidates in-flight
+        # inspections after a stop completed between two awaits.
+        self._stop_requests = 0
+        self._stop_epoch = 0
+        self._stopping = False
 
     @staticmethod
     def _port(cfg: VoicevoxOwnedRuntimeSpec) -> int:
@@ -346,18 +357,22 @@ class LinuxVoicevoxOwnedProcessControl:
         return proc.pid
 
     async def endpoint_owner(self) -> int | None:
-        if self._aborted:
+        observed_epoch = self._stop_epoch
+        if self._aborted or self._stopping:
             _fail()
         # Config is frozen at construction: ManagedRuntime preflight calls
         # endpoint_owner BEFORE launch. Never admit a second/foreign listener.
         cfg = self._config
         try:
-            return await asyncio.to_thread(self._read_owner, self._port(cfg))
+            owner = await asyncio.to_thread(self._read_owner, self._port(cfg))
+            if self._aborted or self._stopping or self._stop_epoch != observed_epoch:
+                _fail()  # Reject stale scans even when stop already completed.
+            return owner
         except Exception:  # noqa: BLE001 - no path/hostname/error leak
             raise VoicevoxOwnedProcessError() from None
 
     async def inspect(self) -> VoicevoxProcessObservation | None:
-        if self._aborted:
+        if self._aborted or self._stopping:
             _fail()
         cfg = self._config
         proc = self._proc
@@ -428,6 +443,7 @@ class LinuxVoicevoxOwnedProcessControl:
         async with self._lock:
             if self._aborted or self._proc is not None or self._nonce is not None:
                 _fail()
+            self._verified_nonce = None
             if (
                 config != self._config
                 or config.executable_path != self._launch_spec.executable_path
@@ -510,9 +526,8 @@ class LinuxVoicevoxOwnedProcessControl:
                 # never confirm stop or permit another launch.
                 _fail()
             self._proc = proc
+            self._nonce = self._aborted_nonce
             await self._reap_newborn()
-            if await asyncio.to_thread(_listener_sockets, port):
-                _fail()
         except BaseException as error:
             if not isinstance(error, Exception):
                 raise
@@ -542,100 +557,173 @@ class LinuxVoicevoxOwnedProcessControl:
         proc = self._proc
         if proc is None:
             return
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                # Child exited between inspection and signal. The owned
-                # subprocess handle can still be reaped normally.
-                pass
         try:
             async with asyncio.timeout(self._launch_spec.stop_timeout_seconds):
-                await proc.wait()
-        except TimeoutError:
-            _fail()
+                if proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                await self._wait_reaped(proc)
+                if await self._verify(_listener_sockets, self._port(self._config)):
+                    _fail()
+        except BaseException as error:
+            self._aborted = True
+            if not isinstance(error, Exception):
+                raise
+            raise VoicevoxOwnedProcessError() from None
         self._clear_owned()
 
     def _clear_owned(self) -> None:
+        self._verified_nonce = self._nonce
         self._proc = None
         self._nonce = None
         self._identity = None
         self._model_identity = None
         self._aux_identity = None
         self._start_ticks = None
+        self._pending_reap = None
+
+    async def _finish_verification(self) -> None:
+        pending = self._pending_verification
+        if pending is not None:
+            try:
+                await asyncio.shield(pending)
+            finally:
+                if pending.done():
+                    self._pending_verification = None
+
+    async def _verify(self, function, *args):
+        # Cancelling to_thread does NOT stop its OS thread. Retain the task,
+        # bound every await by the caller's cleanup deadline and reconcile it
+        # before creating another inspection. An old port result is never reused
+        # as fresh proof; reconciliation always performs a new post-reap scan.
+        await self._finish_verification()
+        pending = asyncio.create_task(asyncio.to_thread(function, *args))
+        self._pending_verification = pending
+        pending.add_done_callback(self._observe_verification)
+        try:
+            return await asyncio.shield(pending)
+        finally:
+            if pending.done():
+                self._pending_verification = None
+
+    @staticmethod
+    def _observe_verification(task: asyncio.Task) -> None:
+        # Retain the result for reconciliation without an unhandled-task log
+        # containing arbitrary inspection exceptions if no retry ever occurs.
+        if not task.cancelled():
+            task.exception()
+
+    async def _wait_reaped(self, proc: asyncio.subprocess.Process) -> None:
+        if self._pending_reap is None:
+            self._pending_reap = asyncio.create_task(proc.wait())
+        await asyncio.shield(self._pending_reap)
 
     async def stop_owned(self, *, nonce: str) -> None:
-        async with self._lock:
-            if self._pending_spawn_cleanup is not None:
-                if nonce != self._aborted_nonce:
-                    _fail()
-                try:
-                    async with asyncio.timeout(self._launch_spec.stop_timeout_seconds):
-                        await asyncio.shield(self._pending_spawn_cleanup)
-                except Exception:  # noqa: BLE001 - unresolved process cleanup
-                    raise VoicevoxOwnedProcessError() from None
-                return
-            if self._proc is None:
-                if nonce == self._nonce:
-                    return
-                _fail()
-            if nonce != self._nonce:
-                _fail()
-            await self._stop_once()
-
-    async def _stop_once(self) -> None:
-        proc = self._proc
-        if proc is None:
-            return
-        timeout = self._launch_spec.stop_timeout_seconds
+        if (
+            type(nonce) is not str
+            or len(nonce) != 36
+            or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", nonce)
+        ):
+            _fail()
+        if nonce not in (self._nonce, self._verified_nonce, self._aborted_nonce):
+            _fail()  # A foreign request has no authority over this instance.
+        deadline = (
+            asyncio.get_running_loop().time() + self._launch_spec.stop_timeout_seconds
+        )
+        self._stop_requests += 1
+        self._stop_epoch += 1
+        self._stopping = True
         try:
-            if proc.returncode is None:
-                # Stop is allowed to reap only the child process group
-                # returned by our own subprocess handle, with matching PID
-                # birth generation and UID. Re-exec changes the executable
-                # inode and invalidates READY, but must not prevent safely
-                # reaping this same owned child process generation.
-                safe = (
-                    self._identity is not None
-                    and self._start_ticks is not None
-                    and self._config is not None
-                    and await asyncio.to_thread(
-                        _owned_group_generation,
-                        proc.pid,
-                        self._config.owner_uid,
-                        self._start_ticks,
-                    )
-                )
-                if not safe:
-                    _fail()
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    async with asyncio.timeout(timeout / 2):
-                        await proc.wait()
-                except TimeoutError:
-                    if proc.returncode is None:
-                        try:
-                            if await asyncio.to_thread(
-                                _owned_group_generation,
-                                proc.pid,
-                                self._config.owner_uid,
-                                self._start_ticks,
-                            ):
-                                os.killpg(proc.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-            async with asyncio.timeout(timeout):
-                await proc.wait()
-            # A forked descendant can retain the listening socket even after
-            # the direct child exits. Never report successful cleanup while
-            # the configured port is still bound, including a foreign rebind.
-            if await asyncio.to_thread(_listener_sockets, self._port(self._config)):
-                _fail()
+            # The ONLY whole process-cleanup deadline: lock, prior inspection,
+            # TERM grace, conditional KILL, reap and fresh listener proof.
+            async with asyncio.timeout_at(deadline):
+                async with self._lock:
+                    if self._pending_spawn_cleanup is not None:
+                        if nonce != self._aborted_nonce:
+                            _fail()
+                        pending = self._pending_spawn_cleanup
+                        if not pending.done():
+                            # Wait for the task's completion, not its result.
+                            # Failure may leave a returned owned handle that
+                            # must be reconciled with a fresh port scan.
+                            # asyncio.wait does not cancel this owned task if
+                            # our bounded stop attempt is interrupted.
+                            await asyncio.wait((pending,))
+                        if not pending.done():
+                            _fail()
+                        if pending.cancelled() or pending.exception() is not None:
+                            if self._proc is None or self._nonce != nonce:
+                                _fail()  # Unknown spawn effects: fail closed.
+                            # Retry with the *same* owned handle and a fresh
+                            # bounded post-reap listener proof, not the stale
+                            # exception from the completed cleanup task.
+                            await self._reap_newborn()
+                        self._pending_spawn_cleanup = None
+                        return
+                    if self._proc is None:
+                        if nonce == self._verified_nonce:
+                            return
+                        _fail()
+                    if nonce != self._nonce:
+                        _fail()
+                    await self._finish_verification()
+                    await self._stop_once(deadline)
         except BaseException as error:
+            self._aborted = True
             if not isinstance(error, Exception):
                 raise
             raise VoicevoxOwnedProcessError() from None
+        finally:
+            self._stop_requests -= 1
+            self._stopping = self._stop_requests > 0
+
+    async def _signal_owned(self, proc: asyncio.subprocess.Process, sig: int) -> None:
+        if proc.returncode is not None:
+            return
+        safe = (
+            self._identity is not None
+            and self._start_ticks is not None
+            and await self._verify(
+                _owned_group_generation,
+                proc.pid,
+                self._config.owner_uid,
+                self._start_ticks,
+            )
+        )
+        # The direct child can exit while /proc is being inspected. A false
+        # generation check then needs reap + port proof, not a foreign signal.
+        if proc.returncode is not None:
+            return
+        if not safe:
+            _fail()
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+
+    async def _stop_once(self, deadline: float) -> None:
+        proc = self._proc
+        if proc is None:
+            return
+        if proc.returncode is None:
+            # Image/argv drift denies READY but does not remove authority to
+            # reap the exact owned PID/UID/birth-generation/process group.
+            await self._signal_owned(proc, signal.SIGTERM)
+            if self._pending_reap is None:
+                self._pending_reap = asyncio.create_task(proc.wait())
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            _, pending = await asyncio.wait(
+                (self._pending_reap,), timeout=remaining / 2
+            )
+            if pending:
+                await self._signal_owned(proc, signal.SIGKILL)
+        await self._wait_reaped(proc)
+        # A direct child returncode is not cleanup proof. Escaped descendants
+        # or a foreign rebind must keep ownership/nonce and fail closed.
+        if await self._verify(_listener_sockets, self._port(self._config)):
+            _fail()
+        if asyncio.get_running_loop().time() >= deadline:
+            _fail()
         self._clear_owned()

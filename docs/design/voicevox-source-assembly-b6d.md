@@ -44,6 +44,52 @@ VoicevoxOwnedManagedRuntime objects without starting them or doing filesystem,
 network, Worker/Control or database I/O. It is a disposable source test helper
 only. It is not registered or exported as a shared RuntimeProvider.
 
+## #215 R4 — runtime cleanup state and timeout envelope
+
+R4 revokes admission on entry to stop/release, before waiting for the lifecycle
+lock. Pending cleanup uses non-ready `DEGRADED`, not verified `STOPPED`.
+Already-running health probes cannot restore READY after that transition.
+Cancellation during lock wait, drain, process cleanup or engine close propagates
+`CancelledError`, latches FAILED and records cleanup uncertainty. A failed
+instance remains non-startable after reconciliation; start checks denial before
+awaiting its lock as well as under it. READY-before-admission, worker/deployment
+identity checks and the cached-executor/late-publication fences are unchanged.
+
+Let `B` be the runtime stop timeout and `P <= B` the launch stop budget. The
+cooperative asyncio envelope consists of separate bounded phases:
+
+| Phase | Budget |
+| --- | --- |
+| Runtime lifecycle lock acquisition | At most `B` |
+| Active job cancellation/drain | At most `B` |
+| Process stop/reap/port proof, including controller lock/inspection work | One controller-owned deadline, at most `P` |
+| Release only: engine transport close, serialized under the lifecycle lock | At most `B` |
+
+Thus stop is bounded by `2B + P` (at most `3B`) and release by `3B + P` (at most
+`4B`), plus event-loop scheduling overhead, **not** one whole-release timeout of
+`B`. Injected controllers/transports must honor their bounded/cancellation
+contracts; blocking the event loop or indefinitely suppressing cancellation is
+not a qualified implementation. No equal outer runtime timeout competes with
+the controller's process cleanup deadline.
+
+A drain timeout still attempts process cleanup but retains the nonce until
+jobs and that same owned instance are reconciled. Process timeout/cancellation
+does not discard known ownership or pending verification. Close failure or
+cancellation cannot claim successful release. Repeated stop/release may finish
+cleanup of the same failed instance, never restart it or erase FAILED. Beginning
+release permanently denies fresh startup. Only complete verified normal cleanup
+reports STOPPED; public failures remain fixed redacted codes, with no private
+stage diagnostics or logging added.
+
+The R4 source tests cover time-gated post-reap inspection, external cancellation
+while waiting for the lock, draining jobs, stopping the process or closing the
+engine, live-child cancellation during TERM grace, generation-check exit races,
+foreign rebind, repeat cleanup and stale READY denial. Existing TERM-ignore/KILL,
+re-exec with an inherited listener, source-review gates and privacy negative
+controls remain in place. These synthetic results do not identify the historical
+natural flake's cause or qualify native VOICEVOX. R4 delivery stops at an
+uncommitted frozen diff for independent review before any publication.
+
 ## Synthetic evidence and real-world limits
 
 Disposable tests cover disabled-mode noninspection, mismatched profiles,

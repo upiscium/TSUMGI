@@ -7,6 +7,7 @@ import os
 import signal
 import socket
 import sys
+import threading
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -22,6 +23,7 @@ from astrumweaver.runtime.providers.voicevox_linux_process import (
 )
 from astrumweaver.runtime.providers.voicevox_managed import (
     VoicevoxOwnedManagedRuntime,
+    VoicevoxRuntimeFailure,
 )
 from astrumweaver.serving import ServingDeploymentDeclaration
 
@@ -100,6 +102,49 @@ async def ready(controller: LinuxVoicevoxOwnedProcessControl, *, seconds=3.0):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "nonce",
+    [
+        pytest.param(None, id="none"),
+        pytest.param(0, id="integer"),
+        pytest.param(False, id="boolean"),
+        pytest.param(b"01234567-89ab-4cde-8123-0123456789ab", id="bytes"),
+        pytest.param([], id="list"),
+        pytest.param("", id="empty"),
+        pytest.param("private-malformed-value", id="malformed"),
+        pytest.param("01234567-89AB-4CDE-8123-0123456789AB", id="uppercase"),
+        pytest.param("0123456789ab4cde81230123456789ab", id="no-hyphens"),
+        pytest.param("01234567-89ab-4cde-8123-0123456789ag", id="non-hex"),
+        pytest.param("01234567-89ab-4cde-8123-0123456789ab\n", id="newline"),
+        pytest.param("ffffffff-ffff-ffff-ffff-ffffffffffff", id="foreign-valid"),
+    ],
+)
+async def test_unstarted_stop_rejects_unproven_nonce_without_side_effects(
+    tmp_path, monkeypatch, nonce
+):
+    import astrumweaver.runtime.providers.voicevox_linux_process as module
+
+    _cfg, _pin, _runner, controller = setup(tmp_path)
+    assert controller._proc is None
+    assert controller._nonce is None
+    assert controller._verified_nonce is None
+    assert controller._aborted_nonce is None
+    before = vars(controller).copy()
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("unstarted stop must not spawn, signal or inspect listeners")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden)
+    monkeypatch.setattr(module.os, "killpg", forbidden)
+    monkeypatch.setattr(module, "_listener_sockets", forbidden)
+    with pytest.raises(VoicevoxOwnedProcessError) as error:
+        await controller.stop_owned(nonce=nonce)
+    assert str(error.value) == "VOICEVOX owned process unavailable"
+    assert vars(controller) == before
+    assert not controller._lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_real_child_pid_uid_exec_inode_and_socket_inode_roundtrip(tmp_path):
     cfg, _launch, _runner, controller = setup(tmp_path)
     assert await controller.endpoint_owner() is None
@@ -124,6 +169,12 @@ async def test_real_child_pid_uid_exec_inode_and_socket_inode_roundtrip(tmp_path
     assert proc.returncode is not None and controller._proc is None
     assert await controller.inspect() is None
     assert await controller.endpoint_owner() is None
+    assert controller._verified_nonce == nonce
+    await controller.stop_owned(nonce=nonce)
+    with pytest.raises(VoicevoxOwnedProcessError):
+        await controller.stop_owned(nonce="ffffffff-ffff-ffff-ffff-ffffffffffff")
+    assert controller._verified_nonce == nonce
+    assert controller._proc is None
 
 
 @pytest.mark.asyncio
@@ -758,3 +809,397 @@ os.execv({replacement!r}, [{replacement!r}, "30"])
     assert proc.returncode is not None
     assert await controller.endpoint_owner() is None
     assert await asyncio.to_thread(_listener_sockets, port) == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt", ["deadline", "cancel"])
+async def test_post_reap_verification_is_bounded_tracked_and_reconciled(
+    tmp_path, monkeypatch, interrupt
+):
+    import astrumweaver.runtime.providers.voicevox_linux_process as module
+
+    cfg, pin, _runner, _ctl = setup(tmp_path)
+    cfg = replace(cfg, stop_timeout_seconds=0.2)
+    ctl = LinuxVoicevoxOwnedProcessControl(
+        launch_spec=replace(pin, stop_timeout_seconds=0.2), config=cfg
+    )
+    runtime = VoicevoxOwnedManagedRuntime(config=cfg, process=ctl, engine=FakeEngine())
+    await runtime.start()
+    proc, nonce = ctl._proc, runtime._nonce
+    entered = threading.Event()
+    unblock = threading.Event()
+    original = module._listener_sockets
+    calls = 0
+
+    def gated_scan(port):
+        nonlocal calls
+        calls += 1
+        assert proc.returncode is not None
+        entered.set()
+        assert unblock.wait(3), "test must release its own inspection thread"
+        return original(port)
+
+    task = None
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "_listener_sockets", gated_scan)
+            task = asyncio.create_task(runtime.stop())
+            async with asyncio.timeout(1):
+                while not entered.is_set():
+                    await asyncio.sleep(0.002)
+            if interrupt == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                with pytest.raises(VoicevoxRuntimeFailure, match="owned_stop_failed"):
+                    await asyncio.wait_for(task, 0.6)
+            assert proc.returncode is not None
+            assert ctl._proc is proc and ctl._nonce == nonce
+            assert runtime._nonce == nonce and runtime._cleanup_uncertain
+            assert (await runtime.health()).state is RuntimeHealthState.FAILED
+            # A second bounded attempt cannot forget an OS thread still running,
+            # nor create an unbounded succession of inspections.
+            with pytest.raises(VoicevoxRuntimeFailure):
+                await runtime.stop()
+            assert calls == 1
+            with pytest.raises(VoicevoxRuntimeFailure):
+                await runtime.start()
+        unblock.set()
+        await runtime.stop()
+        assert ctl._proc is None and runtime._nonce is None
+        assert (await runtime.health()).state is RuntimeHealthState.FAILED
+        await runtime.release()
+    finally:
+        unblock.set()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        if ctl._proc is not None:
+            await ctl.stop_owned(nonce=nonce)
+
+
+@pytest.mark.asyncio
+async def test_direct_controller_deadline_includes_post_reap_scan(
+    tmp_path, monkeypatch
+):
+    import astrumweaver.runtime.providers.voicevox_linux_process as module
+
+    cfg, pin, _runner, _ctl = setup(tmp_path)
+    ctl = LinuxVoicevoxOwnedProcessControl(
+        launch_spec=replace(pin, stop_timeout_seconds=0.15), config=cfg
+    )
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    await ctl.launch(config=cfg, nonce=nonce)
+    await ready(ctl)
+    proc = ctl._proc
+    unblock = threading.Event()
+    original = module._listener_sockets
+
+    def delayed_scan(port):
+        assert proc.returncode is not None
+        unblock.wait(0.4)
+        return original(port)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "_listener_sockets", delayed_scan)
+            start = asyncio.get_running_loop().time()
+            with pytest.raises(VoicevoxOwnedProcessError):
+                await ctl.stop_owned(nonce=nonce)
+            assert asyncio.get_running_loop().time() - start < 0.35
+            assert ctl._proc is proc
+    finally:
+        unblock.set()
+        if ctl._proc is not None:
+            await ctl.stop_owned(nonce=nonce)
+
+
+@pytest.mark.asyncio
+async def test_child_exit_during_generation_check_still_reaps_and_proves_port(
+    tmp_path, monkeypatch
+):
+    import astrumweaver.runtime.providers.voicevox_linux_process as module
+
+    cfg, _pin, _runner, ctl = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    await ctl.launch(config=cfg, nonce=nonce)
+    await ready(ctl)
+    proc = ctl._proc
+    original_thread = asyncio.to_thread
+
+    async def exit_at_check(func, *args):
+        if func is module._owned_group_generation:
+            # Exact test-owned handle only, never a discovered/foreign PID.
+            proc.terminate()
+            await proc.wait()
+            return False
+        return await original_thread(func, *args)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(asyncio, "to_thread", exit_at_check)
+            await ctl.stop_owned(nonce=nonce)
+        assert ctl._proc is None
+        assert await ctl.endpoint_owner() is None
+        await ctl.stop_owned(nonce=nonce)  # Same verified nonce is idempotent.
+    finally:
+        if ctl._proc is not None:
+            await ctl.stop_owned(nonce=nonce)
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_term_grace_retains_live_owned_child_for_explicit_reap(
+    tmp_path, monkeypatch
+):
+    import astrumweaver.runtime.providers.voicevox_linux_process as module
+
+    runner = RUNNER.replace(
+        "while True:",
+        "import signal\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nwhile True:",
+    )
+    cfg, pin, _runner, _ctl = setup(tmp_path, runner_code=runner)
+    ctl = LinuxVoicevoxOwnedProcessControl(
+        launch_spec=replace(pin, stop_timeout_seconds=0.3), config=cfg
+    )
+    runtime = VoicevoxOwnedManagedRuntime(config=cfg, process=ctl, engine=FakeEngine())
+    await runtime.start()
+    proc, nonce = ctl._proc, runtime._nonce
+    term_sent = asyncio.Event()
+    original_signal = module.os.killpg
+    sent = []
+
+    def record_owned_signal(pgid, sig):
+        assert pgid == proc.pid
+        original_signal(pgid, sig)
+        sent.append(sig)
+        if sig == signal.SIGTERM:
+            term_sent.set()
+
+    task = None
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(module.os, "killpg", record_owned_signal)
+            task = asyncio.create_task(runtime.stop())
+            await asyncio.wait_for(term_sent.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert proc.returncode is None
+            assert ctl._proc is proc and ctl._nonce == nonce
+            assert (await runtime.health()).state is RuntimeHealthState.FAILED
+            with pytest.raises(VoicevoxRuntimeFailure):
+                await runtime.start()
+            await runtime.release()
+        assert signal.SIGKILL in sent
+        assert proc.returncode == -signal.SIGKILL
+        assert ctl._proc is None
+        assert (await runtime.health()).state is RuntimeHealthState.FAILED
+    finally:
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        if ctl._proc is not None:
+            await ctl.stop_owned(nonce=nonce)
+
+
+@pytest.mark.asyncio
+async def test_post_exit_foreign_rebind_retains_handle_without_foreign_signals(
+    tmp_path, monkeypatch
+):
+    import astrumweaver.runtime.providers.voicevox_linux_process as module
+
+    cfg, _pin, _runner, ctl = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    await ctl.launch(config=cfg, nonce=nonce)
+    await ready(ctl)
+    proc = ctl._proc
+    proc.terminate()
+    await proc.wait()
+    port = int(cfg.endpoint.rsplit(":", 1)[1])
+    try:
+        with socket.socket() as foreign:
+            foreign.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            foreign.bind(("127.0.0.1", port))
+            foreign.listen(1)
+
+            def forbidden_signal(*_args):
+                pytest.fail("no process/group may be signaled after owned child exit")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(module.os, "killpg", forbidden_signal)
+                with pytest.raises(VoicevoxOwnedProcessError):
+                    await ctl.stop_owned(nonce=nonce)
+                assert ctl._proc is proc and ctl._nonce == nonce
+                with pytest.raises(VoicevoxOwnedProcessError):
+                    await ctl.launch(config=cfg, nonce=nonce)
+                assert foreign.getsockname()[1] == port
+        await ctl.stop_owned(nonce=nonce)
+        assert ctl._proc is None
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await ctl.launch(config=cfg, nonce=nonce)
+    finally:
+        if ctl._proc is not None:
+            await ctl.stop_owned(nonce=nonce)
+
+
+@pytest.mark.asyncio
+async def test_failed_late_spawn_reap_retries_owned_handle_after_listener_clears(
+    tmp_path, monkeypatch
+):
+    """One failed terminal late-reap must not poison same-nonce reconciliation."""
+    import astrumweaver.runtime.providers.voicevox_linux_process as module
+
+    cfg, pin, _runner, _controller = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    ctl = LinuxVoicevoxOwnedProcessControl(
+        launch_spec=replace(pin, stop_timeout_seconds=0.25), config=cfg
+    )
+    spawn_entered = asyncio.Event()
+    unblock_spawn = asyncio.Event()
+    foreign = {"listening": False}
+    original_spawn = asyncio.create_subprocess_exec
+    original_listener = module._listener_sockets
+
+    async def delayed_spawn(*args, **kwargs):
+        spawn_entered.set()
+        await unblock_spawn.wait()
+        proc = await original_spawn(*args, **kwargs)
+        foreign["listening"] = True  # Synthetic post-reap foreign port rebind.
+        return proc
+
+    def listener_after_reap(port):
+        if foreign["listening"]:
+            return (("synthetic-foreign-listener",),)
+        return original_listener(port)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(module, "_listener_sockets", listener_after_reap)
+    launching = asyncio.create_task(ctl.launch(config=cfg, nonce=nonce))
+    try:
+        await asyncio.wait_for(spawn_entered.wait(), 2)
+        launching.cancel()
+        await asyncio.wait_for(asyncio.gather(launching, return_exceptions=True), 1)
+        unblock_spawn.set()
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await asyncio.wait_for(ctl._pending_spawn_cleanup, 3)
+        proc = ctl._proc
+        assert proc is not None and proc.returncode is not None
+        assert ctl._aborted and ctl._nonce == nonce
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await ctl.stop_owned(nonce=nonce)
+        assert ctl._proc is proc  # Retain original owned handle while port bound.
+        foreign["listening"] = False
+        await ctl.stop_owned(nonce=nonce)
+        assert ctl._proc is None
+        assert ctl._pending_spawn_cleanup is None
+        assert ctl._verified_nonce == nonce
+        await ctl.stop_owned(nonce=nonce)  # Same verified proof stays idempotent.
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await ctl.launch(config=cfg, nonce=nonce)
+    finally:
+        unblock_spawn.set()
+        foreign["listening"] = False
+        await asyncio.gather(launching, return_exceptions=True)
+        if ctl._pending_spawn_cleanup is not None:
+            await asyncio.gather(ctl._pending_spawn_cleanup, return_exceptions=True)
+        if ctl._proc is not None:
+            await ctl._reap_newborn()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "after_reap", [False, True], ids=["while-stopping", "after-stopped"]
+)
+async def test_owner_scan_started_before_stop_cannot_publish_stale_pid(
+    tmp_path, monkeypatch, after_reap
+):
+    """A previously verified PID is not an admission proof across a stop request."""
+    _cfg, _pin, _runner, controller = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    await controller.launch(config=_cfg, nonce=nonce)
+    await ready(controller)
+    owned_pid = controller._proc.pid
+    entered = threading.Event()
+    release_scan = threading.Event()
+    original = controller._read_owner
+
+    def paused_scan(port):
+        observed = original(port)
+        assert observed == owned_pid
+        entered.set()
+        assert release_scan.wait(3), "test-owned scan must be released"
+        return observed
+
+    monkeypatch.setattr(controller, "_read_owner", paused_scan)
+    owner_probe = asyncio.create_task(controller.endpoint_owner())
+    stop_task = None
+    lock_held = False
+    try:
+        async with asyncio.timeout(2):
+            while not entered.is_set():
+                await asyncio.sleep(0.002)
+        if not after_reap:
+            await controller._lock.acquire()
+            lock_held = True
+        stop_task = asyncio.create_task(controller.stop_owned(nonce=nonce))
+        async with asyncio.timeout(1):
+            while not controller._stopping:
+                await asyncio.sleep(0)
+        if after_reap:
+            await asyncio.wait_for(stop_task, 2)
+            assert controller._proc is None
+            assert not controller._stopping
+        else:
+            assert not stop_task.done() and controller._stopping
+        release_scan.set()
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await asyncio.wait_for(owner_probe, 2)
+    finally:
+        release_scan.set()
+        if lock_held and controller._lock.locked():
+            controller._lock.release()
+        await asyncio.gather(owner_probe, return_exceptions=True)
+        if stop_task is not None:
+            await asyncio.wait_for(stop_task, 3)
+        if controller._proc is not None:
+            await controller.stop_owned(nonce=nonce)
+    assert controller._proc is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_overlapping_stop_does_not_clear_active_stop_fence(tmp_path):
+    """A cancelled lock waiter cannot revoke another stop's admission denial."""
+    _cfg, _pin, _runner, controller = setup(tmp_path)
+    nonce = "01234567-89ab-4cde-8123-0123456789ab"
+    await controller.launch(config=_cfg, nonce=nonce)
+    await ready(controller)
+    original_proc = controller._proc
+    await controller._lock.acquire()
+    first = asyncio.create_task(controller.stop_owned(nonce=nonce))
+    second = None
+    try:
+        async with asyncio.timeout(1):
+            while not controller._stopping:
+                await asyncio.sleep(0)
+        assert not first.done()
+        second = asyncio.create_task(controller.stop_owned(nonce=nonce))
+        await asyncio.sleep(0)
+        assert not second.done()
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        # The first request still owns the pending cleanup intent.
+        assert not first.done()
+        assert controller._stopping
+        with pytest.raises(VoicevoxOwnedProcessError):
+            await controller.endpoint_owner()
+    finally:
+        if controller._lock.locked():
+            controller._lock.release()
+        await asyncio.wait_for(first, 3)
+        if second is not None:
+            await asyncio.gather(second, return_exceptions=True)
+        if controller._proc is not None:
+            await controller.stop_owned(nonce=nonce)
+    assert original_proc.returncode is not None
+    assert controller._proc is None
+    assert not controller._stopping
