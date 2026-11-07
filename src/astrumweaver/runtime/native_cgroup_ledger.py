@@ -25,7 +25,7 @@ from .native_cgroup_contract import (
     NativeRunContractError,
 )
 
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "2"
 _PRIVATE_DIR_MODE = 0o700
 _LEDGER_MODE = 0o600
 _MAX_REQUEST_BYTES = 8192
@@ -169,6 +169,42 @@ class NativeRunReservationLedger:
             )
             if owners != recorded:
                 raise NativeLedgerError("native GPU ownership index is inconsistent")
+
+            # Durable launch-exclusion is bound to the same original GPU
+            # owner, and must cover ALL GPUs of each fenced run. A partial
+            # or foreign GPU fence is never repaired automatically.
+            fences = db.execute(
+                "SELECT gpu_uuid,run_id FROM native_gpu_dispatch_fences"
+            ).fetchall()
+            seen_fences: dict[str, str] = {}
+            by_run: dict[str, set[str]] = {}
+            for gpu_uuid, owner_run_id in fences:
+                if gpu_uuid in seen_fences or owners.get(gpu_uuid) != owner_run_id:
+                    raise NativeLedgerError("native GPU dispatch fence is inconsistent")
+                seen_fences[gpu_uuid] = owner_run_id
+                by_run.setdefault(owner_run_id, set()).add(gpu_uuid)
+            for owner_run_id, sealed in by_run.items():
+                all_owned = {
+                    gpu_uuid for gpu_uuid, run_id in owners.items()
+                    if run_id == owner_run_id
+                }
+                if sealed != all_owned:
+                    raise NativeLedgerError("native GPU dispatch fence is incomplete")
+            # If the optional R5a audit is present, every launch-disabled
+            # claim MUST also have a corresponding physically persisted
+            # dispatch gate in this database. This enforces consistency
+            # even if the journal code is not the current caller.
+            has_journal = db.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='seal_runs'"
+            ).fetchone()
+            if has_journal:
+                rows = db.execute("SELECT run_id FROM seal_runs").fetchall()
+                for (run_id,) in rows:
+                    if run_id not in by_run:
+                        raise NativeLedgerError(
+                            "native seal audit detached from durable dispatch fence"
+                        )
         except (sqlite3.DatabaseError, ValueError, TypeError, KeyError) as exc:
             raise NativeLedgerError("native ledger ownership is not trustworthy") from exc
 
@@ -208,8 +244,38 @@ class NativeRunReservationLedger:
                         "INSERT INTO ledger_schema(key,version) VALUES('format',?)",
                         (_SCHEMA_VERSION,),
                     )
+                elif row[0] == "1":
+                    # A v1 ledger with outstanding reservations cannot be
+                    # silently upgraded by an unaudited source-only module;
+                    # it might contain a previously claimed launch-disable
+                    # state that needs manual operator reconciliation.
+                    if (
+                        db.execute("SELECT count(*) FROM native_runs").fetchone()[0]
+                        or db.execute("SELECT count(*) FROM gpu_owners").fetchone()[0]
+                    ):
+                        raise NativeLedgerError(
+                            "v1 native ledger has unqualified outstanding runs"
+                        )
+                    db.execute(
+                        "UPDATE ledger_schema SET version=? WHERE key='format'",
+                        (_SCHEMA_VERSION,),
+                    )
                 elif row[0] != _SCHEMA_VERSION:
                     raise NativeLedgerError("unrecognized native ledger schema version")
+
+                # Detect accidental loss of the *entire* gate table before
+                # CREATE IF NOT EXISTS could silently recreate it on reopen.
+                exists = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='native_gpu_dispatch_fences'"
+                ).fetchone()
+                if exists is None and row is not None and row[0] == _SCHEMA_VERSION:
+                    raise NativeLedgerError("native GPU dispatch gate table missing")
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS native_gpu_dispatch_fences("
+                    "gpu_uuid TEXT PRIMARY KEY,"
+                    "run_id TEXT NOT NULL REFERENCES native_runs(run_id))"
+                )
                 self._assert_consistent_owners(db)
                 db.commit()
             except (NativeLedgerError, sqlite3.DatabaseError) as exc:
@@ -308,6 +374,20 @@ class NativeRunReservationLedger:
                          record[4], json.dumps(stored["gpu_uuids"]), record[6]),
                         newly_reserved=False,
                     )
+                # The launch-exclusion check and the new GPU owner insert
+                # happen under the SAME BEGIN IMMEDIATE transaction as R5a
+                # fence commits, even across distinct Broker coordinators.
+                placeholders = ",".join("?" for _ in request.gpu_uuids)
+                already_fenced = db.execute(
+                    "SELECT gpu_uuid FROM native_gpu_dispatch_fences "
+                    f"WHERE gpu_uuid IN ({placeholders}) LIMIT 1",
+                    request.gpu_uuids,
+                ).fetchone()
+                if already_fenced:
+                    raise NativeLedgerError(
+                        "GPU dispatch persistently fenced; already durably reserved "
+                        "and reconciliation required"
+                    )
                 db.execute(
                     "INSERT INTO native_runs("
                     "run_id,caller_uid,request_json,unit_name,worker_id,"
@@ -387,6 +467,54 @@ class NativeRunReservationLedger:
             except sqlite3.DatabaseError as exc:
                 db.rollback()
                 raise NativeLedgerError("broker restart reconciliation failed") from exc
+
+    def _fence_owned_gpu_dispatch_in_tx(
+        self, db: sqlite3.Connection, request: NativeLaunchRequest,
+    ) -> None:
+        """Internal only: called inside R5a BEGIN IMMEDIATE transaction.
+
+        The resulting gate is durable, run-specific, all-or-nothing and
+        *sticky*. No method clears it. This blocks reservations made via
+        this shared SQLite ledger, NOT direct PID1/foreign process starts.
+        """
+        if not isinstance(request, NativeLaunchRequest):
+            raise NativeLedgerError("invalid native dispatch fence request")
+        row = db.execute(
+            "SELECT request_json,phase FROM native_runs WHERE run_id=?",
+            (request.run_id,),
+        ).fetchone()
+        if (
+            row != (
+                self._serialized_request(request),
+                NativeLedgerPhase.UNKNOWN_FENCED.value,
+            )
+        ):
+            raise NativeLedgerError("cannot fence a foreign/unqualified run")
+        previously = db.execute(
+            "SELECT gpu_uuid FROM native_gpu_dispatch_fences WHERE run_id=?",
+            (request.run_id,),
+        ).fetchall()
+        if previously:
+            raise NativeLedgerError("native dispatch already fenced for run")
+        for gpu_uuid in request.gpu_uuids:
+            db.execute(
+                "INSERT INTO native_gpu_dispatch_fences(gpu_uuid,run_id) "
+                "VALUES(?,?)",
+                (gpu_uuid, request.run_id),
+            )
+
+    def list_launch_fences(self) -> tuple[tuple[str, str], ...]:
+        """Read-only fenced GPU/owning run IDs, not a release capability."""
+        with closing(self._connect()) as db:
+            try:
+                db.execute("BEGIN")
+                self._assert_consistent_owners(db)
+                return tuple(db.execute(
+                    "SELECT gpu_uuid,run_id FROM native_gpu_dispatch_fences "
+                    "ORDER BY gpu_uuid"
+                ).fetchall())
+            except sqlite3.DatabaseError as exc:
+                raise NativeLedgerError("durable native dispatch fences unavailable") from exc
 
     def list_reservations(self) -> tuple[NativeReservation, ...]:
         """Read-only diagnostic inventory; never confirms physical cleanup."""

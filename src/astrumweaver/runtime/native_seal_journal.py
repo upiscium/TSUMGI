@@ -25,6 +25,7 @@ from .native_cgroup_contract import (
     NativeRunUnitIdentity,
 )
 from .native_cgroup_ledger import (
+    NativeLedgerError,
     NativeLedgerPhase,
     NativeRunReservationLedger,
 )
@@ -226,6 +227,17 @@ class OfflineNativeSealJournal:
                 raise NativeSealJournalError(
                     "native seal claim detached from fenced GPU ownership"
                 )
+            expected_fences = set(ctx["request"]["gpu_uuids"])
+            actual_fences = {
+                gpu_uuid for (gpu_uuid,) in db.execute(
+                    "SELECT gpu_uuid FROM native_gpu_dispatch_fences "
+                    "WHERE run_id=?", (run_id,),
+                ).fetchall()
+            }
+            if actual_fences != expected_fences:
+                raise NativeSealJournalError(
+                    "native seal audit lacks durable GPU dispatch fence"
+                )
             events = db.execute(
                 "SELECT ordinal,stage,details_json,previous_sha,chain_sha "
                 "FROM seal_events WHERE run_id=? ORDER BY ordinal", (run_id,),
@@ -339,6 +351,15 @@ class OfflineNativeSealJournal:
                         "previous_sha": previous,
                     })
                 )
+                if stage is NativeSealStage.LAUNCH_DISABLED:
+                    # This physically enforces a sticky GPU dispatch denial
+                    # for all callers of the shared B1a reservation ledger,
+                    # in the SAME SQLite transaction as the audit event.
+                    # It does NOT block out-of-band PID1 calls, and the
+                    # boolean caller claim is not broker authentication.
+                    self._reservations._fence_owned_gpu_dispatch_in_tx(
+                        db, ctx.request,
+                    )
                 db.execute(
                     "INSERT INTO seal_events("
                     "run_id,ordinal,stage,details_json,previous_sha,chain_sha"
@@ -349,6 +370,9 @@ class OfflineNativeSealJournal:
                 return OfflineSealAuditRecord(
                     run_id=ctx.run_id,ordinal=ordinal,stage=stage,chain_digest=digest,
                 )
+            except NativeLedgerError:
+                db.rollback()
+                raise
             except (NativeSealJournalError, sqlite3.DatabaseError) as exc:
                 db.rollback()
                 if isinstance(exc, NativeSealJournalError):
