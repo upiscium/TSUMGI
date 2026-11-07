@@ -18,7 +18,11 @@ import re
 from dataclasses import dataclass
 from typing import Protocol
 
-from .native_cgroup_contract import NativeLaunchAllowlist, NativeLaunchRequest
+from .native_cgroup_contract import (
+    NativeLaunchAllowlist,
+    NativeLaunchRequest,
+    NativeRunUnitIdentity,
+)
 from .native_cgroup_ledger import (
     NativeLedgerError,
     NativeLedgerPhase,
@@ -403,3 +407,81 @@ class ShapedSystemdManagerPort:
         reply = await self._transport.call_manager(self._call)
         # The coordinator separately rejects invalid/missing Job paths.
         return reply
+
+# Phase B1b0: offline PID1 readback shapes only. In actual systemd 255
+# GetUnitByInvocationID(ay) can return a *different* object path from
+# GetUnit(name), while exposing the same Unit.Id/InvocationID/ControlGroup.
+# B1b1 MUST attest that the values really came from PID1. These types are
+# just source-only acceptance contracts and never mark a run READY.
+
+
+_UNIT_PATH = re.compile(r"/org/freedesktop/systemd1/unit/[A-Za-z0-9_]{1,192}\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class OfflineSystemdUnitReadback:
+    """Claimed PID1 Unit properties; not verified provenance or readiness."""
+
+    object_path: str
+    unit_id: str
+    control_group: str
+    invocation_id: bytes
+    active_state: str
+    sub_state: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.object_path) is not str
+            or _UNIT_PATH.fullmatch(self.object_path) is None
+            or type(self.unit_id) is not str
+            or type(self.control_group) is not str
+            or type(self.invocation_id) is not bytes
+            or len(self.invocation_id) != 16
+            or self.invocation_id == bytes(16)
+            or type(self.active_state) is not str
+            or type(self.sub_state) is not str
+        ):
+            raise NativeManagerPortError("invalid offline systemd Unit readback")
+
+
+def reconcile_offline_unit_readbacks(
+    request: NativeLaunchRequest,
+    *,
+    by_name: OfflineSystemdUnitReadback,
+    by_cgroup: OfflineSystemdUnitReadback,
+    by_invocation: OfflineSystemdUnitReadback,
+) -> NativeRunUnitIdentity:
+    """Compare PID1-shaped snapshots without claiming they are trusted.
+
+    The invocation lookup may use an alias object path; require the
+    *properties*, not all three D-Bus paths, to agree. This does not
+    certify executable/model bytes, GPU access, cgroup containment,
+    native readiness, or the termination of any process.
+    """
+    if not isinstance(request, NativeLaunchRequest):
+        raise NativeManagerPortError("native run request must be validated")
+    readbacks = (by_name, by_cgroup, by_invocation)
+    if any(not isinstance(item, OfflineSystemdUnitReadback) for item in readbacks):
+        raise NativeManagerPortError("missing systemd unit readback")
+    if by_cgroup.object_path != by_name.object_path:
+        raise NativeManagerPortError("systemd cgroup lookup differs from named unit")
+    if any(
+        item.unit_id != request.unit_name
+        or item.control_group != request.cgroup_path
+        or item.invocation_id != by_name.invocation_id
+        or item.active_state != "active"
+        or item.sub_state != "running"
+        for item in readbacks
+    ):
+        raise NativeManagerPortError("systemd unit generation or membership mismatch")
+    # This is only a claimed identity. A future broker must obtain these
+    # fields via authenticated PID1 bus + stable cgroup handle, then prove
+    # per-run process placement and obtain independent readiness evidence.
+    return NativeRunUnitIdentity(
+        run_id=request.run_id,
+        worker_epoch=request.worker_epoch,
+        deployment_revision=request.deployment_revision,
+        unit_name=request.unit_name,
+        cgroup_path=request.cgroup_path,
+        manager_invocation_id=by_name.invocation_id.hex(),
+    )

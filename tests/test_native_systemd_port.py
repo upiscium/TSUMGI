@@ -654,3 +654,147 @@ def test_pending_manager_limit_cannot_be_unbounded_or_non_integer(tmp_path, inva
             FakeManager(),
             max_pending_manager_calls=invalid,
         )
+
+
+def _offline_manager_readbacks(req):
+    from astrumweaver.runtime.native_systemd_port import OfflineSystemdUnitReadback
+
+    invocation = bytes.fromhex("ab" * 16)
+    primary = OfflineSystemdUnitReadback(
+        object_path=(
+            "/org/freedesktop/systemd1/unit/tsumgi_2dnative_2d"
+            + req.run_id.replace("-", "")
+            + "_2eservice"
+        ),
+        unit_id=req.unit_name,
+        control_group=req.cgroup_path,
+        invocation_id=invocation,
+        active_state="active",
+        sub_state="running",
+    )
+    # Verified real systemd 255 behavior: this lookup is an InvocationID
+    # alias path, not necessarily the GetUnit(name) canonical object path.
+    invocation_alias = replace(
+        primary,
+        object_path="/org/freedesktop/systemd1/unit/_" + invocation.hex(),
+    )
+    return primary, replace(primary), invocation_alias
+
+
+def test_systemd_255_invocation_alias_is_accepted_by_exact_unit_properties():
+    from astrumweaver.runtime.native_systemd_port import (
+        reconcile_offline_unit_readbacks,
+    )
+
+    req = request()
+    primary, by_group, by_invocation = _offline_manager_readbacks(req)
+    assert primary.object_path != by_invocation.object_path
+    claimed = reconcile_offline_unit_readbacks(
+        req, by_name=primary, by_cgroup=by_group,
+        by_invocation=by_invocation,
+    )
+    assert claimed.run_id == req.run_id
+    assert claimed.unit_name == req.unit_name
+    assert claimed.cgroup_path == req.cgroup_path
+    assert claimed.worker_epoch == req.worker_epoch
+    assert claimed.manager_invocation_id == "ab" * 16
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("unit_id", "unrelated.service"),
+        ("control_group", "/system.slice/another.service"),
+        ("invocation_id", bytes.fromhex("cd" * 16)),
+        ("active_state", "inactive"),
+        ("sub_state", "dead"),
+    ],
+)
+def test_offline_systemd_invocation_alias_cannot_mask_foreign_unit(
+    field, bad_value,
+):
+    from astrumweaver.runtime.native_systemd_port import (
+        NativeManagerPortError,
+        reconcile_offline_unit_readbacks,
+    )
+
+    req = request()
+    primary, by_group, by_invocation = _offline_manager_readbacks(req)
+    by_invocation = replace(by_invocation, **{field: bad_value})
+    with pytest.raises(NativeManagerPortError, match="mismatch"):
+        reconcile_offline_unit_readbacks(
+            req, by_name=primary, by_cgroup=by_group,
+            by_invocation=by_invocation,
+        )
+
+
+def test_offline_cgroup_lookup_must_use_same_named_unit_object_path():
+    from astrumweaver.runtime.native_systemd_port import (
+        NativeManagerPortError,
+        reconcile_offline_unit_readbacks,
+    )
+
+    req = request()
+    primary, by_group, by_invocation = _offline_manager_readbacks(req)
+    with pytest.raises(NativeManagerPortError, match="cgroup lookup differs"):
+        reconcile_offline_unit_readbacks(
+            req, by_name=primary,
+            by_cgroup=replace(
+                by_group, object_path="/org/freedesktop/systemd1/unit/foreign",
+            ),
+            by_invocation=by_invocation,
+        )
+
+
+@pytest.mark.parametrize("invalid", [b"", bytes(16), b"bad", "aa" * 16, 4])
+def test_offline_invocation_identity_rejects_unreadable_or_forged_bytes(invalid):
+    from astrumweaver.runtime.native_systemd_port import (
+        NativeManagerPortError,
+    )
+
+    req = request()
+    primary, _, _ = _offline_manager_readbacks(req)
+    with pytest.raises(NativeManagerPortError, match="invalid offline"):
+        replace(primary, invocation_id=invalid)
+
+
+def test_unavailable_cgroup_events_do_not_authorize_stop_release():
+    from astrumweaver.runtime.native_cgroup_contract import (
+        NativeLaunchAllowlist,
+        NativeRunContractError,
+        NativeRunTransitionContract,
+        NativeStopObservation,
+    )
+
+    req = request()
+    policy = NativeLaunchAllowlist(
+        worker_id=req.worker_id,
+        deployment_revision=req.deployment_revision,
+        executable=req.executable,
+        model_ref=req.model_ref,
+        gpu_uuids=req.gpu_uuids,
+    )
+    primary, by_group, by_invocation = _offline_manager_readbacks(req)
+    from astrumweaver.runtime.native_systemd_port import (
+        reconcile_offline_unit_readbacks,
+    )
+    identity = reconcile_offline_unit_readbacks(
+        req, by_name=primary, by_cgroup=by_group,
+        by_invocation=by_invocation,
+    )
+    fsm = NativeRunTransitionContract(req, policy)
+    fsm.record_starting(identity)
+    fsm.record_ready(identity)
+    fsm.record_stop_requested()
+    fsm.record_term_ack()
+    # On real systemd 255, an already stopped/disappeared transient Unit
+    # produced a failed read from an *open* cgroup.events FD. Do not
+    # replace that error with a fabricated "populated 0" observation.
+    with pytest.raises(NativeRunContractError):
+        NativeStopObservation(
+            identity=identity, cgroup_events=b"",
+            manager_inactive=True, wrapper_reaped=True,
+        )
+    assert fsm.phase.value == "term-acked"
+    with pytest.raises(NativeRunContractError):
+        fsm.record_release()

@@ -206,3 +206,67 @@ no service or cgroup was created, and no privileged container test
 has passed. A disposable systemd-255+LXC compatibility canary and
 independent authorization review remain mandatory before any B1b1
 real transport or production activation.
+
+## R3 — disposable systemd 255 D-Bus fixture and Unit identity readbacks (2026-11-07)
+
+An actual **GPU-free, one-off** test was performed on **arca-sandbox**
+(Ubuntu 24.04.5, systemd **255.4-1ubuntu8.18**), *not* on Sirius.
+The test used its existing PID1's system D-Bus via `python3-dbus`,
+the exact `StartTransientUnit` method signature
+`ssa(sv)a(sa(sv))`, a fresh `tsumgi-b1b0-fixture-<UUID>.service`
+name, and **16 explicitly typed** properties from the B1b0 plan.
+Its `ExecStart` was `/usr/bin/sleep 45`, **not** the real llama
+wrapper, with `User=nobody`, `Group=nogroup`, `Type=exec`,
+`DevicePolicy=closed`, `KillMode=control-group` and the reviewed
+NoNewPrivileges/Protect* restrictions. The only privileged action was
+creating/stopping **this isolated test-only transient Unit**.
+
+Observed facts (fresh per-run proof, not inferred from Adam/systemd 261):
+
+- PID1 accepted the 16-property `StartTransientUnit` call and
+  returned a `/org/freedesktop/systemd1/job/<number>` object path.
+- `GetUnit(name)` read back `ActiveState=active`,
+  `SubState=running`, the exact `/system.slice/<fixture>.service`
+  cgroup, a **16-byte InvocationID**, and a live MainPID whose
+  `/proc/<pid>` owner was **UID 65534** (`nobody`).
+- The run-specific cgroup's `cgroup.events` was
+  `populated 1; frozen 0` while the dummy process was running.
+- `GetUnitByControlGroup(cgroup)` returned the canonical Unit object
+  path; `GetUnitByInvocationID(ay)` returned a **different alias
+  object path**. Resolving that alias through PID1 revealed the
+  **same** Unit.Id, ControlGroup and InvocationID. A verifier must not
+  demand raw alias-path equality.
+- An exact `StopUnit(name, replace)` call created only the named
+  stop Job. The fixture ended inactive/dead, with no running leftover
+  test process or loaded fixture Unit, and the existing arca-sandbox
+  system state remained `running`.
+
+**Critical acceptance limitation:** an FD opened on the live fixture
+`cgroup.events` could not be reread after `StopUnit` had completed;
+the read raised `OSError` because the transient cgroup was already
+unavailable. **Neither the StopUnit Job object path nor the absence
+of the cgroup path is a verified `populated=0` observation tied to
+the held identity.** This must remain **UNKNOWN_FENCED** until the
+Phase B1b1 implementation has a trustworthy, bounded kernel-backed
+terminal observation protocol and stable run/cgroup generation proof.
+Do not silently substitute `populated=0` for a disappearing cgroup.
+The source-only B0 `NativeStopObservation` already rejects absent
+or malformed event bytes.
+
+To make the systemd-255 detail reviewable offline, B1b0 now includes
+`OfflineSystemdUnitReadback` and
+`reconcile_offline_unit_readbacks`. They require all three simulated
+manager lookups (by name, cgroup and InvocationID) to agree on exact
+Unit.Id, ControlGroup, InvocationID and running state; only the
+invocation-path alias may differ. This **does not authenticate the
+origin of the simulated values** and does not mark a Runtime READY or
+release any GPU. The actual privileged PID1 transport, device access,
+per-run cgroup lifetime, native bridge and crash-safe cleanup remain
+future implementation and security-review gates.
+
+This test deliberately **did not** install or modify a persistent
+systemd unit, change an existing service or Plugin/Tunnel, touch a
+real GPU/model/Worker, or alter Sirius/Control/DB. It establishes
+method/property compatibility and a dummy process cgroup identity on
+one systemd-255 sandbox, **not** correctness under Qwen/CUDA load,
+nor successful recursive empty verification on shutdown.
