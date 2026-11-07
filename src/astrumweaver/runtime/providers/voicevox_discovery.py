@@ -74,8 +74,10 @@ class VoicevoxDiscoveryConfig:
             or not 1024 <= port <= 65535
             or self.endpoint != f"http://127.0.0.1:{port}"
             or type(self.timeout_seconds) not in (int, float)
-            or not math.isfinite(self.timeout_seconds)
+            # Compare before converting to float: huge integer inputs must
+            # fail with the same redacted config error, not OverflowError.
             or not 0 < self.timeout_seconds <= 5.0
+            or not math.isfinite(self.timeout_seconds)
         ):
             raise _invalid()
 

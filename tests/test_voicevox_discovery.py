@@ -370,3 +370,44 @@ async def test_waiting_probe_has_same_total_deadline_as_active_probe(monkeypatch
     finally:
         gate.set()
         await asyncio.gather(one, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "timeout",
+    [
+        10**1000,
+        -(10**1000),
+        2**4096,
+        -(2**4096),
+        float("inf"),
+        float("-inf"),
+        float("nan"),
+        0,
+        -1,
+        6,
+        True,
+    ],
+)
+def test_extreme_timeout_values_are_rejected_with_redacted_config_error(timeout):
+    """Input size must never escape as OverflowError or expose its value."""
+    with pytest.raises(
+        ValueError, match=r"^VOICEVOX discovery config is invalid$"
+    ) as caught:
+        VoicevoxDiscoveryConfig(enabled=True, timeout_seconds=timeout)
+    assert type(caught.value) is ValueError
+
+
+@pytest.mark.parametrize("timeout", [1, 5, 0.01, 5.0])
+def test_finite_timeout_boundaries_remain_valid(timeout):
+    config = VoicevoxDiscoveryConfig(enabled=True, timeout_seconds=timeout)
+    assert config.timeout_seconds == timeout
+
+
+def test_disabled_discovery_does_not_evaluate_even_extreme_timeout():
+    """Opt-out remains inert and noninspecting regardless of optional inputs."""
+    probe = VoicevoxDiscoveryProbe(
+        VoicevoxDiscoveryConfig(
+            enabled=False, endpoint="not a URL", timeout_seconds=10**1000
+        )
+    )
+    assert probe._config.enabled is False
