@@ -33,19 +33,42 @@ existing bonsai2-27b alias. The new opt-in logical ID is bonsai2-27b-12k.
   c28cad94b73d7948de5ec9dbbff4b4211b9df849c579d2307d9835bb9d5719d6
   contains Qwen12K and Bonsai8K. Both old Bonsai Workers advertise the same
   accepted 8K deployment and Serving Contract.
-- **R1 pre-canary recovery gap (November 8, ~11:58 JST):** Read-only searches
-  of Spica's acceptance directory and Nix GC roots did **not** find a
-  *dedicated named* Bonsai/Spica 8K rollback snapshot or pinned GC root.
-  This does not prove that no alternate old Nix closure exists, but means
-  a verified rollback set is **NOT yet qualified**. Before any approved
-  Spica stop, preserve and byte-rehearse the real 8K Worker/Runtime/Serving
-  configuration and pin its exact Nix runtime closure. Control currently
-  has an older Qwen cutover catalog backup, but no Bonsai 12K promotion
-  backup yet; capture the current full Qwen12K/Bonsai8K Catalog at the
-  actual maintenance window.
+- **R2 pre-canary protected host-local snapshots (2026-11-08 JST):**
+  after rechecking both original 8K workers and the Qwen12K/Bonsai8K
+  Catalog, protected snapshots were created **without stopping/restarting
+  any service or changing any active configuration**.
+  - Spica: private mode-0700
+    /var/lib/astrumweaver/acceptance/bonsai12k-8k-fallback-20261108-r0;
+    9 mode-0400 originals: active Bonsai Worker TOML, Runtime/Serving JSON,
+    model checksum receipt, GPU UUID list, Worker environment, systemd
+    service Unit and two drop-ins. SHA256/bytes match current live sources
+    (including the **legacy Deneb setup-intent UUID** in the actual old
+    8K Runtime, which must remain exact for a byte-preserving rollback).
+    Full 7,206,168,928-byte Bonsai GGUF SHA256 verified against the
+    original pinned receipt **PASS**; model weights were NOT copied.
+    Two Nix GCroots now pin the real current Bonsai Runtime profile and
+    Worker installer profile. A disposable host-local **byte-copy restore
+    rehearsal** verified 9/9 and its temporary directory was removed.
+  - Control: same named private acceptance snapshot in its *own* LXC;
+    4 originals (Control Unit/TOML/environment/full current Catalog),
+    SHA256/bytes match live sources. One Nix GCroot pins the current
+    Control executable profile. Disposable restore rehearsal verified
+    4/4, temporary directory removed. The snapshot Catalog retains
+    **Qwen12K and Bonsai8K**, not the older pre-Qwen12K contents.
+  - Both machines have owner-private receipt JSON files that explicitly
+    record **host-local only**, live_rollback_verified=false,
+    cross_host_atomic=false, and **no off-host backup**. This does not
+    prove a live Worker or shared Control recovery, or resilience against
+    loss of the same host/disk. Future maintenance MUST compare live
+    source hashes to these receipts, reconfirm the pinned Nix GCroots
+    still resolve, preserve the GGUF and repeat zero-Job/drain checks.
+    If either site's original baseline changes, regenerate and
+    independently review the protected originals before any cutover.
 - Pinned Bonsai PQ2_0 model SHA256
   3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1.
-  This source-only run did not repeat a full 7GB model hash on Spica.
+  The full on-host hash was checked before the Spica 8K backup; the
+  7GB model file itself is retained in place, not included in the
+  small-file snapshot or pinned by the Nix GCroots.
 - Conservative FP16 KV estimate: an extra 1,024 MiB is needed for 8K to 12K,
   leaving approximately 2,586 MiB idle free on Spica, only 538 MiB above
   the mandatory 2,048 MiB **at peak**. The estimate excludes prefill,
@@ -91,11 +114,12 @@ JSON hashes prove local consistency, not independent origin authenticity.
 1. Independently re-check live Spica/Deneb/Control source hashes, exact
    Bonsai GGUF bytes, GPU IDs, correct active Worker file, runtime executable
    and systemd startup/stop properties. Do not use the legacy 4K file.
-2. Preserve full Spica **8K** Worker TOML, Runtime/Serving, service/drop-ins,
-   model SHA receipt and Nix closure as immutable private backup. Preserve
-   the complete Control Catalog and Deneb unchanged. Rehearse byte restore
-   into an isolated location; take a fresh zero-active-Job readback and a
-   separately effective admission drain, not just a point-in-time query.
+2. Verify the R2 Spica **8K** and Control protected backup receipts
+   against the fresh live files, full model SHA, pinned Nix GCroots, and
+   their 9/9 and 4/4 isolated-restore evidence. Re-snapshot if live bytes
+   drift. **This is not a live rollback or off-host disaster backup.**
+   Preserve Deneb unchanged. Obtain a fresh zero-active-Job readback and
+   a separately effective admission drain, not just a point-in-time query.
 3. With approved maintenance, drain and stop only the Spica Worker. Validate
    the old native/wrapper descendants, known systemd cgroup, GPU-device FDs,
    local fuser and NVML compute rows show no ambiguous owner. NVML host PID
