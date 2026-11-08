@@ -8,10 +8,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from copy import deepcopy
+from pathlib import Path
 
 import httpx
 import pytest
+
+from astrumweaver import JobResult
+from astrumweaver.control import InMemoryControlRepository, JobStatus
+from astrumweaver.control.api import create_app
+from astrumweaver.gateway.api import create_chat_router
+from astrumweaver.gateway.chat import ChatProfileCatalog
+
+# Match the source-only candidate tests: GitHub CI installs src/, not tools/.
+# Make this test self-contained instead of depending on collection order.
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+
 from bonsai_12k_spica_candidate import LIMITS_8K, LIMITS_12K, PROFILE_8K, PROFILE_12K
 from test_bonsai_12k_r9_managed_admission import (
     NEW_EPOCH,
@@ -19,12 +33,6 @@ from test_bonsai_12k_r9_managed_admission import (
     register,
     synthetic_only_chain,
 )
-
-from astrumweaver import JobResult
-from astrumweaver.control import InMemoryControlRepository, JobStatus
-from astrumweaver.control.api import create_app
-from astrumweaver.gateway.api import create_chat_router
-from astrumweaver.gateway.chat import ChatProfileCatalog
 
 BASE_URL = "http://in-memory-only"
 
