@@ -197,3 +197,68 @@ rollback plan before any Control promotion.
 
 **No live service restart, publication, GPU allocation, 16K, Deneb upgrade,
 #240 Broker activation, Ready, Merge or Release is approved by this R0.**
+
+
+## R5 — read-only rollback asset verifier (2026-11-08 JST)
+
+The source-only tool tools/bonsai_12k_rollback_preflight.py validates one
+host's **protected original 8K snapshot** against its present live file
+bytes, owner/group/mode and the pinned Nix closure. It runs with ordinary
+Python standard library; it contains no subprocess, systemd operations,
+network access, write calls or GPU-related code. A root-owned host may run
+a disposable copy of the tool; this is **read-only site validation**, not
+activation, installation or permission to stop a Worker.
+
+The two operations are independent, and must be run separately on the
+respective site *after* confirming the tool's source revision:
+
+- On Spica: python3 bonsai_12k_rollback_preflight.py --site spica
+- On Control: python3 bonsai_12k_rollback_preflight.py --site control
+
+Spica verifies 9 source/snapshot pairs, the original runtime still has
+8K and its *legacy* Deneb setup GPU UUID, the actual Worker is
+bonsai-spica and correctly targets the Spica GPU, and two named Nix
+GCroots still point to their accepted original profiles. Control
+verifies 4 source/snapshot pairs, the current Qwen12K/Bonsai8K
+Catalog without any newly activated 12K Bonsai profile, and the
+accepted Control Nix GCroot.
+
+Snapshots are private directories (0700) holding mode-0400 originals
+and mode-0600 receipts. The tool validates receipt identity,
+individual file SHA256/size/mode, original owner/group, source and
+snapshot symlink restrictions, strict pinned Nix store references,
+GCroot symlink targets and *current* active profile targets. A
+synthetic --root option exists for isolated unit tests and visibly
+sets synthetic_root=true in its output.
+
+At the R5 bounded read-only host test, the exact source tool returned:
+
+- Spica: HOST_LOCAL_BACKUP_BYTES_MATCH_NO_LIVE_ADMISSION, 9 files,
+  2 GCroots, synthetic_root=false, canary_activation_authorized=false.
+- Control: HOST_LOCAL_BACKUP_BYTES_MATCH_NO_LIVE_ADMISSION, 4 files,
+  1 GCroot, synthetic_root=false, canary_activation_authorized=false.
+
+The source script was temporarily copied to /tmp on each host, run
+and removed. Neither Worker/Control service nor original source/backup
+was edited. The tool's output intentionally records all of:
+live_rollback_verified=false, cross_host_atomic=false,
+offhost_backup=false, model_full_hash_verified_this_run=false,
+canary_activation_authorized=false.
+
+A verifier PASS is **necessary but not sufficient** for a real Spica
+Canary. In particular, it does not verify the physical 7GB model's
+current full SHA in the same invocation; this must be freshly checked
+with the preexisting pinned model receipt before any cutover. It does
+not verify actual Native/process/group/GPU teardown, admission freeze,
+nonterminal jobs at the moment of a stop, disk failure recovery,
+Control restarts or a time-bounded live 8K rollback. The rollback
+snapshots are **host-local** and not cryptographically authenticated
+independently of their host; do not claim disaster-recovery coverage.
+
+The 90-second Spica systemd TimeoutStopSec, the historical #237
+shutdown timeout and the small projected 12K VRAM margin remain.
+The final production-risk stop decision must still be an explicit
+operator-authorized, synchronous, no-overlap decision with an actual
+old-Native and GPU FDs/NVML clearance gate. Do not infer authority
+to perform any 12K Native launch, Ready/Merge or Control catalog
+publication from any of these status objects.
