@@ -561,3 +561,138 @@ Source-only R7 parser and test changes may be published to
 the existing Draft PR. They do not authorize production
 profile promotion, Control or Deneb changes, Ready/Merge,
 Release or a new GPU-native canary.
+
+
+## R8 — Native evidence and proposed Managed Serving binding (review-only)
+
+R6B's real Spica Native 12K test has already established fresh
+uncached 10,231-token Prefill, a structured streamed Tool Call, the
+actual correlated Tool Result final stream, explicit client-side
+disconnect with subsequent Native slot quiescence, and restoration
+of the original 8K managed Worker. The evidence is retained on
+Spica only; neither a signed audit authority nor host-independent
+disaster-recovery guarantee was introduced.
+
+R8 adds tools/bonsai_12k_r8_evidence_plan.py and synthetic tests.
+The new pure validator checks **internal consistency** of six
+host-local R6B evidence objects: the bounded JSON stage report,
+original streamed Tool Call SSE, original final Tool Result SSE,
+NVML sampled free-memory CSV, Canary result receipt and original
+8K restoration receipt. It requires all four R6B stages in order,
+the exact prior cold-input SHA and actual 10,231-token count,
+the no-cache first-inference claim and a positive Native-reported
+Prompt processing time. It verifies two actual SSE captures using
+the reviewed R7 parser and checks that the second Tool Result
+request SHA is derived from the **observed first-stream Call ID
+and JSON arguments**, not an asserted replacement. It also checks
+monotonically increasing NVML timestamps, physical free-memory
+samples at or above 2,048 MiB, and explicit client disconnect
+and slot quiescence flags.
+
+This is **not authentication** of the host evidence. The R6B
+receipt reports come from the same Spica filesystem and can be
+mutated together by a privileged local actor; a coherent set of
+bytes does not prove who captured them or whether a claimed
+observed cancellation event occurred. In particular:
+
+- R8 cannot prove Native ownership of the CUDA GPU, the complete
+  model artifact SHA at runtime, exact options/argv, or the
+  independence of the operator who collected the samples merely
+  from the stage JSON/SSE/CSV. These need separate attested and
+  authenticated source-to-live provenance at deployment time.
+- NVML observations are periodic; they cannot mathematically
+  guarantee memory headroom between timestamps, or prove each
+  sample overlaps a specific Prefill phase.
+- Native slot idle after the client's disconnect demonstrates
+  the reported post-disconnect quiescence, but is not sufficient
+  for a general managed Job cancellation contract.
+- The original 8K snapshot's creation-time
+  live_rollback_verified=false remains unchanged. R6B's
+  separate actual restore receipt establishes one bounded
+  successful restore without rewriting historical evidence.
+
+R8 was run in a disposable private Spica directory with the
+exact local source file SHA256 matching Adam. The private
+R6B evidence passed internal consistency:
+
+- 10,231 input tokens, native prompt_ms=45,768.320;
+- 9 real Tool Call SSE frames, 33 final Tool Result SSE frames;
+- 171 monotonic NVML samples, minimum observed free 3,360 MiB;
+- explicit disconnect followed by slot quiescence at 8.545 s;
+- the exact success and original-8K-Ready restoration receipts.
+
+The verifier returned
+NATIVE_EVIDENCE_INTERNAL_CONSISTENCY_ONLY with ALL of
+native_host_authenticity_proven=false,
+operator_signed_provenance=false,
+managed_12k_admission_qualified=false and
+gateway_12k_promotion_authorized=false.
+The temporary checker files and Python bytecode were removed
+after the read-only verification; Spica continued to serve 8K.
+
+An optional second pure R8 step combines the existing **R0
+unqualified** Spica Runtime/Serving/Control candidate with the
+Native-only consistency report into a **review packet**. It
+retains PENDING execution/config/evidence/revision fields in
+the underlying drafts and computes only a path-bearing
+review fingerprint. It deliberately does NOT mint a
+DeploymentIdentity, ServingContract revision, Logical Profile
+revision, RuntimeInstance epoch, signed validation-evidence
+digest or any Service Catalog change. The packet's status
+remains BLOCKED_PENDING_INDEPENDENT_PROVENANCE_AND_MANAGED_WORKER_TEST
+even when every observed Native evidence item matches.
+
+**Next R8 admission gates requiring a distinct decision:**
+independently ground exact source files, full GGUF/binary/template
+hashes, path-neutral executable and configuration digest, approved
+Serving contract/evidence identity, correct Spica-only GPU UUID
+(no inherited Deneb setup UUID), new RuntimeInstance epoch and
+managed Job authority. Next qualify the actual managed 12K
+Worker under a separately approved Spica maintenance window and
+byte-identical 8K rollback. The distinct bonsai2-27b-12k
+opt-in model must not silently route to Deneb8K or the old
+Bonsai 8K identity. Only subsequently consider a separately
+approved coordinated shared Control Catalog promotion, strict
+Gateway token-limit rejection and OpenCode client acceptance.
+This R8 source-only work does not approve any such live step
+or PR Ready/Merge.
+
+
+### R8 independent-review evidence limitations, retained as hard gates
+
+An independent source review found no P0/P1 but correctly identified
+three P2 risks if the original evidence receipts were interpreted as
+complete site attestation. R8 must **not** upgrade these unknowns to
+PASS by inference or by reconstructing expected bytes:
+
+1. R6B's stage report contains request SHA256 values. The actual
+   serialized HTTP request bodies were not retained and rehashed
+   independently, so the SHA validates the *reported* request
+   identity against the synthetic recipe, not exact bytes
+   captured from the network during that original invocation.
+2. The original 8K restoration receipts contain terminal status
+   strings, not a signed and complete Worker/Native/GPU/Control
+   postcondition bundle. The actual 8K Ready and n_ctx=8192
+   were separately read back during the earlier live maintenance
+   and subsequent sessions, but the R8 local-receipt parser
+   does not independently re-perform or authenticate that check.
+3. The NVML CSV contains a monotonic timestamp and GPU-free
+   memory value per sample, but no GPU UUID or direct stage
+   boundary markers. It therefore does not independently bind
+   every measurement to the pinned Spica GPU or a specific
+   Prefill interval, despite the approved operator recording
+   that Spica was the only controlled GPU-native trial.
+
+R8's report explicitly returns false for the missing actual
+request-body rehash, live post-restore readback and NVML UUID/
+sample-window binding. The review-only packet carries these
+as unresolved evidence gaps and cannot generate a valid
+Serving identity or managed 12K admission, even when the
+stored six-file R6B receipt is internally consistent.
+
+These are **future evidence acquisition requirements**, not
+reasons to invalidate the already observed, successful Native
+canary or to restart it without a new explicit operator
+approval. No past source hash can prove that unsaved HTTP
+bytes, external reviewer attestation, or an unrecorded
+GPU UUID time series existed.
