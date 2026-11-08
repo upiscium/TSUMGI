@@ -109,6 +109,54 @@ SHA256-only fixtures in memory strictly to prove eventual structure; the
 resulting fake digests are never accepted as production evidence. Source
 JSON hashes prove local consistency, not independent origin authenticity.
 
+## R4 synthetic tokenizer-only preflight (2026-11-08 JST)
+
+With **Spica and Deneb both still serving 8K**, their respective
+pinned Bonsai native localhost /v1/chat/completions/input_tokens
+endpoints were queried using the exact same synthetic generated JSON
+requests. Both 8K replicas independently matched **3/3 input counts
+and request SHA256s**; only token counting was performed. No 12K Native
+process was started, no completion was requested, no long prefill was
+executed and GPU load was not qualified. The model alias
+'astrumweaver' matches the existing Bonsai Native on both hosts.
+The three observations were first measured on Spica and repeated
+against the independent Deneb worker. Source-only tests reproduce
+the requests and their hashes but **do not contact the Native API**:
+the measured token counts are site observations, not independently
+reproduced by CI or authenticated signed attestations.
+
+| Fixture | 8K native tokenizer input count | Request bytes | SHA256 of JSON request |
+| --- | ---: | ---: | --- |
+| tool | 7,842 | 35,483 | c1fc1d2a9ba8ad77a275905a4bb8161a355ca66fd0e50781dfa7b0f750db176e |
+| long_safe | 10,011 | 46,441 | adb452d00e8a612c21a37a2dc45a10345d1ec8218b542c1b1293fc9d1db5e18c |
+| long | 10,231 | 47,461 | af877ad92bed850b1a11ed57bb4d7908eaaec3d84f5d7f9f0955c4be0bd42eab |
+
+All requests are within 65,536 bytes. The bounded deterministic
+recipes live in tools/bonsai_12k_spica_fixtures.py. Importing it
+does not send HTTP requests or write files; the CLI prints *only a
+short receipt* unless --emit-request is explicitly supplied. The
+attached tests prove exact request bytes and expected hashes. No
+production secrets or user data are included.
+
+A future authorized 12K Native-only canary should **recount tokens
+against that exact 12K instance**, then test the tool fixture first,
+progress to long_safe only if VRAM remains >=2,048 MiB under sampled
+prefill, and attempt long only if headroom is still sufficient.
+The long fixture is **nine input tokens** below the 10,240-input
+contract, so *any* 12K tokenizer/template difference must trigger
+an explicit rejection/recalibration. Counting under the 8K instance
+does not prove admission or success under 12K.
+
+The tool fixture is a fabricated function-call request with a similar
+7.8K count, **not the actual historical OpenCode main-request
+prompt** (previously projected near 7,843). Real client/tool
+behavior and actual Tool Result round trips still require
+independent qualification. Equal token counts are not equal prompt
+content. For the future canary, require the same pinned GGUF/runtime,
+one slot, live native n_ctx=12288, continuous NVML sampling during
+a real 10K prefill, no OOM, Tool/Stream/Cancel and a fresh 8K
+rollback plan before any Control promotion.
+
 ## Bounded future rollout — requires separate operator live approval
 
 1. Independently re-check live Spica/Deneb/Control source hashes, exact
