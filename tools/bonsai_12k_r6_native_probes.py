@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 from copy import deepcopy
 from typing import Any
 
@@ -18,7 +17,6 @@ from bonsai_12k_spica_fixtures import make_request
 
 _MAX_REQUEST_BYTES = 65536
 _EXPECTED_COLD_SHA256 = "af877ad92bed850b1a11ed57bb4d7908eaaec3d84f5d7f9f0955c4be0bd42eab"
-_CALL_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _SYNTHETIC_TOOL = "synthetic_echo"
 _PHASES = ("cold_long", "tool_stream", "tool_result_stream", "cancel_stream")
 
@@ -26,6 +24,46 @@ _PHASES = ("cold_long", "tool_stream", "tool_result_stream", "cancel_stream")
 def _require(condition: bool, reason: str) -> None:
     if not condition:
         raise ValueError(reason)
+
+
+def _valid_opaque_call_id(value: object) -> bool:
+    """Bound an opaque wire ID, preserving its contents (never a path/command)."""
+    return (
+        type(value) is str
+        and 1 <= len(value) <= 128
+        and value.isprintable()
+        and len(value.encode("utf-8")) <= 256
+    )
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate-json-object-key")
+        result[key] = value
+    return result
+
+
+def _tool_arguments(raw: str) -> dict[str, str]:
+    """Reject duplicate JSON object keys rather than silently taking last."""
+    _require(type(raw) is str, "tool-argument-total-invalid")
+    try:
+        encoded_length = len(raw.encode("utf-8"))
+    except UnicodeError as exc:
+        raise ValueError("tool-argument-invalid-unicode") from exc
+    _require(0 < encoded_length <= 2048, "tool-argument-total-invalid")
+    try:
+        parsed = json.loads(raw, object_pairs_hook=_unique_object)
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("tool-argument-json-incomplete-or-duplicate") from exc
+    _require(
+        type(parsed) is dict and set(parsed) == {"text"}
+        and type(parsed["text"]) is str and len(parsed["text"]) <= 256
+        and parsed["text"].isprintable(),
+        "tool-arguments-invalid",
+    )
+    return parsed
 
 
 def make_probe(
@@ -77,7 +115,7 @@ def make_probe(
     _require(type(observed) is dict, "observed-tool-call-missing")
     call_id = observed["id"]
     tool_arguments = observed["arguments"]
-    arguments = json.loads(tool_arguments)
+    arguments = _tool_arguments(tool_arguments)
     request["messages"].extend([
         {
             "role": "assistant",
@@ -201,7 +239,6 @@ def validate_sse_trace(raw: bytes, *, phase: str) -> dict[str, object]:
     call_name = None
     argument_fragments: list[str] = []
     tool_seen = False
-    function_type_seen = False
     content_seen = False
     terminal_reasons: set[str] = set()
     for i, segment in enumerate(segments):
@@ -214,7 +251,7 @@ def validate_sse_trace(raw: bytes, *, phase: str) -> dict[str, object]:
             continue
         _require(not done, "done-not-terminal")
         try:
-            decoded = json.loads(value)
+            decoded = json.loads(value, object_pairs_hook=_unique_object)
         except (UnicodeError, ValueError) as exc:
             raise ValueError("invalid-frame-json") from exc
         _require(type(decoded) is dict and type(decoded.get("choices")) is list,
@@ -248,25 +285,29 @@ def validate_sse_trace(raw: bytes, *, phase: str) -> dict[str, object]:
                     "tool-call-index-invalid",
                 )
                 tool_seen = True
-                if call.get("type") is not None:
+                if "type" in call:
                     _require(call["type"] == "function", "tool-call-type-invalid")
-                    function_type_seen = True
                 if call.get("id") is not None:
                     _require(type(call["id"]) is str, "call-id-invalid")
                     _require(call_id is None or call_id == call["id"],
                              "call-id-conflict")
                     call_id = call["id"]
-                fn = call.get("function")
-                _require(type(fn) is dict, "tool-function-invalid")
-                if fn.get("name") is not None:
-                    _require(type(fn["name"]) is str, "tool-name-invalid")
-                    _require(call_name is None or call_name == fn["name"],
-                             "tool-name-conflict")
-                    call_name = fn["name"]
-                if fn.get("arguments") is not None:
-                    _require(type(fn["arguments"]) is str,
-                             "tool-argument-fragment-invalid")
-                    argument_fragments.append(fn["arguments"])
+                # OpenAI-compatible providers can omit the function object
+                # on index-only continuation frames. Any present function
+                # field must still be a genuine object; the complete stream
+                # must ultimately yield the pinned tool name and arguments.
+                if "function" in call:
+                    fn = call["function"]
+                    _require(type(fn) is dict, "tool-function-invalid")
+                    if fn.get("name") is not None:
+                        _require(type(fn["name"]) is str, "tool-name-invalid")
+                        _require(call_name is None or call_name == fn["name"],
+                                 "tool-name-conflict")
+                        call_name = fn["name"]
+                    if fn.get("arguments") is not None:
+                        _require(type(fn["arguments"]) is str,
+                                 "tool-argument-fragment-invalid")
+                        argument_fragments.append(fn["arguments"])
     if phase == "cancel_stream":
         _require(not done and not terminal_reasons,
                  "cancel-must-not-be-completed")
@@ -276,19 +317,10 @@ def validate_sse_trace(raw: bytes, *, phase: str) -> dict[str, object]:
         _require(terminal_reasons, "missing-terminal-finish-reason")
     completed_call = False
     if tool_seen:
-        _require(function_type_seen, "missing-function-call-type")
-        _require(type(call_id) is str and _CALL_ID.fullmatch(call_id) is not None,
-                 "tool-call-id-invalid")
+        _require(_valid_opaque_call_id(call_id), "tool-call-id-invalid")
         _require(call_name == _SYNTHETIC_TOOL, "unexpected-tool-name")
         arguments = "".join(argument_fragments)
-        _require(0 < len(arguments) <= 2048, "tool-argument-total-invalid")
-        try:
-            parsed = json.loads(arguments)
-        except (ValueError, UnicodeError) as exc:
-            raise ValueError("tool-argument-json-incomplete") from exc
-        _require(type(parsed) is dict and set(parsed) == {"text"}
-                 and type(parsed["text"]) is str and len(parsed["text"]) <= 256,
-                 "tool-arguments-invalid")
+        _tool_arguments(arguments)
         completed_call = True
     if phase == "tool_stream":
         _require(completed_call, "missing-structured-tool-call")

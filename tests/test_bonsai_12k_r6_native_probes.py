@@ -90,7 +90,8 @@ def test_tool_result_round_trip_binds_the_observed_call_id_and_args():
 
 @pytest.mark.parametrize(("call_id", "arguments"), [
     (None, '{"text":"R6"}'),
-    ("call_!invalid", '{"text":"R6"}'),
+    ("a" * 129, '{"text":"R6"}'),
+    ("call_\ninvalid", '{"text":"R6"}'),
     ("call_aaa", ""),
     ("call_aaa", '{"not_text":"R6"}'),
     ("call_aaa", '{"text":42}'),
@@ -241,7 +242,10 @@ def test_actual_native_generated_tool_call_id_has_no_required_prefix():
     assert followup["messages"][2]["content"] == "synthetic_echo result: R6"
 
 
-@pytest.mark.parametrize("bad_id", ["", "a" * 129, "a/b", "space id", "id:colon"])
+@pytest.mark.parametrize("bad_id", [
+    "", "a" * 129, "🎈" * 65, "bad\nid", "bad\tid",
+    "null\x00id", "zero\u200bwidth", "\ud800",
+])
 def test_unbounded_or_unsafe_native_tool_id_is_still_rejected(bad_id):
     trace = synthetic_tool_sse_with(bad_id, '{"text":"R6"}')
     with pytest.raises(ValueError, match="tool-call-id-invalid"):
@@ -262,7 +266,6 @@ def test_tool_result_cannot_claim_unobserved_stream_values():
     (9, "function", "choice-index-invalid"),
     (True, "function", "choice-index-invalid"),
     (0, "notfunction", "tool-call-type-invalid"),
-    (0, None, "missing-function-call-type"),
 ])
 def test_malformed_streamed_tool_identity_fails_closed(
     choice_index, call_type, message,
@@ -281,6 +284,146 @@ def test_malformed_streamed_tool_identity_fails_closed(
     }]}) + frame("[DONE]")
     with pytest.raises(ValueError, match=message):
         validate_sse_trace(trace, phase="tool_stream")
+
+
+def test_provider_can_omit_type_when_valid_function_identity_is_observed():
+    # Some providers omit type=function on fragmented streams. Name/args
+    # must still resolve to the sole pinned synthetic tool.
+    chunks = b"".join([
+        frame({"choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "id": "id:with/slash",
+            "function": {"name": "synthetic_echo", "arguments": '{"text":'},
+        }]}, "finish_reason": None}]}),
+        frame({"choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "function": {"arguments": '"R6"}'},
+        }]}, "finish_reason": "tool_calls"}]}),
+        frame("[DONE]"),
+    ])
+    parsed = validate_sse_trace(chunks, phase="tool_stream")
+    assert parsed["observed_tool_call"]["id"] == "id:with/slash"
+    followup = make_probe("tool_result_stream", tool_call_trace=chunks)
+    assert followup["messages"][2]["tool_call_id"] == "id:with/slash"
+    assert followup["messages"][2]["content"] == "synthetic_echo result: R6"
+
+
+def test_index_only_continuation_fragment_without_function_is_allowed():
+    chunks = b"".join([
+        frame({"choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "id": "call_spica", "type": "function",
+            "function": {"name": "synthetic_echo", "arguments": '{"text":'},
+        }]}, "finish_reason": None}]}),
+        frame({"choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 0},
+        ]}, "finish_reason": None}]}),
+        frame({"choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "function": {"arguments": '"R6"}'},
+        }]}, "finish_reason": "tool_calls"}]}),
+        frame("[DONE]"),
+    ])
+    out = validate_sse_trace(chunks, phase="tool_stream")
+    assert out["observed_tool_call"] == {
+        "id": "call_spica", "name": "synthetic_echo",
+        "arguments": '{"text":"R6"}',
+    }
+
+
+@pytest.mark.parametrize("bad_function", [None, False, "string", 42, []])
+def test_present_nonobject_function_fragment_is_blocked(bad_function):
+    trace = b"".join([
+        frame({"choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "id": "call_id", "type": "function",
+            "function": bad_function,
+        }]}, "finish_reason": "tool_calls"}]}),
+        frame("[DONE]"),
+    ])
+    with pytest.raises(ValueError, match="tool-function-invalid"):
+        validate_sse_trace(trace, phase="tool_stream")
+
+
+def test_explicit_null_tool_type_is_not_silently_treated_as_omitted():
+    trace = b"".join([
+        frame({"choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "id": "call_null_type", "type": None,
+            "function": {"name": "synthetic_echo", "arguments": '{"text":"R6"}'},
+        }]}, "finish_reason": "tool_calls"}]}),
+        frame("[DONE]"),
+    ])
+    with pytest.raises(ValueError, match="tool-call-type-invalid"):
+        validate_sse_trace(trace, phase="tool_stream")
+
+
+def test_missing_all_function_descriptors_is_blocked():
+    trace = b"".join([
+        frame({"choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "id": "call_id", "type": "function",
+        }]}, "finish_reason": "tool_calls"}]}),
+        frame("[DONE]"),
+    ])
+    with pytest.raises(ValueError, match="unexpected-tool-name"):
+        validate_sse_trace(trace, phase="tool_stream")
+
+
+def test_duplicate_tool_argument_keys_rejected_no_last_write_wins():
+    ambiguous = '{"text":"first","text":"second"}'
+    trace = synthetic_tool_sse_with("call_dupe", ambiguous)
+    with pytest.raises(ValueError, match="tool-argument-json-incomplete-or-duplicate"):
+        validate_sse_trace(trace, phase="tool_stream")
+    with pytest.raises(ValueError, match="tool-argument-json-incomplete-or-duplicate"):
+        make_probe("tool_result_stream", tool_call_trace=trace)
+
+
+def test_duplicate_tool_argument_keys_after_unicode_escape_rejected():
+    ambiguous = '{"text":"R6","t\\u0065xt":"other"}'
+    trace = synthetic_tool_sse_with("call_dupe", ambiguous)
+    with pytest.raises(ValueError, match="tool-argument-json-incomplete-or-duplicate"):
+        validate_sse_trace(trace, phase="tool_stream")
+
+
+def test_valid_escaped_unicode_surrogate_pair_is_accepted_and_preserved():
+    # Python 3.12 json.loads combines valid JSON UTF-16 escape pairs into
+    # a single printable Unicode scalar, unlike an unpaired surrogate.
+    arguments = '{"text":"' + chr(92) + "ud83d" + chr(92) + 'ude00"}'
+    trace = synthetic_tool_sse_with("call_unicode_emoji", arguments)
+    parsed = validate_sse_trace(trace, phase="tool_stream")
+    assert parsed["observed_tool_call"]["arguments"] == arguments
+    followup = make_probe("tool_result_stream", tool_call_trace=trace)
+    assert followup["messages"][1]["tool_calls"][0]["function"]["arguments"] == arguments
+    assert followup["messages"][2]["content"] == "synthetic_echo result: 😀"
+    assert followup["messages"][2]["tool_call_id"] == "call_unicode_emoji"
+
+
+def test_unpaired_surrogate_tool_argument_is_rejected():
+    trace = synthetic_tool_sse_with("call_surrogate", '{"text":"\\uD800"}')
+    with pytest.raises(ValueError, match="tool-arguments-invalid"):
+        validate_sse_trace(trace, phase="tool_stream")
+
+
+def test_tool_argument_control_character_is_rejected_after_json_decode():
+    trace = synthetic_tool_sse_with("call_control", '{"text":"R6\\nother"}')
+    with pytest.raises(ValueError, match="tool-arguments-invalid"):
+        validate_sse_trace(trace, phase="tool_stream")
+
+
+def test_duplicate_sse_frame_json_keys_rejected_as_ambiguous():
+    frame_with_duplicate_choice_fields = (
+        b'data: {"choices":[],"choices":[{"index":0,"delta":{"content":"ok"},'
+        b'"finish_reason":"stop"}]}\n\n'
+    )
+    with pytest.raises(ValueError, match="invalid-frame-json"):
+        validate_sse_trace(
+            frame_with_duplicate_choice_fields + frame("[DONE]"),
+            phase="tool_result_stream",
+        )
+
+
+def test_opaque_printable_call_id_is_preserved_without_normalization():
+    original = "call with / : 文字 🐱"
+    trace = synthetic_tool_sse_with(original, '{"text":"R6"}')
+    out = validate_sse_trace(trace, phase="tool_stream")
+    assert out["observed_tool_call"]["id"] == original
+    follow = make_probe("tool_result_stream", tool_call_trace=trace)
+    assert follow["messages"][1]["tool_calls"][0]["id"] == original
+    assert follow["messages"][2]["tool_call_id"] == original
 
 
 @pytest.mark.parametrize("bad_index", [False, 0.0, 1, None])

@@ -486,3 +486,78 @@ and Deneb8K/Control Qwen12K live. Next, independently review the
 updated PR source and live evidence contract before separately
 authorizing any Spica-only Serving-profile admission or shared
 Control Catalog promotion. No PR Ready/Merge/Release was approved.
+
+
+## R7 — Post-R6 Native stream compatibility hardening (source-only)
+
+The exact-published-head independent PR review after R6B's
+successful Native 12K Cold/Tool/Stream/Cancel Canary identified
+three P2 parser/compatibility limitations. None prevented the
+pinned Bonsai Native from working, but they should be resolved
+before managed Worker/Serving and opt-in Gateway admission.
+
+The pure tools/bonsai_12k_r6_native_probes.py source parser now:
+
+- Treats the Tool Call ID as an **opaque, bounded, printable string**
+  rather than requiring an ASCII-only alphabet or call_ prefix.
+  It preserves the same exact ID in assistant Tool Call and Tool
+  Result JSON. IDs are bounded to 128 codepoints / 256 UTF-8
+  bytes, with control/format characters rejected. This is not
+  a guarantee that every provider's arbitrary ID is supported.
+- Rejects duplicate keys in both SSE frame JSON and reconstructed
+  Tool Call arguments, including duplicates with Unicode key
+  escapes. Python's default json.loads had silently selected
+  the last occurrence; ambiguous Tool arguments must fail closed.
+- Allows **index-only Tool Call SSE continuation fragments**, where
+  the function property is omitted from a particular chunk,
+  and type can be omitted as well. If supplied, type must be
+  function, and function must be an object. The *completed*
+  Tool Call must still have the sole expected synthetic_echo
+  function name, a bounded JSON object with exactly one text
+  field, a stable valid Call ID, single zero-index choice/tool,
+  terminal finish_reason=tool_calls, and final [DONE].
+- Preserves final-text finish_reason=stop plus [DONE], while
+  empty/partial cancel traces never certify actual cancellation.
+
+The corrected parser was independently replayed **read-only**
+against both previously captured real Spica Tool Call SSE streams
+from R6 Run A and Run B, plus the final 33-frame Tool Result
+stream from Run B. All three replay checks passed. No Worker
+stop, Native inference, GPU reset or Control modification
+occurred during R7 compatibility validation.
+
+### Managed Worker/Serving phase remains separately authorized
+
+R7 is **not** a new live canary or profile registration. Before
+any managed 12K admission, a separate reviewed plan must bind:
+
+1. Pinned Bonsai GGUF, real 12K Native Canary evidence, exact
+   Spica GPU UUID, Runtime setup intent and reviewed execution
+   configuration SHA. Do not carry the original 8K legacy Deneb
+   setup-intent GPU UUID into a proposed Spica 12K Runtime.
+2. Real non-PENDING Deployment, validation-evidence and Serving
+   Contract revisions and a fresh RuntimeInstance epoch, with
+   an auditable source-to-live evidence chain. Local file hashes
+   or synthetic test fixtures alone are not independently
+   authenticated production provenance.
+3. Spica **only** managed 12K Worker admission and correct
+   context/tool/stream/cancel behavior, leaving the existing
+   Bonsai8K model binding, Deneb8K and Qwen12K untouched.
+   New opt-in bonsai2-27b-12k must not silently downgrade or
+   fall back to the previous Bonsai8K profile.
+4. A **separately approved** complete Control Catalog backup
+   and coordinated promotion that accounts for shared-Control
+   restart risk, with strict logical limits: 10,240 input /
+   2,048 output / 12,288 total. Verify rejection of over-limit
+   and unknown model requests at the actual Gateway.
+5. An **explicitly authorized** bounded Spica maintenance
+   window: drain and stop 8K only after zero nonterminal Jobs,
+   prove old Native descendants/cgroup/GPU owners are gone,
+   qualify new 12K Worker, and rollback to byte-identical
+   original 8K Worker and Catalog on failure. Keep the
+   original protected backup and Nix roots until accepted.
+
+Source-only R7 parser and test changes may be published to
+the existing Draft PR. They do not authorize production
+profile promotion, Control or Deneb changes, Ready/Merge,
+Release or a new GPU-native canary.
