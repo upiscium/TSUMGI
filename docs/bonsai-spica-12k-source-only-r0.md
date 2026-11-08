@@ -388,3 +388,101 @@ live_rollback_verified=false historical creation state. The
 **separate** R6 evidence of one actual successful 8K service restore
 is recorded on Issue #232, and must not be backfilled by mutating
 the original protected immutable receipt.
+
+
+## R6 live follow-up — approved cold-prefill and streaming acceptance (2026-11-08 JST)
+
+The operator expressly approved a **Spica-only 12K Native Cold Prefill,
+Tool Result/Streaming/Cancellation Canary with mandatory 8K rollback**;
+the authorization excluded Deneb/Control mutation and PR Ready/Merge.
+The first bounded R6 run was **incomplete**, and the corrected bounded
+R6 retry completed all four requested Native-only stages. Neither run
+registered a 12K Serving/Gateway profile.
+
+**First run — safely failed closed and restored original 8K.** At
+approximately 16:56–16:58 JST, the original Worker was drained, old
+Native and GPU ownership checked absent, and a fresh Native launched at
+n_ctx=12288 with --no-cache-prompt. The pinned 10,231-token cold input
+ran first; its real Native prompt_ms was **45,632.446 milliseconds**,
+end-to-end wall time **46.361 seconds**, and the sampler minimum
+available VRAM was **3,360 MiB**. The genuine streamed Tool Call returned
+an opaque **32-character alphanumeric ID without a call_ prefix**.
+The source-only R6 validator incorrectly required that prefix, so its
+Tool stream parser rejected the legitimate response with
+tool-call-id-invalid. The canary stopped immediately and restored the
+original 8K Worker, with Ready confirmed. Real SSE remains in
+the private Spica local directory
+/var/lib/astrumweaver/acceptance/bonsai12k-spica-native-r6-20261108
+(SSE SHA256 497f8b5ad65aff848601e354a504ae0585d95f82b31ee7f8031b6f2deb293f28).
+**No Tool Result or Cancellation was accepted in this first run.**
+
+**Corrected R6 ID compatibility.** Tool Call IDs from the observed
+pinned Bonsai Native are not required to begin with call_. The R6
+validator now accepts bounded nonempty identifiers containing ASCII
+letters, digits, underscore or hyphen, with maximum length 128; it
+retains exact ID and argument correlation, structured function/tool
+validation, and rejection of control/special characters. Offline
+regression tests cover the actual observed 32-character ID and ensure
+it survives the Tool Call -> Tool Result boundary. The exact corrected
+R6 source copied from Adam and executed on Spica had SHA256
+31e1883843cffc624d9ddfe386db32fa582b24e4cd290ae87c1e35ec158f37cf.
+A separate read-only independent diff review found no P0/P1 defects
+for the observed Bonsai ID, but noted that this alphabet restriction
+may reject unusual opaque IDs from *other* providers. The R6 scope is
+pinned Bonsai only; do not claim universal provider compatibility.
+After correction the preserved genuine first-run Native SSE passed the
+strict source parser and produced a correlated synthetic follow-up.
+
+**R6 retry — 17:06–17:08 JST, four Native stages PASS.** Spica was
+again drained with zero active and nonterminal jobs, old Worker stopped
+cleanly, and old Native GPU holders/FDs verified absent before the
+fresh single-slot 12K Native started. Its actual process argv was
+checked for --ctx-size 12288 and --no-cache-prompt. The 10,231-token
+cold request was the first generation (no prior overlapping prompt);
+Native returned prompt_ms **45,768.320 ms**, wall time **46.500 s**,
+usage.prompt_tokens **10,231**, and a completed response.
+
+The next *real* Native SSE stream contained a structured synthetic
+function Tool Call with finish_reason=tool_calls and [DONE],
+**9 frames / 2,895 bytes**. A second streaming request was built
+from the **actual received Call ID and exact arguments**, with a
+matching synthetic Tool Result. It returned final assistant text
+with finish_reason=stop and [DONE], **33 frames / 8,512 bytes**.
+Both raw SSE captures and their SHA256s remain on Spica in the
+private evidence directory; no user content or production secrets
+were sent to the Native.
+
+For cancellation, a separate synthetic stream was started, the
+single Native slot was explicitly observed as processing=true,
+and the client socket was actually shut down and closed. The slot
+subsequently reported processing=false **8.545 seconds after the
+disconnect**. This proves slot quiescence after explicit client
+disconnect in that bounded trial; it does not independently prove
+internal request-level cancellation, packet delivery, or exactly
+which Native cancellation mechanism ran.
+
+The NVML sampler collected **171 periodic measurements**; minimum
+observed GPU-local free memory was **3,360 MiB**, above the required
+2,048 MiB sampled floor. Samples cannot rule out unsampled transient
+peaks. The transient 12K Native was stopped, old/new GPU owners
+verified absent, and the exact original managed Spica 8K Worker was
+restarted. At **17:08:13 JST** its Ready/slot n_ctx=8192 passed.
+Subsequent read-only checks found original Runtime/Serving hashes,
+Deneb 8K Ready, shared Control Qwen12K/Bonsai8K Catalog unchanged,
+Spica and Deneb online with zero active jobs, and zero nonterminal
+jobs. The controller exited with code 0. The distinct retry evidence
+directory, preserved on Spica only, is
+/var/lib/astrumweaver/acceptance/bonsai12k-spica-native-r6b-20261108.
+Its canary-result and restore-status receipts attest this one
+Native-only reversible trial; they do NOT authorize activation.
+
+**Unqualified future scope:** This result does not test the actual
+OpenCode client round trip through Control, fail-closed Gateway input
+limit enforcement at 10,240 tokens, complete Serving profile
+identity/revisions/evidence provenance, stable 12K managed Worker
+registration, non-peak sample worst-case memory, or repeated load
+and concurrency. Continue to keep Bonsai's original 8K profile
+and Deneb8K/Control Qwen12K live. Next, independently review the
+updated PR source and live evidence contract before separately
+authorizing any Spica-only Serving-profile admission or shared
+Control Catalog promotion. No PR Ready/Merge/Release was approved.

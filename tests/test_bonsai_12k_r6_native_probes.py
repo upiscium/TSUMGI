@@ -90,7 +90,6 @@ def test_tool_result_round_trip_binds_the_observed_call_id_and_args():
 
 @pytest.mark.parametrize(("call_id", "arguments"), [
     (None, '{"text":"R6"}'),
-    ("1", '{"text":"R6"}'),
     ("call_!invalid", '{"text":"R6"}'),
     ("call_aaa", ""),
     ("call_aaa", '{"not_text":"R6"}'),
@@ -225,6 +224,28 @@ def test_observed_tool_argument_is_echoed_in_followup_result():
     )
     assert request["messages"][2]["content"] == "synthetic_echo result: other"
     assert request["messages"][1]["tool_calls"][0]["id"] == "call_other"
+
+
+def test_actual_native_generated_tool_call_id_has_no_required_prefix():
+    # Spica R6 first live attempt emitted this 32-character alphanumeric ID.
+    # The prefix "call_" is not a provider-independent OpenAI wire requirement.
+    actual = "aF0aVb4OgPphCTCXEWoRlupzDrmEtcL6"
+    trace = synthetic_tool_sse_with(actual, '{"text":"R6"}')
+    parsed = validate_sse_trace(trace, phase="tool_stream")
+    assert parsed["observed_tool_call"] == {
+        "id": actual, "name": "synthetic_echo", "arguments": '{"text":"R6"}',
+    }
+    followup = make_probe("tool_result_stream", tool_call_trace=trace)
+    assert followup["messages"][1]["tool_calls"][0]["id"] == actual
+    assert followup["messages"][2]["tool_call_id"] == actual
+    assert followup["messages"][2]["content"] == "synthetic_echo result: R6"
+
+
+@pytest.mark.parametrize("bad_id", ["", "a" * 129, "a/b", "space id", "id:colon"])
+def test_unbounded_or_unsafe_native_tool_id_is_still_rejected(bad_id):
+    trace = synthetic_tool_sse_with(bad_id, '{"text":"R6"}')
+    with pytest.raises(ValueError, match="tool-call-id-invalid"):
+        validate_sse_trace(trace, phase="tool_stream")
 
 
 def test_tool_result_cannot_claim_unobserved_stream_values():

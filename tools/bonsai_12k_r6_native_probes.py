@@ -18,7 +18,7 @@ from bonsai_12k_spica_fixtures import make_request
 
 _MAX_REQUEST_BYTES = 65536
 _EXPECTED_COLD_SHA256 = "af877ad92bed850b1a11ed57bb4d7908eaaec3d84f5d7f9f0955c4be0bd42eab"
-_CALL_ID = re.compile(r"call_[A-Za-z0-9_-]{1,64}\Z")
+_CALL_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _SYNTHETIC_TOOL = "synthetic_echo"
 _PHASES = ("cold_long", "tool_stream", "tool_result_stream", "cancel_stream")
 
