@@ -33,6 +33,16 @@ existing bonsai2-27b alias. The new opt-in logical ID is bonsai2-27b-12k.
   c28cad94b73d7948de5ec9dbbff4b4211b9df849c579d2307d9835bb9d5719d6
   contains Qwen12K and Bonsai8K. Both old Bonsai Workers advertise the same
   accepted 8K deployment and Serving Contract.
+- **R1 pre-canary recovery gap (November 8, ~11:58 JST):** Read-only searches
+  of Spica's acceptance directory and Nix GC roots did **not** find a
+  *dedicated named* Bonsai/Spica 8K rollback snapshot or pinned GC root.
+  This does not prove that no alternate old Nix closure exists, but means
+  a verified rollback set is **NOT yet qualified**. Before any approved
+  Spica stop, preserve and byte-rehearse the real 8K Worker/Runtime/Serving
+  configuration and pin its exact Nix runtime closure. Control currently
+  has an older Qwen cutover catalog backup, but no Bonsai 12K promotion
+  backup yet; capture the current full Qwen12K/Bonsai8K Catalog at the
+  actual maintenance window.
 - Pinned Bonsai PQ2_0 model SHA256
   3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1.
   This source-only run did not repeat a full 7GB model hash on Spica.

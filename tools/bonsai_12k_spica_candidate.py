@@ -45,7 +45,7 @@ PENDING_EXECUTION = "PENDING_BONSAI_12K_REVIEWED_EXECUTION_CONFIG"
 PENDING_EVIDENCE = "PENDING_BONSAI_12K_REAL_NATIVE_CANARY_EVIDENCE"
 PENDING_REVISION = "PENDING_BONSAI_12K_REVISION_REVIEW"
 DRAFT_SCHEMA = "bonsai-spica-12k-unqualified-draft-v1"
-_GPU = re.compile(r"GPU-[0-9a-fA-F-]{36}\Z")
+_GPU = re.compile(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
 _INPUT_NAMES = (
     "spica_runtime", "spica_serving", "spica_worker",
     "deneb_runtime", "deneb_serving", "deneb_worker", "control_catalog",
