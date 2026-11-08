@@ -262,3 +262,129 @@ operator-authorized, synchronous, no-overlap decision with an actual
 old-Native and GPU FDs/NVML clearance gate. Do not infer authority
 to perform any 12K Native launch, Ready/Merge or Control catalog
 publication from any of these status objects.
+
+
+## R6 — Native 12K residual acceptance gates after first live canary (2026-11-08 JST)
+
+### What the first *approved* Spica-only canary actually proved
+
+The separate, explicitly approved live Spica Native canary completed on
+2026-11-08 at approximately 15:31–15:33 JST; evidence lives in a protected
+**Spica-host-local**, non-GitHub directory
+/var/lib/astrumweaver/acceptance/bonsai12k-spica-native-canary-20261108-r1.
+Old managed 8K Native was drained/stopped and verified GPU-empty before
+a new transient Bonsai Native was launched at n_ctx=12288. Exact synthetic
+tokenizer requests matched 7,842, 10,011 and 10,231 tokens. All three
+nonstreaming Native completions passed, including a structured Tool Call.
+270 periodically sampled VRAM readings yielded **3,356 MiB minimum free**
+against the 2,048 MiB policy floor. The transient Native was stopped,
+GPU ownership verified absent and the original managed 8K Spica Worker
+was **actually restored Ready**, with n_ctx=8192. Deneb8K and the
+shared Control Qwen12K/Bonsai8K Catalog were unchanged.
+
+**Do not overinterpret these results.** The 10,231-token completion
+finished in 4.78 seconds *after* a highly overlapping 10,011-token
+prompt, making cache-warm reuse plausible. Therefore the 4.78-second
+result is **NOT cold-prefill latency evidence**, and the first canary
+did not exercise an actual Tool Result round trip, SSE streaming
+completion, interrupted stream or Control serving admission. The
+minimum free VRAM is a **sampled** metric; it is not an upper bound
+on unseen transient consumption between sample timestamps.
+
+### New R6 source-only probe contract
+
+tools/bonsai_12k_r6_native_probes.py creates JSON-only receipts and
+bounded request bodies without network access, disk writes, Native
+launch, Worker stop, model loading or GPU access. Tests cover exact
+cold prompt hash, per-stage schemas, Tool Result call-ID correlation,
+full/partial SSE structural validation and dishonest success claims.
+The CLI **defaults to an unqualified plan or hash receipt**, and
+requires an explicit --emit-request for full synthetic input. The
+tool never grants operator authority or makes a production-ready
+Serving identity. A future canary must be approved separately.
+
+**Required execution order in a new, separately approved Spica window:**
+
+1. Retain and requalify the existing 8K original Worker/GGUF/model
+   SHA, backup files/Nix roots and Control/Deneb read-only state.
+   Drain ONLY Spica, reject new admission and demand zero Spica-bound
+   nonterminal Jobs. Stop the old Native; verify process descendants,
+   GPU FDs and NVML compute owners are absent before starting 12K.
+2. **Cold-first 10,231 input tokens:** launch a fresh 12K single-slot
+   Bonsai Native. The pinned installed llama-server help advertises
+   --no-cache-prompt; use this or a separately proven cache-clearing
+   mechanism. Run the exact previously pinned 10,231-token prompt
+   **before any related/overlapping prompt**. Recount its tokens
+   on the fresh instance; record prompt processing timing and any
+   supported actual cache-hit fields. If a reliable independent
+   cold/uncached measurement cannot be established, record UNKNOWN,
+   not PASS. Sample VRAM during the real long Prefill and Generation
+   with a 2,048 MiB minimum observed free floor. No extrapolation
+   from previous warm-cache latency.
+3. **Tool Call + Tool Result:** use a short synthetic streaming
+   function-call request. Complete and correlate the actual streamed
+   call ID, function name and JSON arguments. Construct a second
+   request containing that observed assistant Tool Call and a matching
+   Tool Result whose synthetic echo text derives from the *observed
+   arguments*, then verify a complete final assistant response. Do
+   not invent an ID or assume receiving a Tool Call is the same as
+   handling a Tool Result. A complete first stream needs
+   finish_reason=tool_calls; the final assistant text needs
+   finish_reason=stop. Incompatible or truncated finishes fail closed.
+4. **Streaming completion:** collect ordered Native SSE frames and
+   a single final [DONE] marker; check that function-call fragments
+   and final content parse correctly. The R6 pure parser validates
+   only **structure**; a passing parser is not a live stream receipt
+   or proof of timely consumption by an OpenCode client.
+5. **Cancellation:** start a separate bounded Native streaming
+   request, explicitly disconnect the requesting client while it is
+   active, and independently verify slot is no longer processing
+   and any owned work is quiescent within a defined deadline.
+   Absence of [DONE] merely identifies a partial stream; it does
+   **not** prove the Native honored cancellation. A client may disconnect
+   before the first SSE event or after only a role event. The parser
+   accepts those as partial captures with zero/one frames, and never
+   labels Native cancellation proven. Treat timeout, failed cleanup
+   or ambiguous GPU owners as FAIL CLOSED.
+6. **Always restore the original 8K Worker** after the test, even
+   when all stages pass. Verify 8K n_ctx/Ready, matching original
+   Runtime/Serving hashes, Deneb8K unchanged, Control Qwen12K and
+   Bonsai8K unchanged, DB zero nonterminal Jobs and no surviving
+   12K Native/GPU holder. Retain local evidence and bounded rollback
+   receipts for independent review.
+
+### R6 offline parser and Tool Result provenance limitations
+
+After independent source review, the R6 Tool Result constructor no longer
+accepts a separate asserted Tool Call ID or argument string. It accepts
+a **complete Tool Call SSE byte capture**, verifies the expected
+structured Tool Call and finish_reason=tool_calls with [DONE], then
+derives the ID and exact JSON arguments to construct the Tool Result
+follow-up. The synthetic echo response uses the observed parsed text
+rather than a hard-coded value. The final streamed assistant text must
+finish with finish_reason=stop and [DONE]; a stream that emits more
+choice-bearing content *after* a terminal finish reason is rejected,
+although a trailing usage-only frame is permitted.
+
+The parser also accepts a role-only or empty partial capture as a
+possible **pre-first-token disconnect**, while *never* returning an
+assertion that Native cancellation was proven. The operator must
+separately show the client disconnected and the Native slot stopped
+processing. Crucially, caller-supplied SSE bytes are only **validated
+for structure, not authenticated as genuine device output**. A
+separately approved site test must capture and retain the actual
+first response; fabricated fixtures can never be substituted for
+that evidence, and the source-only parser cannot authorize live use.
+
+The 10,240-token contract is a **Gateway logical Serving limit**,
+not an automatic promise that the raw Native refuses 10,241-token
+requests. A strict contract-overlimit test is deferred to a
+separately approved *opt-in Gateway profile* phase. No future
+Control/Deneb changes, Ready/Merge, 16K promotion or source-only
+Draft PR publication should be inferred from R6 recipes.
+
+The original R2 snapshot receipts retain the truthful
+live_rollback_verified=false historical creation state. The
+**separate** R6 evidence of one actual successful 8K service restore
+is recorded on Issue #232, and must not be backfilled by mutating
+the original protected immutable receipt.
