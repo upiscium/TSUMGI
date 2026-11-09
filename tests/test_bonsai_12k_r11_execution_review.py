@@ -273,3 +273,54 @@ def test_missing_artifact_role_and_unauthorized_profile_fail_closed():
     c["opt_in_model_id"] = "bonsai2-27b"
     with pytest.raises(ValueError, match="unqualified-spica-candidate-required"):
         review(c)
+
+
+def test_p2_legacy_spica_source_deneb_uuid_explicitly_accepted_without_claiming_attestation():
+    c = candidate()
+    gpus = c["source_gpu_uuids"]
+    assert gpus["spica_runtime_source"] == gpus["deneb_worker"]
+    assert c["legacy_spica_gpu_uuid_corrected_in_draft"] is True
+    result = review(c)
+    assert result["host_and_gpu_origin_authenticated"] is False
+    assert result["serving_revision_issued"] is False
+
+
+def test_p2_previously_corrected_spica_source_accepted_only_with_false_legacy_flag():
+    c = candidate()
+    c["source_gpu_uuids"]["spica_runtime_source"] = c["source_gpu_uuids"]["spica_worker"]
+    c["legacy_spica_gpu_uuid_corrected_in_draft"] = False
+    corrected = review(c)
+    # A historical-source correction does not change the new 12K execution
+    # claim, which binds only the new Spica GPU UUID, not old source drift.
+    assert corrected["review_fingerprint_sha256_not_a_deployment_identity"] == (
+        review()["review_fingerprint_sha256_not_a_deployment_identity"]
+    )
+
+
+@pytest.mark.parametrize("bad", [
+    "GPU-12345678-1234-1234-1234-123456789abc",
+    "GPU-invalid",
+    "",
+    None,
+    123,
+    True,
+])
+def test_p2_unrelated_or_malformed_spica_source_gpu_is_rejected(bad):
+    c = candidate()
+    c["source_gpu_uuids"]["spica_runtime_source"] = bad
+    with pytest.raises(ValueError, match="spica-source-runtime-gpu-identity-invalid"):
+        review(c)
+
+
+@pytest.mark.parametrize(("origin", "flag"), [
+    ("deneb_worker", False),
+    ("spica_worker", True),
+    ("deneb_worker", None),
+    ("spica_worker", 1),
+])
+def test_p2_source_legacy_correction_flag_mismatch_fails_closed(origin, flag):
+    c = candidate()
+    c["source_gpu_uuids"]["spica_runtime_source"] = c["source_gpu_uuids"][origin]
+    c["legacy_spica_gpu_uuid_corrected_in_draft"] = flag
+    with pytest.raises(ValueError, match="spica-source-gpu-correction-flag-inconsistent"):
+        review(c)

@@ -42,6 +42,19 @@ artifact claims, and enumerated normalized llama.cpp provider options.
 The GPU UUID is intentionally part of the record: path neutrality
 does **not** imply cross-host interchangeability.
 
+An independent OpenCode source review identified a P2: the original R11
+validator did not check `source_gpu_uuids.spica_runtime_source`. The
+corrected source-only gate now requires that legacy source UUID to be
+well formed and **either** the currently declared Spica Worker GPU UUID
+(already corrected case) **or** the Deneb Worker UUID (the observed
+historical Spica 8K setup-intent drift). Its
+`legacy_spica_gpu_uuid_corrected_in_draft` flag must agree exactly with
+which case occurred. A third GPU, malformed UUID or inconsistent legacy
+flag fails closed. The new 12K draft is still required to reference the
+Spica Worker GPU only; neither the old 8K source nor rollback material
+is modified. This is consistency of *supplied declarations*, not proof
+that source UUIDs or their claimed historical provenance are authentic.
+
 Provider/external chat-template file paths, model file paths, and
 loopback endpoint addresses/ports are never encoded in the review
 fingerprint. Their expected semantics are validated separately; a

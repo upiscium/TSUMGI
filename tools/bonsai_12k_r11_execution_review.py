@@ -97,6 +97,19 @@ def build_unattested_execution_review(
             and type(gpus["deneb_worker"]) is str
             and _GPU.fullmatch(gpus["deneb_worker"]) is not None
             and gpu != gpus["deneb_worker"], "source-gpu-identity-invalid")
+    # R0 intentionally preserves the historical Spica *source* setup that
+    # points to Deneb, while the new 12K draft binds the actual Spica UUID.
+    # A previously corrected source (Spica UUID) is also valid. Do not
+    # silently accept an unrelated or malformed source UUID, or a stale
+    # correction flag that misrepresents which historical case occurred.
+    source_gpu = gpus["spica_runtime_source"]
+    require(type(source_gpu) is str and _GPU.fullmatch(source_gpu) is not None
+            and source_gpu in (gpu, gpus["deneb_worker"]),
+            "spica-source-runtime-gpu-identity-invalid")
+    require(type(c.get("legacy_spica_gpu_uuid_corrected_in_draft")) is bool
+            and c["legacy_spica_gpu_uuid_corrected_in_draft"]
+            is (source_gpu == gpus["deneb_worker"]),
+            "spica-source-gpu-correction-flag-inconsistent")
     raw = c.get("runtime_UNQUALIFIED_draft")
     require(type(raw) is dict and raw.get("provider_id") == "llama-cpp",
             "runtime-review-shape-invalid")
