@@ -340,6 +340,19 @@ class ExternalVoicevoxPollingCoordinator:
         """Private test-only timing seam; production uses monotonic asyncio."""
         await asyncio.sleep(seconds)
 
+    def _on_private_sample_start(
+        self, generation: int, sequence: int, launched_at: float
+    ) -> None:
+        """R4-B1/B same-task internal handoff; R4-B0 has no consumer."""
+
+    def _on_private_sample_complete(
+        self, generation: int, sequence: int, result: object, observed_at: float
+    ) -> None:
+        """Never publish the complete R1 result or install a callback."""
+
+    def _on_private_terminal(self, generation: int) -> None:
+        """Fail-closed advisory withdrawal on unexpected task termination."""
+
     async def _run(self, token: int) -> None:
         try:
             while (
@@ -353,6 +366,9 @@ class ExternalVoicevoxPollingCoordinator:
                 sequence = self._sequence
                 self._digest = None
                 self._status = VoicevoxPollStatus.PROBING
+                self._on_private_sample_start(
+                    token, sequence, asyncio.get_running_loop().time()
+                )
                 try:
                     # Only canonical internally constructed R1 probe can run.
                     result = await self._probe.probe_once()
@@ -371,6 +387,9 @@ class ExternalVoicevoxPollingCoordinator:
                 ):
                     break
 
+                self._on_private_sample_complete(
+                    token, sequence, result, asyncio.get_running_loop().time()
+                )
                 status = VoicevoxPollStatus.INCOMPATIBLE
                 digest: str | None = None
                 if type(result) is VoicevoxDiscoveryResult:
@@ -413,3 +432,8 @@ class ExternalVoicevoxPollingCoordinator:
                 # Unexpected exit/cancellation must withdraw observed state.
                 self._status = VoicevoxPollStatus.FAILED
                 self._digest = None
+                try:
+                    self._on_private_terminal(token)
+                except Exception:  # noqa: BLE001 - preserve redacted FAILED status
+                    self._status = VoicevoxPollStatus.FAILED
+                    self._digest = None
