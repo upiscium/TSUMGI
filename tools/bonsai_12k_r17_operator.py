@@ -24,6 +24,7 @@ import tomllib
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import UUID
 
 SOURCE = Path("/root/tsumgi-bonsai12k-native-canary-20261109-r2")
 # Do not import/execute site-owned helper code before verifying owner, mode
@@ -577,27 +578,63 @@ def _lab_post(data: dict, *, timeout: int = 210):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
+def validate_terminal_lab_claim(
+    job: dict, worker: dict, *, expected_contract_revision: str,
+    expected_deployment_revision: str,
+) -> None:
+    """Review the *terminal* Job, not its transient lease owner field.
+
+    InMemoryControlRepository.complete_job clears assigned_worker_id on
+    SUCCEEDED. Actual claim identity survives in claimed deployment/contract/
+    epoch fields, while the lab Repository admits exactly one Worker ID.
+    A terminal Job still carrying an assigned owner is a contract violation.
+    """
+    check(type(job) is dict and type(worker) is dict
+          and type(expected_contract_revision) is str
+          and re.fullmatch(r"sha256:[0-9a-f]{64}",
+                           expected_contract_revision) is not None
+          and type(expected_deployment_revision) is str
+          and re.fullmatch(r"sha256:[0-9a-f]{64}",
+                           expected_deployment_revision) is not None,
+          "lab-terminal-claim-shape-invalid")
+    check(worker.get("worker_id") == LAB_WORKER
+          and worker.get("state") == "online"
+          and worker.get("has_serving") is True
+          and type(worker.get("deployment_revision")) is str
+          and re.fullmatch(r"sha256:[0-9a-f]{64}",
+                           worker["deployment_revision"]) is not None
+          and worker["deployment_revision"] == expected_deployment_revision
+          and type(worker.get("runtime_instance_epoch")) is str,
+          "lab-terminal-worker-identity-invalid")
+    try:
+        epoch = UUID(worker["runtime_instance_epoch"])
+    except (ValueError, AttributeError) as exc:
+        raise Blocked("lab-terminal-worker-identity-invalid") from exc
+    check(str(epoch) == worker["runtime_instance_epoch"] and epoch.int != 0,
+          "lab-terminal-worker-identity-invalid")
+    check(job.get("status") == "succeeded"
+          and job.get("assigned_worker_id") is None
+          and job.get("serving_bound") is True
+          and job.get("claimed_deployment_revision")
+              == worker["deployment_revision"]
+          and job.get("claimed_runtime_instance_epoch")
+              == worker["runtime_instance_epoch"]
+          and job.get("claimed_serving_contract_revision")
+              == expected_contract_revision,
+          "lab-terminal-claim-or-epoch-not-verified")
+
+
 def _assert_lab_job_succeeded(*, required_count: int = 1) -> None:
     snapshot = _lab_query("/__lab/status")
     workers, jobs = snapshot["workers"], snapshot["jobs"]
-    check(len(workers) == 1 and workers[0].get("worker_id") == LAB_WORKER
-          and workers[0].get("has_serving") is True,
-          "lab-worker-registration-lost")
-    check(len(jobs) >= required_count, "lab-job-not-recorded")
-    current = jobs[-1]
-    deployment = workers[0]["deployment_revision"]
-    epoch = workers[0]["runtime_instance_epoch"]
-    check(current.get("status") == "succeeded"
-          and current.get("assigned_worker_id") == LAB_WORKER
-          and current.get("serving_bound") is True
-          and current.get("claimed_deployment_revision") == deployment
-          and current.get("claimed_runtime_instance_epoch") == epoch
-          and type(current.get("claimed_serving_contract_revision")) is str,
-          "lab-job-claim-or-epoch-not-verified")
+    check(len(workers) == 1 and len(jobs) >= required_count,
+          "lab-worker-or-job-count-invalid")
     expected = json.loads(STAGED_SERVING.read_text())
-    check(current["claimed_serving_contract_revision"] ==
-          expected["contracts"][0]["serving_contract_revision"],
-          "lab-claim-serving-revision-mismatch")
+    validate_terminal_lab_claim(
+        jobs[-1], workers[0],
+        expected_contract_revision=expected["contracts"][0]["serving_contract_revision"],
+        expected_deployment_revision=expected["contracts"][0]["contract"]["deployment_revision"],
+    )
 
 
 def _lab_chat(payload: dict, monitor, *, timeout: int = 210) -> None:
@@ -806,13 +843,22 @@ def execute() -> int:
             note("R17_TEST_PASSED", name=stage)
         lab_summary = _lab_query("/__lab/status")
         check(lab_summary.get("production_eligible") is False
-              and len(lab_summary.get("workers", [])) == 1
-              and all(item.get("status") == "succeeded"
-                      and item.get("assigned_worker_id") == LAB_WORKER
-                      for item in lab_summary.get("jobs", []))
-              and len(lab_summary.get("jobs", [])) >= 5,
+              and type(lab_summary.get("workers")) is list
+              and len(lab_summary["workers"]) == 1
+              and type(lab_summary.get("jobs")) is list
+              and len(lab_summary["jobs"]) >= 5,
               "lab-final-claim-or-job-state-invalid")
-        note("R17_LAB_JOB_CLAIMS_ACCEPTED", jobs=len(lab_summary["jobs"]))
+        expected = json.loads(STAGED_SERVING.read_text())
+        contract = expected["contracts"][0]["serving_contract_revision"]
+        deployment = expected["contracts"][0]["contract"]["deployment_revision"]
+        for completed in lab_summary["jobs"]:
+            validate_terminal_lab_claim(
+                completed, lab_summary["workers"][0],
+                expected_contract_revision=contract,
+                expected_deployment_revision=deployment,
+            )
+        note("R17_LAB_JOB_CLAIMS_ACCEPTED", jobs=len(lab_summary["jobs"]),
+             terminal_assignment_released=True)
     except Exception as exc:  # noqa: BLE001 - ensure mandatory recovery on any failure
         failed = type(exc).__name__ + ":" + str(exc)[:170]
         note("R17_ABORT", reason=failed, completed=stages)
