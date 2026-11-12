@@ -31,7 +31,11 @@ from ..runtime.providers.voicevox_discovery import (
     VoicevoxDiscoveryProbe,
     VoicevoxDiscoveryStatus,
 )
-from ..runtime.providers.voicevox_http import _decoded_json, _read_response
+from ..runtime.providers.voicevox_http import (
+    VoicevoxHttpError,
+    _decoded_json,
+    _read_response,
+)
 
 _TOKEN = re.compile(r"[A-Za-z0-9._~+/-]{24,256}=*\Z")
 _MAX_QUERY = 32 * 1024
@@ -267,7 +271,10 @@ def create_local_voicevox_preview_app(config: LocalVoicevoxPreviewConfig) -> Fas
                         return _error("request_too_large", 413)
                     except (ValueError, TypeError):
                         return _error("invalid_request", 400)
-                    parsed = _decoded_json(raw)
+                    try:
+                        parsed = _decoded_json(raw)
+                    except VoicevoxHttpError:
+                        return _error("invalid_request", 400)
                     if type(parsed) is not dict or set(parsed) != {"input"}:
                         return _error("invalid_request", 400)
                     text = parsed["input"]

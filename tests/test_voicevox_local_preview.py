@@ -104,11 +104,13 @@ async def test_auth_failure_does_not_probe_engine_or_echo_token(header):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("body,status", [
-    (b'{"input":"hello","input":"attack"}', 503),
+    (b'{"input":"hello","input":"attack"}', 400),
     (b'{"input":null}', 400),
     (b'{"input":" "}', 400),
     (b'{"input":"ok","voice":"unapproved"}', 400),
-    (b'{"input":NaN}', 503),
+    (b'{"input":NaN}', 400),
+    (b'{"input":"hello"', 400),
+    (b'\xff\xfe', 400),
     (b'{"input":"hello"}' + b" " * 4100, 413),
 ])
 async def test_bad_requests_never_contact_engine(body, status):
