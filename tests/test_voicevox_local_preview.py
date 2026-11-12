@@ -162,11 +162,11 @@ async def test_absent_or_unresponsive_engine_fails_closed():
         )
         async with client(app) as user:
             response = await user.post(
-                "/preview/audio/speech", json={"input": "timeout"},
+                "/preview/audio/speech", json={"input": "private-timeout-speech-phrase"},
                 headers=auth(),
             )
         assert response.status_code in (503, 504)
-        assert b"timeout" not in response.content
+        assert b"private-timeout-speech-phrase" not in response.content
         assert engine.seen
 
 
