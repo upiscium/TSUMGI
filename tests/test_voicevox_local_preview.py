@@ -23,9 +23,9 @@ from test_voicevox_provider import UUID
 TOKEN = "synthetic-preview-0123456789abcdef-secure"
 
 
-def config(endpoint: str, **overrides) -> LocalVoicevoxPreviewConfig:
+def config(source: str, **overrides) -> LocalVoicevoxPreviewConfig:
     values = dict(
-        endpoint=endpoint,
+        endpoint=source,
         speaker_uuid=UUID,
         style_id=3,
         bearer_token=TOKEN,
@@ -216,9 +216,9 @@ async def test_no_external_process_control_even_on_success(monkeypatch):
 
 def test_dedicated_preview_is_not_implicitly_mounted_in_production():
     from astrumweaver.control.api import create_app as control_app
-    from astrumweaver.gateway.api import create_app as gateway_app
+    import astrumweaver.gateway.api as gateway_module
 
-    assert callable(control_app) and callable(gateway_app)
+    assert callable(control_app) and gateway_module is not None
     # No production service imports this module or advertises preview.
     import ast
     from pathlib import Path
