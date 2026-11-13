@@ -3,7 +3,6 @@
 let
   profile = "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp";
   qwen38Profile = "/nix/var/nix/profiles/astrumweaver-runtime-qwen38";
-  bonsaiProfile = "/nix/var/nix/profiles/astrumweaver-runtime-bonsai";
   candidateRef = "path:${source}";
   registryRef = "astrumweaver-runtime-candidate";
 in
@@ -12,7 +11,6 @@ writeShellApplication {
   text = ''
     profile=${lib.escapeShellArg profile}
     qwen38_profile=${lib.escapeShellArg qwen38Profile}
-    bonsai_profile=${lib.escapeShellArg bonsaiProfile}
     runtime_attr="runtime-llama-cpp"
     candidate_ref=${lib.escapeShellArg candidateRef}
     registry_ref=${lib.escapeShellArg registryRef}
@@ -32,11 +30,6 @@ usage:
   astrumweaver-runtime-profile upgrade qwen38-llama-cpp
   astrumweaver-runtime-profile rollback qwen38-llama-cpp
   astrumweaver-runtime-profile status qwen38-llama-cpp
-  astrumweaver-runtime-profile verify package bonsai-llama-cpp
-  astrumweaver-runtime-profile ensure bonsai-llama-cpp
-  astrumweaver-runtime-profile upgrade bonsai-llama-cpp
-  astrumweaver-runtime-profile rollback bonsai-llama-cpp
-  astrumweaver-runtime-profile status bonsai-llama-cpp
 EOF
       exit "''${1:-2}"
     }
@@ -50,10 +43,6 @@ EOF
         qwen38-llama-cpp|/nix/var/nix/profiles/astrumweaver-runtime-qwen38)
           profile="$qwen38_profile"
           runtime_attr="runtime-qwen38-llama-cpp"
-          ;;
-        bonsai-llama-cpp)
-          profile="$bonsai_profile"
-          runtime_attr="runtime-bonsai-llama-cpp"
           ;;
         *)
           echo "astrumweaver-runtime-profile: unsupported runtime package: ''${1-<missing>}" >&2
