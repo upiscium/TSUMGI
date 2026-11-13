@@ -13,11 +13,11 @@ MoE/offload role so runtime selection remains predictable.
 The provider owns:
 
 - FreeToken package/setup intent
-- one local \`ft serve\` process
+- one local `ft serve` process
 - exact Worker GPU UUID selection
 - MoE strategy and cache/offload launch policy
 - health and served-model verification
-- OpenAI-compatible \`llm.chat\` and \`text.generate\`
+- OpenAI-compatible `llm.chat` and `text.generate`
 - cancellation of in-flight HTTP requests
 - runtime residency/status reporting
 
@@ -36,9 +36,9 @@ It does not own:
 The current upstream FreeToken package targets Linux x86_64 and NVIDIA GPUs.
 Its accelerated installation is published as:
 
-\`\`\`text
+```text
 freetoken[accel]
-\`\`\`
+```
 
 TSUMGI therefore rejects non-x86_64 hosts in this provider.
 
@@ -47,31 +47,31 @@ provider does not mutate the host NVIDIA driver to satisfy FreeToken.
 
 ## Provider identity
 
-\`\`\`text
+```text
 provider_id = freetoken
-\`\`\`
+```
 
 The provider advertises:
 
-\`\`\`text
+```text
 llm.chat
 text.generate
-\`\`\`
+```
 
 The executor uses the FreeToken OpenAI-compatible endpoints:
 
-\`\`\`text
+```text
 /v1/chat/completions
 /v1/completions
-\`\`\`
+```
 
 and verifies runtime state through:
 
-\`\`\`text
+```text
 /health
 /v1/models
 /v1/stats
-\`\`\`
+```
 
 Streaming is disabled at the generic TSUMGI JobExecutor boundary.
 
@@ -79,15 +79,15 @@ Streaming is disabled at the generic TSUMGI JobExecutor boundary.
 
 TSUMGI v0.x requires:
 
-\`\`\`text
+```text
 model_topology = moe
-\`\`\`
+```
 
 A dense-model demand is rejected with:
 
-\`\`\`text
+```text
 model-topology-outside-provider-scope
-\`\`\`
+```
 
 The diagnostic explicitly states that this is a TSUMGI provider scope
 restriction, not an upstream FreeToken limitation.
@@ -96,13 +96,13 @@ restriction, not an upstream FreeToken limitation.
 
 The first provider accepts:
 
-\`\`\`text
+```text
 huggingface
 hf
 safetensors
 ftw
 gguf
-\`\`\`
+```
 
 Hugging Face-style remote model references produce a reviewed SetupPlan
 download action.
@@ -114,33 +114,33 @@ requires an explicit local FTW path rather than interpreting an arbitrary
 remote string as an FTW checkpoint.
 
 GGUF, like FTW, is served only from an explicit local file path. A remote
-GGUF reference fails with \`gguf-reference-must-be-local\`; the provider never
+GGUF reference fails with `gguf-reference-must-be-local`; the provider never
 downloads a GGUF file.
 
 ## GPU topology
 
 The first provider requires exactly one scheduler-owned GPU:
 
-\`\`\`text
+```text
 gpu_topology = single_gpu
 Worker GPU count = 1
 Worker GPU UUID count = 1
-\`\`\`
+```
 
 The exact Worker UUID is passed directly to:
 
-\`\`\`text
+```text
 ft serve --gpu <GPU UUID>
-\`\`\`
+```
 
 The provider does not rewrite the physical identity into an ordinal and does
 not silently select only one device from a multi-GPU Worker.
 
 A multi-GPU Worker therefore fails compatibility with:
 
-\`\`\`text
+```text
 single-gpu-required
-\`\`\`
+```
 
 This preserves the TSUMGI invariant that a Worker is one exclusive
 scheduler-visible compute unit.
@@ -153,9 +153,9 @@ This is the primary FreeToken path.
 
 The default MoE strategy is:
 
-\`\`\`text
+```text
 auto
-\`\`\`
+```
 
 Upstream FreeToken currently resolves MoE auto mode toward offload, with hybrid
 selection available when its bandwidth profile recommends it.
@@ -176,9 +176,9 @@ Not claimed by the v0.x FreeToken provider.
 
 A request fails with:
 
-\`\`\`text
+```text
 vram-only-unsupported
-\`\`\`
+```
 
 This keeps FreeToken focused on the RAM-heavy / VRAM-constrained role and
 avoids pretending that model-size evidence alone proves all runtime memory
@@ -188,12 +188,12 @@ requirements.
 
 ExecutionDemand remains authoritative for explicit resource requirements:
 
-- \`min_host_ram_mb\` is blocking
-- \`preferred_host_ram_mb\` is advisory
+- `min_host_ram_mb` is blocking
+- `preferred_host_ram_mb` is advisory
 - total/single-device VRAM requirements use the generic planner
 
 The FreeToken provider does not derive an exact required host-RAM value from
-\`estimated_size_mb\`.
+`estimated_size_mb`.
 
 MoE expert banks, quantization, KV/cache pools, pinned buffers, CPU execution
 and model-specific structures make such a simple formula unreliable.
@@ -213,9 +213,9 @@ ExecutionDemand.
 
 ## Launch policy
 
-The provider renders a deterministic \`ft serve\` command using:
+The provider renders a deterministic `ft serve` command using:
 
-\`\`\`text
+```text
 ft serve
   --model <model>
   --host 127.0.0.1
@@ -225,37 +225,37 @@ ft serve
   --moe-strategy <auto|offload|cpu|hybrid>
   --memory-ratio <ratio>
   --max-running-requests <count>
-\`\`\`
+```
 
 Optional provider-local settings include:
 
-- \`moe_cache_size\`
-- \`moe_cache_rate\`
-- \`moe_cpu_threads\`
-- \`moe_cpu_layers\`
-- \`moe_hybrid_max_fetch\`
+- `moe_cache_size`
+- `moe_cache_rate`
+- `moe_cpu_threads`
+- `moe_cpu_layers`
+- `moe_hybrid_max_fetch`
 
-- \`attention_backend\` (\`--attention-backend\`)
-- \`max_seq_len\` (\`--max-seq-len-override\`, and the same \`--kv-reserve-tokens\` so the
+- `attention_backend` (`--attention-backend`)
+- `max_seq_len` (`--max-seq-len-override`, and the same `--kv-reserve-tokens` so the
   KV pool holds the full context; FreeToken otherwise reserves 8192 tokens)
-- \`max_prefill_tokens\` (\`--max-prefill-length\`): prefill chunk size. On 11GB GPUs a
+- `max_prefill_tokens` (`--max-prefill-length`): prefill chunk size. On 11GB GPUs a
   long prompt prefilled in one 8192-token chunk can run out of GPU memory and
   crash the server; 2048 keeps activations small
-- \`cuda_home\` and \`library_paths\` (process environment, see below)
-- \`tools_enabled\` (default true): when false, Gateway chat jobs that use tools,
-  \`tool_choice\` or tool messages fail with \`unsupported_feature\`. The executor
-  advertises the \`tools\` serving feature only when enabled, so a serving manifest
-  with \`tools\` requires it
-- \`enable_thinking\` (default unset): when true or false, every Gateway chat job
-  sends \`chat_template_kwargs.enable_thinking\`. The Gateway accepts no client
+- `cuda_home` and `library_paths` (process environment, see below)
+- `tools_enabled` (default true): when false, Gateway chat jobs that use tools,
+  `tool_choice` or tool messages fail with `unsupported_feature`. The executor
+  advertises the `tools` serving feature only when enabled, so a serving manifest
+  with `tools` requires it
+- `enable_thinking` (default unset): when true or false, every Gateway chat job
+  sends `chat_template_kwargs.enable_thinking`. The Gateway accepts no client
   switch for thinking, and Qwen3.6 thinks by default, so set it explicitly
 
-\`moe_cache_size\` and \`moe_cache_rate\` are mutually exclusive.
+`moe_cache_size` and `moe_cache_rate` are mutually exclusive.
 
-When \`cuda_home\` or \`library_paths\` is set, the child process inherits the
-Worker environment plus \`CUDA_HOME\`, a \`PATH\` prefix of \`<cuda_home>/bin\` and
-the directory of an absolute \`executable\` (for the JIT build tools in its
-virtualenv), and a \`LD_LIBRARY_PATH\` prefix. \`CUDA_VISIBLE_DEVICES\` is never
+When `cuda_home` or `library_paths` is set, the child process inherits the
+Worker environment plus `CUDA_HOME`, a `PATH` prefix of `<cuda_home>/bin` and
+the directory of an absolute `executable` (for the JIT build tools in its
+virtualenv), and a `LD_LIBRARY_PATH` prefix. `CUDA_VISIBLE_DEVICES` is never
 changed. Without these settings no environment is passed explicitly.
 
 If neither is supplied, the provider leaves cache sizing to FreeToken rather
@@ -290,9 +290,9 @@ The ManagedRuntime owns one local FreeToken child process.
 Startup:
 
 1. refuses to adopt a healthy external server on the configured endpoint
-2. starts \`ft serve\` if the provider does not already own a process
-3. waits until \`/health\` reports \`status=ok\`
-4. verifies the configured served-model alias through \`/v1/models\`
+2. starts `ft serve` if the provider does not already own a process
+3. waits until `/health` reports `status=ok`
+4. verifies the configured served-model alias through `/v1/models`
 5. stops the process it started if startup validation fails
 
 The child is started in a new session. Stop sends SIGTERM to the whole process
@@ -301,9 +301,9 @@ seconds for every remaining group member. FreeToken's scheduler and tokenizer
 children can otherwise outlive the server and keep the GPU and deleted model
 files open.
 
-If the server has already exited, the next \`start()\` first reaps its process
-group. A group the Worker may not signal (\`PermissionError\`) is treated as not
-ours. Under systemd the Worker unit's default \`KillMode=control-group\` also
+If the server has already exited, the next `start()` first reaps its process
+group. A group the Worker may not signal (`PermissionError`) is treated as not
+ours. Under systemd the Worker unit's default `KillMode=control-group` also
 stops the server when the Worker itself is killed, because the new session
 stays in the unit's cgroup.
 
@@ -314,17 +314,17 @@ management remains responsible for stop-before-release ordering.
 
 ## Health
 
-A reachable \`/health\` endpoint is not enough.
+A reachable `/health` endpoint is not enough.
 
 FreeToken reports lifecycle states such as loading, ok and error, so the HTTP
 adapter considers the runtime ready only when:
 
-\`\`\`text
+```text
 status = ok
-\`\`\`
+```
 
 The ManagedRuntime also requires the expected model alias to appear in
-\`/v1/models\`.
+`/v1/models`.
 
 A healthy endpoint without an owned child process is reported as a failed
 external-process collision rather than silently adopted.
@@ -336,41 +336,41 @@ Each request is bound to the model selected during setup.
 ### Chat Gateway jobs
 
 Chat Gateway profiles bind FreeToken deployments with the adapter
-\`freetoken-chat-v1\`. The Gateway rejects a profile whose adapter does not match
-the deployment's runtime provider (\`llama-cpp-chat-v1\` only with \`llama-cpp\`,
-\`freetoken-chat-v1\` only with \`freetoken\`).
+`freetoken-chat-v1`. The Gateway rejects a profile whose adapter does not match
+the deployment's runtime provider (`llama-cpp-chat-v1` only with `llama-cpp`,
+`freetoken-chat-v1` only with `freetoken`).
 
-For a \`chat-job-v1\` envelope the executor:
+For a `chat-job-v1` envelope the executor:
 
-1. validates the envelope, its token limits and \`max_tokens\`, exactly like the
+1. validates the envelope, its token limits and `max_tokens`, exactly like the
    llama.cpp executor
 2. rejects a request that names a runtime model and binds the served alias
-3. counts the prompt with \`POST /v1/chat/completions/input_tokens\` (served by the
+3. counts the prompt with `POST /v1/chat/completions/input_tokens` (served by the
    TSUMGI FreeToken fork with the same tokenizer and chat template as generation)
-   and fails with \`context_length_exceeded\` before any generation when the input,
+   and fails with `context_length_exceeded` before any generation when the input,
    or input plus the output reservation, exceeds the bound limits
-4. streams through the fenced Job event channel when \`stream=true\`; each chunk
+4. streams through the fenced Job event channel when `stream=true`; each chunk
    must pass the Gateway's stream-chunk validation
-5. for non-stream responses, removes the stream-only \`index\` that FreeToken also
-   puts on \`message.tool_calls\` entries, so they pass Gateway tool-call validation
+5. for non-stream responses, removes the stream-only `index` that FreeToken also
+   puts on `message.tool_calls` entries, so they pass Gateway tool-call validation
 
 Upstream FreeToken 0.2.2 has no OpenAI-format token-count endpoint, so Gateway
 chat requires the TSUMGI fork (see below).
 
-The serving profile's \`total_tokens\` must not exceed the provider's
-\`max_seq_len\`: the executor checks the bound limits, but FreeToken only has KV
-for \`max_seq_len\` tokens.
+The serving profile's `total_tokens` must not exceed the provider's
+`max_seq_len`: the executor checks the bound limits, but FreeToken only has KV
+for `max_seq_len` tokens.
 
 ### Direct jobs
 
-A direct job may omit \`model\`, or specify either the original model reference or
+A direct job may omit `model`, or specify either the original model reference or
 the served alias. Any other per-job model value fails closed.
 
 The executor forces:
 
-\`\`\`text
+```text
 stream = false
-\`\`\`
+```
 
 Token usage from OpenAI-compatible responses is copied into generic metrics
 when present:
@@ -379,13 +379,13 @@ when present:
 - completion tokens
 - total tokens
 
-Raw provider responses remain available in \`JobResult.outputs\`.
+Raw provider responses remain available in `JobResult.outputs`.
 
 ## Cancellation
 
 The executor tracks each in-flight HTTP request task by TSUMGI job ID.
 
-\`cancel(job_id)\` cancels that local request task.
+`cancel(job_id)` cancels that local request task.
 
 Durable cancellation, fencing, retry and stale-result handling remain
 Worker/Control responsibilities.
@@ -404,40 +404,40 @@ The provider always reports the reviewed placement contract as metadata:
 
 It does not synthesize accelerator byte counts.
 
-When FreeToken \`/v1/stats\` provides a numeric \`vram_bytes\` measurement, that
-observed value is exposed as \`accelerator_memory_bytes\`.
+When FreeToken `/v1/stats` provides a numeric `vram_bytes` measurement, that
+observed value is exposed as `accelerator_memory_bytes`.
 
 If the runtime does not report the value, the field remains unset.
 
 The provider may also record observed model identity and the upstream MoE flag
-from \`/v1/stats\`.
+from `/v1/stats`.
 
 ## Pre-Turing GPUs (GTX 10 series, sm_61)
 
 Upstream FreeToken 0.2.2 targets RTX 30 and newer. TSUMGI runs it on GTX 1080 Ti
-with the fork \`upiscium/FreeToken\`, branch \`tsumgi/sm61-v0.2.2\`
-(\`TSUMGI-SM61.md\` there lists every change). The changes keep upstream behavior on
+with the fork `upiscium/FreeToken`, branch `tsumgi/sm61-v0.2.2`
+(`TSUMGI-SM61.md` there lists every change). The changes keep upstream behavior on
 newer GPUs:
 
 - FlashInfer and sgl-kernel (prebuilt for sm_75+) are reported unavailable below
   sm_75, so FreeToken uses its existing fallbacks
-- \`__grid_constant__\` is dropped for sm_6x JIT builds
+- `__grid_constant__` is dropped for sm_6x JIT builds
 - extend-attention tiles shrink to fit 48KB shared memory
-- sampling uses PyTorch below sm_70 (the fused Triton samplers need \`acq_rel\` atomics)
-- \`/v1/chat/completions/input_tokens\` for Gateway limit enforcement
+- sampling uses PyTorch below sm_70 (the fused Triton samplers need `acq_rel` atomics)
+- `/v1/chat/completions/input_tokens` for Gateway limit enforcement
 
-Install it with \`setup/install-freetoken-sm61.sh\` (root, Ubuntu 24.04, driver
+Install it with `setup/install-freetoken-sm61.sh` (root, Ubuntu 24.04, driver
 580+). The script installs the pinned CUDA 12.6 compiler/headers, creates
-\`/opt/astrumweaver/freetoken-sm61/venv\` from
-\`setup/freetoken-sm61/requirements.lock\` (PyTorch \`2.14.1+cu126\`, because the
+`/opt/astrumweaver/freetoken-sm61/venv` from
+`setup/freetoken-sm61/requirements.lock` (PyTorch `2.14.1+cu126`, because the
 default cu130 build has no sm_61 kernels), and copies the fork files only after
-their SHA-256 matches \`setup/freetoken-sm61/overlay.sha256\`. Packages are
-installed from binary wheels only (\`--only-binary :all:\`). Installing the CUDA
-12.6 packages makes \`/usr/local/cuda\` point to 12.6 through
-\`update-alternatives\`; Nix-built runtimes such as TSUMGI's llama.cpp do not use it.
+their SHA-256 matches `setup/freetoken-sm61/overlay.sha256`. Packages are
+installed from binary wheels only (`--only-binary :all:`). Installing the CUDA
+12.6 packages makes `/usr/local/cuda` point to 12.6 through
+`update-alternatives`; Nix-built runtimes such as TSUMGI's llama.cpp do not use it.
 The script prints the provider settings for the host:
 
-\`\`\`json
+```json
 {
   "executable": "/opt/astrumweaver/freetoken-sm61/venv/bin/ft",
   "attention_backend": "triton",
@@ -445,11 +445,30 @@ The script prints the provider settings for the host:
   "cuda_home": "/usr/local/cuda-12.6",
   "library_paths": ["/opt/astrumweaver/freetoken-sm61/venv/lib/python3.12/site-packages/nvidia/cu13/lib"]
 }
-\`\`\`
+```
 
 Verified on GTX 1080 Ti 11GB / 32GB RAM with Qwen3.6-35B-A3B GGUF UD-Q4_K_XL
 (MoE offload, 8K context): HumanEval+ 151/164 at about 34 tokens/s decode with
 the GPU to itself.
+
+### Worker unit
+
+The stock Worker unit allows only `AF_UNIX`, `AF_INET` and `AF_INET6` sockets.
+FreeToken's scheduler starts a PyTorch gloo process group, and gloo lists network
+interfaces over netlink, so it fails with "Address family not supported by
+protocol" unless the FreeToken Worker also allows `AF_NETLINK`. Add a drop-in on
+FreeToken hosts only. Setting it once more adds `AF_NETLINK` to the unit's
+existing allow list rather than replacing it:
+
+```ini
+[Service]
+RestrictAddressFamilies=AF_NETLINK
+# the first launch JIT-compiles kernels into ~/.cache and ~/.triton
+TimeoutStartSec=600
+```
+
+The Worker user's home (`/var/lib/astrumweaver`, the unit's `StateDirectory`)
+holds those caches, so `ProtectSystem=strict` needs no extra writable paths.
 
 ## Current limitations
 
@@ -457,12 +476,12 @@ The first provider deliberately does not claim:
 
 - multi-GPU FreeToken execution
 - dense-model execution through TSUMGI
-- \`vram_only\` execution
+- `vram_only` execution
 - automatic derivation of required host RAM from checkpoint size
 - GPU-driver installation or replacement
 - CUDA-toolkit installation outside the pinned pre-Turing installer
 - exact host-memory residency bytes
-- runtime cache rebuild control through \`/v1/cache/rebuild\`
+- runtime cache rebuild control through `/v1/cache/rebuild`
 - multimodal capability routing
 - Anthropic or Responses API as separate TSUMGI capabilities
 
