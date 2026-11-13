@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 from collections.abc import Mapping
 from dataclasses import replace
 
@@ -25,6 +26,9 @@ from astrumweaver.runtime import (
     RuntimeSelectionMode,
     resolve_runtime,
 )
+from astrumweaver.execution import JobExecutionError
+from astrumweaver.gateway.chat import CHAT_JOB_SCHEMA, FREETOKEN_CHAT_ADAPTER
+from astrumweaver.runtime.providers import freetoken as freetoken_module
 from astrumweaver.runtime.providers.freetoken import (
     FreeTokenExecutor,
     FreeTokenLaunchPolicy,
@@ -53,6 +57,27 @@ def host(
         host_ram_mb=ram_mb,
         architecture=architecture,
     )
+
+
+class ProcessGroup:
+    """Fake process group: alive until SIGTERM/SIGKILL, unless children linger."""
+
+    def __init__(self, *, lingering_probes: int = 0) -> None:
+        self.signals: list[int] = []
+        self.alive = True
+        self.lingering_probes = lingering_probes
+
+    def killpg(self, pgid: int, signum: int) -> None:
+        self.signals.append(signum)
+        if signum == 0:
+            if self.lingering_probes > 0:
+                self.lingering_probes -= 1
+                return
+            if not self.alive:
+                raise ProcessLookupError(pgid)
+            return
+        if signum in (signal.SIGTERM, signal.SIGKILL):
+            self.alive = False
 
 
 def single_worker(vram_mb: int = 12288) -> WorkerSpec:
@@ -169,13 +194,26 @@ def test_dense_is_rejected_as_astrumweaver_scope_not_upstream_limit() -> None:
     assert "upstream FreeToken" in reason.message
 
 
-def test_gguf_is_rejected() -> None:
+def test_local_gguf_is_compatible() -> None:
     report = FreeTokenProvider().compatibility(
-        context(execution=demand(model_format="gguf"))
+        context(
+            execution=demand(
+                model_ref="/var/lib/astrumweaver/models/qwen.gguf",
+                model_format="gguf",
+            )
+        )
+    )
+
+    assert report.compatible
+
+
+def test_gguf_requires_local_reference() -> None:
+    report = FreeTokenProvider().compatibility(
+        context(execution=demand(model_ref="org/model.gguf", model_format="gguf"))
     )
 
     assert not report.compatible
-    assert "model-format-unsupported" in {
+    assert "gguf-reference-must-be-local" in {
         reason.code for reason in report.reasons
     }
 
@@ -410,16 +448,12 @@ async def test_subprocess_does_not_rewrite_gpu_identity(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class Process:
+        pid = 4321
         returncode = None
 
-        def terminate(self) -> None:
-            self.returncode = 0
-
         async def wait(self) -> int:
+            self.returncode = 0
             return 0
-
-        def kill(self) -> None:
-            self.returncode = -9
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
@@ -431,6 +465,7 @@ async def test_subprocess_does_not_rewrite_gpu_identity(monkeypatch) -> None:
         "create_subprocess_exec",
         fake_create_subprocess_exec,
     )
+    monkeypatch.setattr(freetoken_module.os, "killpg", ProcessGroup().killpg)
 
     controller = FreeTokenSubprocessController(
         executable="ft",
@@ -456,6 +491,7 @@ async def test_subprocess_does_not_rewrite_gpu_identity(monkeypatch) -> None:
         captured["args"].index("--gpu") + 1
     ] == "GPU-exact-uuid"
     assert "env" not in captured["kwargs"]
+    assert captured["kwargs"]["start_new_session"] is True
     assert "stdout" not in captured["kwargs"]
     assert "stderr" not in captured["kwargs"]
 
@@ -905,3 +941,297 @@ async def test_managed_runtime_release_closes_api_once() -> None:
     await runtime.release()
 
     assert api.closed
+
+
+def test_pre_turing_launch_settings_are_validated() -> None:
+    config = FreeTokenProviderConfig(
+        attention_backend="triton",
+        max_seq_len=8192,
+        cuda_home="/usr/local/cuda-12.6",
+        library_paths=("/opt/freetoken/lib",),
+    )
+    assert config.library_paths == ("/opt/freetoken/lib",)
+
+    for bad in (
+        {"attention_backend": "Triton; rm"},
+        {"max_seq_len": 0},
+        {"max_seq_len": True},
+        {"cuda_home": "relative/cuda"},
+        {"library_paths": ("/ok", "/a:/b")},
+    ):
+        with pytest.raises(ValueError):
+            FreeTokenProviderConfig(**bad)
+
+
+def test_command_adds_attention_backend_and_context_override() -> None:
+    controller = FreeTokenSubprocessController(
+        executable="ft",
+        base_url="http://127.0.0.1:1919",
+        model_ref="/models/qwen.gguf",
+        served_model_name="astrumweaver",
+        launch_policy=replace(
+            launch_policy(), attention_backend="triton", max_seq_len=8192
+        ),
+    )
+
+    command = controller.command()
+
+    assert command[command.index("--attention-backend") + 1] == "triton"
+    assert command[command.index("--max-seq-len-override") + 1] == "8192"
+
+
+def test_environment_adds_toolkit_paths_without_touching_gpu_selection() -> None:
+    controller = FreeTokenSubprocessController(
+        executable="/opt/freetoken/venv/bin/ft",
+        base_url="http://127.0.0.1:1919",
+        model_ref="/models/qwen.gguf",
+        served_model_name="astrumweaver",
+        launch_policy=launch_policy(),
+        cuda_home="/usr/local/cuda-12.6",
+        library_paths=("/opt/freetoken/lib",),
+    )
+
+    env = controller.environment(
+        {
+            "PATH": "/usr/bin",
+            "LD_LIBRARY_PATH": "/old",
+            "CUDA_VISIBLE_DEVICES": "GPU-example-one",
+        }
+    )
+
+    assert env is not None
+    assert env["CUDA_HOME"] == "/usr/local/cuda-12.6"
+    assert env["PATH"] == "/usr/local/cuda-12.6/bin:/opt/freetoken/venv/bin:/usr/bin"
+    assert env["LD_LIBRARY_PATH"] == "/opt/freetoken/lib:/old"
+    assert env["CUDA_VISIBLE_DEVICES"] == "GPU-example-one"
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_lingering_children_in_the_process_group(
+    monkeypatch,
+) -> None:
+    group = ProcessGroup(lingering_probes=2)
+    captured: dict[str, object] = {}
+
+    class Process:
+        pid = 4321
+        returncode = None
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["kwargs"] = dict(kwargs)
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(freetoken_module.os, "killpg", group.killpg)
+    controller = FreeTokenSubprocessController(
+        executable="/opt/freetoken/venv/bin/ft",
+        base_url="http://127.0.0.1:1919",
+        model_ref="/models/qwen.gguf",
+        served_model_name="astrumweaver",
+        launch_policy=launch_policy(),
+        cuda_home="/usr/local/cuda-12.6",
+    )
+
+    await controller.start()
+    assert captured["kwargs"]["env"]["CUDA_HOME"] == "/usr/local/cuda-12.6"
+    await controller.stop()
+
+    assert group.signals == [signal.SIGTERM, 0, 0, 0]
+    assert not controller.running
+
+
+def test_setup_intent_and_runtime_carry_pre_turing_settings() -> None:
+    created: dict[str, object] = {}
+    provider = FreeTokenProvider(
+        FreeTokenProviderConfig(
+            attention_backend="triton",
+            max_seq_len=8192,
+            cuda_home="/usr/local/cuda-12.6",
+            library_paths=("/opt/freetoken/lib",),
+        ),
+        api_factory=lambda base_url: FakeApi(),
+        process_factory=lambda **kwargs: created.update(kwargs) or FakeProcess(FakeApi()),
+    )
+    ctx = context(
+        execution=demand(model_ref="/models/qwen.gguf", model_format="gguf")
+    )
+
+    setup = provider.setup_intent(ctx)
+    provider.create_runtime(ctx, setup)
+
+    assert setup.configuration["attention_backend"] == "triton"
+    assert setup.configuration["max_seq_len"] == 8192
+    assert created["launch_policy"].attention_backend == "triton"
+    assert created["launch_policy"].max_seq_len == 8192
+    assert created["cuda_home"] == "/usr/local/cuda-12.6"
+    assert created["library_paths"] == ("/opt/freetoken/lib",)
+
+
+class GatewayApi(FakeApi):
+    def __init__(self, *, input_tokens: int = 10, chunks=None) -> None:
+        super().__init__()
+        self.input_tokens = input_tokens
+        self.chunks = list(chunks or [])
+        self.counted: list[dict] = []
+        self.stream_payloads: list[dict] = []
+
+    async def chat_input_tokens(self, payload):
+        self.counted.append(dict(payload))
+        return self.input_tokens
+
+    async def chat_stream(self, payload):
+        self.stream_payloads.append(dict(payload))
+        for chunk in self.chunks:
+            yield chunk
+
+
+def gateway_job(
+    *,
+    stream: bool = False,
+    max_tokens: int = 16,
+    adapter_id: str = FREETOKEN_CHAT_ADAPTER,
+    extra_request: Mapping[str, object] | None = None,
+) -> JobRequest:
+    return JobRequest(
+        job_id="gw",
+        capability="llm.chat",
+        payload={
+            "schema_version": CHAT_JOB_SCHEMA,
+            "adapter_id": adapter_id,
+            "request": {
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": stream,
+                "max_tokens": max_tokens,
+                **dict(extra_request or {}),
+            },
+            "limits": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 120},
+        },
+    )
+
+
+def gateway_executor(api: GatewayApi) -> FreeTokenExecutor:
+    return FreeTokenExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        served_model_name="qwen3.6-35b-a3b",
+        residency_metadata={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_chat_counts_input_and_binds_served_model() -> None:
+    api = GatewayApi(input_tokens=60)
+
+    result = await gateway_executor(api).execute(gateway_job(max_tokens=50))
+
+    assert result.text == "hello"
+    assert api.counted[0]["model"] == "qwen3.6-35b-a3b"
+    assert api.chat_payloads[0]["model"] == "qwen3.6-35b-a3b"
+    assert api.chat_payloads[0]["max_tokens"] == 50
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("job", "input_tokens", "code"),
+    [
+        (gateway_job(), 101, "context_length_exceeded"),
+        (gateway_job(max_tokens=50), 71, "context_length_exceeded"),
+        (gateway_job(adapter_id="llama-cpp-chat-v1"), 1, "unsupported_chat_adapter"),
+        (gateway_job(extra_request={"model": "other"}), 1, "invalid_chat_job"),
+        (gateway_job(max_tokens=51), 1, "output_limit_exceeded"),
+        (gateway_job(stream=True), 1, "streaming_requires_event_sink"),
+    ],
+)
+async def test_gateway_chat_rejections_never_reach_generation(
+    job: JobRequest, input_tokens: int, code: str
+) -> None:
+    api = GatewayApi(input_tokens=input_tokens)
+
+    with pytest.raises(JobExecutionError) as excinfo:
+        await gateway_executor(api).execute(job)
+
+    assert excinfo.value.code == code
+    assert api.chat_payloads == []
+
+
+class Sink:
+    def __init__(self) -> None:
+        self.events: list = []
+
+    async def emit(self, event) -> None:
+        self.events.append(event)
+
+
+@pytest.mark.asyncio
+async def test_gateway_stream_emits_validated_chunks_and_usage() -> None:
+    chunks = [
+        {"object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+        {"object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"reasoning_content": "think"}}]},
+        {"object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"content": "hel"}}]},
+        {"object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"content": "lo"}, "finish_reason": "stop"}]},
+        {"object": "chat.completion.chunk", "choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11}},
+    ]
+    api = GatewayApi(chunks=chunks)
+    sink = Sink()
+
+    result = await gateway_executor(api).execute_stream(gateway_job(stream=True), sink)
+
+    assert result.text == "hello"
+    assert result.metrics["total_tokens"] == 11
+    assert [event.kind for event in sink.events] == ["chat.completion.chunk"] * 5
+    assert api.stream_payloads[0]["stream_options"] == {"include_usage": True}
+    assert api.counted, "stream input must be counted before generation"
+
+
+@pytest.mark.asyncio
+async def test_gateway_stream_rejects_invalid_provider_chunk() -> None:
+    api = GatewayApi(chunks=[{"choices": [{}, {}]}])
+
+    with pytest.raises(JobExecutionError) as excinfo:
+        await gateway_executor(api).execute_stream(gateway_job(stream=True), Sink())
+
+    assert excinfo.value.code == "invalid_provider_response"
+
+
+@pytest.mark.asyncio
+async def test_http_stream_and_input_token_endpoints() -> None:
+    sse = (
+        ": keepalive\n\n"
+        'data: {"choices": [{"index": 0, "delta": {"content": "a"}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, text=sse, headers={"content-type": "text/event-stream"})
+        if request.url.path == "/v1/chat/completions/input_tokens":
+            body = json.loads(request.content)
+            return httpx.Response(200, json={"input_tokens": len(body["messages"]) * 7})
+        return httpx.Response(404)
+
+    api = HttpFreeTokenApi("http://127.0.0.1:1919", transport=httpx.MockTransport(handler))
+    try:
+        chunks = [chunk async for chunk in api.chat_stream({"messages": [], "stream": True})]
+        count = await api.chat_input_tokens({"messages": [{"role": "user", "content": "x"}]})
+    finally:
+        await api.close()
+
+    assert chunks == [{"choices": [{"index": 0, "delta": {"content": "a"}}]}]
+    assert count == 7
+
+
+@pytest.mark.asyncio
+async def test_http_input_tokens_rejects_invalid_count() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"input_tokens": True})
+
+    api = HttpFreeTokenApi("http://127.0.0.1:1919", transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(RuntimeError, match="invalid input_tokens"):
+            await api.chat_input_tokens({"messages": []})
+    finally:
+        await api.close()

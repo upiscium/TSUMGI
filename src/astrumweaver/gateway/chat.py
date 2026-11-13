@@ -26,6 +26,12 @@ from ..serving import (
 CHAT_CATALOG_SCHEMA = "chat-gateway-catalog-v1"
 CHAT_JOB_SCHEMA = "chat-job-v1"
 LLAMA_CPP_CHAT_ADAPTER = "llama-cpp-chat-v1"
+FREETOKEN_CHAT_ADAPTER = "freetoken-chat-v1"
+# Each reviewed chat adapter executes only on the runtime provider it was written for.
+_CHAT_ADAPTER_PROVIDERS = {
+    LLAMA_CPP_CHAT_ADAPTER: "llama-cpp",
+    FREETOKEN_CHAT_ADAPTER: "freetoken",
+}
 CHAT_OPERATION_SCHEMA = "openai-chat-completions-v1"
 
 _REQUIRED_LIMITS = frozenset(
@@ -114,10 +120,16 @@ class ChatGatewayProfile:
         if not isinstance(self.resolved, ResolvedServingProfile):
             raise TypeError("resolved must be ResolvedServingProfile")
         adapter_id = _nonblank(self.adapter_id, "adapter_id")
-        if adapter_id != LLAMA_CPP_CHAT_ADAPTER:
+        provider_id = _CHAT_ADAPTER_PROVIDERS.get(adapter_id)
+        if provider_id is None:
             raise ChatGatewayError(
                 "unsupported_adapter",
-                "Stage A supports only the reviewed llama.cpp chat adapter",
+                "chat gateway supports only the reviewed llama.cpp and FreeToken adapters",
+            )
+        if self.resolved.deployment.provider_id != provider_id:
+            raise ChatGatewayError(
+                "invalid_profile",
+                "chat adapter does not match the deployment runtime provider",
             )
         if self.resolved.profile.capability != "llm.chat":
             raise ChatGatewayError(
@@ -1161,6 +1173,7 @@ __all__ = [
     "CHAT_CATALOG_SCHEMA",
     "CHAT_JOB_SCHEMA",
     "CHAT_OPERATION_SCHEMA",
+    "FREETOKEN_CHAT_ADAPTER",
     "LLAMA_CPP_CHAT_ADAPTER",
     "ChatGatewayError",
     "ChatGatewayProfile",
