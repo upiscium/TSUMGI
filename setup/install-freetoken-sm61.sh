@@ -128,7 +128,7 @@ CU13_LIB="$SITE/nvidia/cu13/lib"
 [[ -f "$CU13_LIB/libcudart.so.13" ]] || die "missing CUDA 13 runtime library in $CU13_LIB"
 
 # Repair installs made before the umask fix, which left the venv root-only.
-chmod -R a+rX "$PREFIX"
+chmod -R a+rX "$VENV"
 
 cat > "$PREFIX/INSTALL.json" <<JSON
 {
