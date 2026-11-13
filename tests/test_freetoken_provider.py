@@ -1236,3 +1236,132 @@ async def test_http_input_tokens_rejects_invalid_count() -> None:
             await api.chat_input_tokens({"messages": []})
     finally:
         await api.close()
+
+
+def test_command_adds_prefill_chunk_size() -> None:
+    controller = FreeTokenSubprocessController(
+        executable="ft",
+        base_url="http://127.0.0.1:1919",
+        model_ref="/models/qwen.gguf",
+        served_model_name="astrumweaver",
+        launch_policy=replace(launch_policy(), max_prefill_tokens=2048),
+    )
+
+    command = controller.command()
+
+    assert command[command.index("--max-prefill-length") + 1] == "2048"
+
+
+class ExitedProcess:
+    pid = 4321
+    returncode = 1
+
+    async def wait(self) -> int:
+        return 1
+
+
+@pytest.mark.asyncio
+async def test_stop_after_exit_only_probes_a_gone_group(monkeypatch) -> None:
+    group = ProcessGroup()
+    group.alive = False
+    monkeypatch.setattr(freetoken_module.os, "killpg", group.killpg)
+    controller = FreeTokenSubprocessController(
+        executable="ft",
+        base_url="http://127.0.0.1:1919",
+        model_ref="/models/qwen.gguf",
+        served_model_name="astrumweaver",
+        launch_policy=launch_policy(),
+    )
+    controller._process = ExitedProcess()
+
+    await controller.stop()
+
+    assert group.signals == [0]
+    assert controller._process is None
+
+
+@pytest.mark.asyncio
+async def test_stop_treats_foreign_group_as_not_ours(monkeypatch) -> None:
+    signals: list[int] = []
+
+    def killpg(pgid: int, signum: int) -> None:
+        signals.append(signum)
+        raise PermissionError(pgid)
+
+    monkeypatch.setattr(freetoken_module.os, "killpg", killpg)
+    controller = FreeTokenSubprocessController(
+        executable="ft",
+        base_url="http://127.0.0.1:1919",
+        model_ref="/models/qwen.gguf",
+        served_model_name="astrumweaver",
+        launch_policy=launch_policy(),
+    )
+    controller._process = ExitedProcess()
+
+    await controller.stop()
+
+    assert signals == [0]
+    assert controller._process is None
+
+
+@pytest.mark.asyncio
+async def test_restart_reaps_the_previous_group_first(monkeypatch) -> None:
+    group = ProcessGroup(lingering_probes=1)
+    group.alive = False
+    order: list[str] = []
+
+    class Process:
+        pid = 9876
+        returncode = None
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        order.append(f"spawn after {len(group.signals)} signals")
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(freetoken_module.os, "killpg", group.killpg)
+    controller = FreeTokenSubprocessController(
+        executable="ft",
+        base_url="http://127.0.0.1:1919",
+        model_ref="/models/qwen.gguf",
+        served_model_name="astrumweaver",
+        launch_policy=launch_policy(),
+    )
+    controller._process = ExitedProcess()
+
+    await controller.start()
+
+    assert order == ["spawn after 2 signals"]
+    assert controller.running
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"tools": [{"type": "function", "function": {"name": "f", "parameters": {}}}]},
+        {"tool_choice": "required"},
+    ],
+)
+async def test_tools_are_rejected_when_the_deployment_disables_them(extra) -> None:
+    api = GatewayApi()
+    executor = FreeTokenExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        served_model_name="qwen3.6-35b-a3b",
+        residency_metadata={},
+        tools_enabled=False,
+    )
+
+    with pytest.raises(JobExecutionError) as excinfo:
+        await executor.execute(gateway_job(extra_request=extra))
+
+    assert excinfo.value.code == "unsupported_feature"
+    assert api.counted == [] and api.chat_payloads == []
+
+    allowed = gateway_executor(GatewayApi())
+    assert (await allowed.execute(gateway_job(extra_request=extra))).text == "hello"

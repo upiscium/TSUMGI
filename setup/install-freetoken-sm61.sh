@@ -53,7 +53,8 @@ while (($#)); do
   esac
 done
 
-[[ "$PREFIX" == /* ]] || die "--prefix must be absolute"
+[[ "$PREFIX" == /* && "$PREFIX" != *:* && "$PREFIX" != *..* ]] \
+  || die "--prefix must be an absolute path without ':' or '..'"
 [[ "$(id -u)" == 0 ]] || die "run as root"
 [[ "$(uname -m)" == x86_64 ]] || die "FreeToken packages require x86_64"
 . /etc/os-release
@@ -62,20 +63,23 @@ require_cmd nvidia-smi
 require_cmd curl
 require_cmd sha256sum
 require_cmd tar
-driver="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)"
+# sed reads all input, so nvidia-smi cannot die of SIGPIPE under pipefail.
+driver="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | sed -n 1p)"
 if [[ ! "${driver%%.*}" =~ ^[0-9]+$ ]] || ((${driver%%.*} < 580)); then
   die "NVIDIA driver >= 580 is required (found: ${driver:-none})"
 fi
 
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
 if ((SKIP_APT == 0)); then
   require_cmd apt-get
   if ! dpkg-query -W -f='${Status}' cuda-keyring 2>/dev/null | grep -q 'ok installed'; then
-    keyring="$(mktemp)"
+    keyring="$work/cuda-keyring.deb"
     curl -fsSL --max-time 120 -o "$keyring" "$CUDA_KEYRING_URL"
     echo "$CUDA_KEYRING_SHA256  $keyring" | sha256sum --check --status \
       || die "cuda-keyring checksum mismatch"
     dpkg -i "$keyring" >/dev/null
-    rm -f "$keyring"
   fi
   log "installing CUDA 12.6 toolkit pieces and Python headers"
   DEBIAN_FRONTEND=noninteractive apt-get update -q >/dev/null
@@ -93,7 +97,7 @@ install -d -m 755 "$PREFIX"
 # The lock is a full freeze of the verified environment. It deliberately keeps the
 # cu126 PyTorch build next to FreeToken's CUDA 13 extras, which their declared
 # metadata does not allow together, so install it verbatim without resolution.
-"$VENV/bin/uv" pip install -q --python "$VENV/bin/python" --no-deps \
+"$VENV/bin/uv" pip install -q --python "$VENV/bin/python" --no-deps --only-binary :all: \
   --index-url https://pypi.org/simple --extra-index-url "$TORCH_INDEX" \
   --index-strategy unsafe-best-match \
   -r "$PIN_DIR/requirements.lock"
@@ -102,8 +106,6 @@ SITE="$("$VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["pu
 [[ -d "$SITE/freetoken" ]] || die "freetoken package missing in $SITE"
 
 log "applying $FORK_REPO@$FORK_COMMIT"
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
 curl -fsSL --max-time 300 -o "$work/fork.tar.gz" \
   "https://codeload.github.com/$FORK_REPO/tar.gz/$FORK_COMMIT"
 tar -xzf "$work/fork.tar.gz" -C "$work"
@@ -138,6 +140,7 @@ log "installed; FreeToken provider_config for this host:"
 cat >&2 <<EOF
   "executable": "$VENV/bin/ft",
   "attention_backend": "triton",
+  "max_prefill_tokens": 2048,
   "cuda_home": "$CUDA_HOME_DIR",
   "library_paths": ["$CU13_LIB"]
 EOF

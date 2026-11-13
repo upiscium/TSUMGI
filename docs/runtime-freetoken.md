@@ -238,7 +238,12 @@ Optional provider-local settings include:
 - \`attention_backend\` (\`--attention-backend\`)
 - \`max_seq_len\` (\`--max-seq-len-override\`, and the same \`--kv-reserve-tokens\` so the
   KV pool holds the full context; FreeToken otherwise reserves 8192 tokens)
+- \`max_prefill_tokens\` (\`--max-prefill-length\`): prefill chunk size. On 11GB GPUs a
+  long prompt prefilled in one 8192-token chunk can run out of GPU memory and
+  crash the server; 2048 keeps activations small
 - \`cuda_home\` and \`library_paths\` (process environment, see below)
+- \`tools_enabled\` (default true): when false, Gateway chat jobs that use tools,
+  \`tool_choice\` or tool messages fail with \`unsupported_feature\`
 
 \`moe_cache_size\` and \`moe_cache_rate\` are mutually exclusive.
 
@@ -291,6 +296,12 @@ seconds for every remaining group member. FreeToken's scheduler and tokenizer
 children can otherwise outlive the server and keep the GPU and deleted model
 files open.
 
+If the server has already exited, the next \`start()\` first reaps its process
+group. A group the Worker may not signal (\`PermissionError\`) is treated as not
+ours. Under systemd the Worker unit's default \`KillMode=control-group\` also
+stops the server when the Worker itself is killed, because the new session
+stays in the unit's cgroup.
+
 Stop is idempotent.
 
 Release closes the provider API client idempotently. Higher-level lifecycle
@@ -338,6 +349,10 @@ For a \`chat-job-v1\` envelope the executor:
 
 Upstream FreeToken 0.2.2 has no OpenAI-format token-count endpoint, so Gateway
 chat requires the TSUMGI fork (see below).
+
+The serving profile's \`total_tokens\` must not exceed the provider's
+\`max_seq_len\`: the executor checks the bound limits, but FreeToken only has KV
+for \`max_seq_len\` tokens.
 
 ### Direct jobs
 
@@ -409,13 +424,17 @@ Install it with \`setup/install-freetoken-sm61.sh\` (root, Ubuntu 24.04, driver
 \`/opt/astrumweaver/freetoken-sm61/venv\` from
 \`setup/freetoken-sm61/requirements.lock\` (PyTorch \`2.14.1+cu126\`, because the
 default cu130 build has no sm_61 kernels), and copies the fork files only after
-their SHA-256 matches \`setup/freetoken-sm61/overlay.sha256\`. It prints the
-provider settings for the host:
+their SHA-256 matches \`setup/freetoken-sm61/overlay.sha256\`. Packages are
+installed from binary wheels only (\`--only-binary :all:\`). Installing the CUDA
+12.6 packages makes \`/usr/local/cuda\` point to 12.6 through
+\`update-alternatives\`; Nix-built runtimes such as TSUMGI's llama.cpp do not use it.
+The script prints the provider settings for the host:
 
 \`\`\`json
 {
   "executable": "/opt/astrumweaver/freetoken-sm61/venv/bin/ft",
   "attention_backend": "triton",
+  "max_prefill_tokens": 2048,
   "cuda_home": "/usr/local/cuda-12.6",
   "library_paths": ["/opt/astrumweaver/freetoken-sm61/venv/lib/python3.12/site-packages/nvidia/cu13/lib"]
 }

@@ -118,8 +118,11 @@ class FreeTokenProviderConfig:
     # backend, a CUDA 12.x toolkit for JIT kernels and extra runtime libraries.
     attention_backend: str | None = None
     max_seq_len: int | None = None
+    # Prefill chunk size; smaller chunks bound activation memory on 11GB GPUs.
+    max_prefill_tokens: int | None = None
     cuda_home: str | None = None
     library_paths: tuple[str, ...] = ()
+    tools_enabled: bool = True
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -186,12 +189,14 @@ class FreeTokenProviderConfig:
             or _ATTENTION_BACKEND.fullmatch(self.attention_backend) is None
         ):
             raise ValueError("attention_backend must be a short lowercase name")
-        if self.max_seq_len is not None and (
-            isinstance(self.max_seq_len, bool)
-            or not isinstance(self.max_seq_len, int)
-            or self.max_seq_len <= 0
-        ):
-            raise ValueError("max_seq_len must be a positive integer when set")
+        for name in ("max_seq_len", "max_prefill_tokens"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            ):
+                raise ValueError(f"{name} must be a positive integer when set")
+        if type(self.tools_enabled) is not bool:
+            raise TypeError("tools_enabled must be a boolean")
         if self.cuda_home is not None:
             object.__setattr__(
                 self, "cuda_home", _absolute_path(self.cuda_home, "cuda_home")
@@ -219,6 +224,7 @@ class FreeTokenLaunchPolicy:
     max_running_requests: int
     attention_backend: str | None = None
     max_seq_len: int | None = None
+    max_prefill_tokens: int | None = None
 
 
 def _launch_policy(
@@ -242,6 +248,7 @@ def _launch_policy(
         max_running_requests=config.max_running_requests,
         attention_backend=config.attention_backend,
         max_seq_len=config.max_seq_len,
+        max_prefill_tokens=config.max_prefill_tokens,
     )
 
 
@@ -477,6 +484,10 @@ class FreeTokenSubprocessController:
                     str(self.launch_policy.max_seq_len),
                 ]
             )
+        if self.launch_policy.max_prefill_tokens is not None:
+            args.extend(
+                ["--max-prefill-length", str(self.launch_policy.max_prefill_tokens)]
+            )
         return tuple(args)
 
     def environment(
@@ -512,6 +523,9 @@ class FreeTokenSubprocessController:
     async def start(self) -> None:
         if self.running:
             return
+        if self._process is not None:
+            # The previous server exited; reap any children it left behind first.
+            await self.stop()
         try:
             # A new session makes the server the leader of a process group, so
             # stop() also reaches the scheduler/tokenizer children it spawns.
@@ -528,7 +542,8 @@ class FreeTokenSubprocessController:
     def _signal_group(pgid: int, signum: int) -> bool:
         try:
             os.killpg(pgid, signum)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
+            # Gone, or the id now belongs to another user's group: not ours.
             return False
         return True
 
@@ -565,8 +580,10 @@ class FreeTokenExecutor(JobExecutor):
         model_ref: str,
         served_model_name: str,
         residency_metadata: Mapping[str, Any],
+        tools_enabled: bool = True,
     ) -> None:
         self.api = api
+        self.tools_enabled = tools_enabled
         self.model_ref = _nonblank(model_ref, "model_ref")
         self.served_model_name = _nonblank(
             served_model_name,
@@ -669,6 +686,23 @@ class FreeTokenExecutor(JobExecutor):
             raise JobExecutionError(
                 "invalid_chat_job",
                 "gateway chat job must not supply a runtime model name",
+                retryable=False,
+            )
+        tool_choice = request.get("tool_choice")
+        uses_tools = bool(request.get("tools")) or (
+            tool_choice is not None and tool_choice != "none"
+        )
+        for message in request.get("messages", ()):
+            if isinstance(message, Mapping) and (
+                message.get("role") == "tool"
+                or message.get("tool_calls") is not None
+            ):
+                uses_tools = True
+                break
+        if uses_tools and not self.tools_enabled:
+            raise JobExecutionError(
+                "unsupported_feature",
+                "FreeToken serving deployment does not enable structured tools",
                 retryable=False,
             )
         request["model"] = self.served_model_name
@@ -907,6 +941,7 @@ class FreeTokenManagedRuntime(ManagedRuntime):
         served_model_name: str,
         startup_timeout_seconds: float,
         launch_policy: FreeTokenLaunchPolicy,
+        tools_enabled: bool = True,
     ) -> None:
         self.api = api
         self.process = process
@@ -934,7 +969,9 @@ class FreeTokenManagedRuntime(ManagedRuntime):
                 "moe_hybrid_max_fetch": launch_policy.moe_hybrid_max_fetch,
                 "attention_backend": launch_policy.attention_backend,
                 "max_seq_len": launch_policy.max_seq_len,
+                "max_prefill_tokens": launch_policy.max_prefill_tokens,
             },
+            tools_enabled=tools_enabled,
         )
 
     async def _server_reachable(self) -> bool:
@@ -1260,6 +1297,7 @@ class FreeTokenProvider(RuntimeProvider):
                 "max_running_requests": policy.max_running_requests,
                 "attention_backend": policy.attention_backend,
                 "max_seq_len": policy.max_seq_len,
+                "max_prefill_tokens": policy.max_prefill_tokens,
                 "capabilities": sorted(FREETOKEN_CAPABILITIES),
             },
             model_preparation=_model_preparation(
@@ -1352,6 +1390,11 @@ class FreeTokenProvider(RuntimeProvider):
                 if cfg.get("max_seq_len") is not None
                 else self.config.max_seq_len
             ),
+            max_prefill_tokens=(
+                int(cfg["max_prefill_tokens"])
+                if cfg.get("max_prefill_tokens") is not None
+                else self.config.max_prefill_tokens
+            ),
         )
 
         api = self._api_factory(base_url)
@@ -1373,4 +1416,5 @@ class FreeTokenProvider(RuntimeProvider):
             served_model_name=served_model_name,
             startup_timeout_seconds=self.config.startup_timeout_seconds,
             launch_policy=policy,
+            tools_enabled=self.config.tools_enabled,
         )
