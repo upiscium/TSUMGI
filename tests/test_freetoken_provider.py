@@ -1365,3 +1365,128 @@ async def test_tools_are_rejected_when_the_deployment_disables_them(extra) -> No
 
     allowed = gateway_executor(GatewayApi())
     assert (await allowed.execute(gateway_job(extra_request=extra))).text == "hello"
+
+
+@pytest.mark.parametrize("tools_enabled", [True, False])
+def test_executor_declares_tools_serving_feature(tools_enabled: bool) -> None:
+    from astrumweaver.serving import (
+        DeploymentIdentity,
+        ServingContract,
+        ServingDeploymentDeclaration,
+    )
+    from astrumweaver.worker.runtime import require_executor_serving_features
+
+    digest = "sha256:" + "a" * 64
+    deployment = DeploymentIdentity(
+        provider_id="freetoken",
+        runtime_artifact_sha256=digest,
+        adapter_artifact_sha256=digest,
+        model_artifact_sha256=digest,
+        execution_config_sha256=digest,
+        quantization="UD-Q4_K_XL",
+        tokenizer_artifact_sha256=digest,
+        template_artifact_sha256=digest,
+    )
+    declaration = ServingDeploymentDeclaration(
+        deployment=deployment,
+        contracts=(
+            ServingContract(
+                deployment_revision=deployment.revision,
+                capability="llm.chat",
+                operation_schema="openai-chat-completions-v1",
+                validation_evidence_sha256=digest,
+                features=frozenset({"tools"}),
+                limits={
+                    "input_tokens": 10240,
+                    "output_tokens": 2048,
+                    "total_tokens": 12288,
+                    "request_bytes": 65536,
+                },
+            ),
+        ),
+    )
+    executor = FreeTokenExecutor(
+        api=FakeApi(),
+        model_ref="/models/qwen.gguf",
+        served_model_name="qwen3.6-35b-a3b",
+        residency_metadata={},
+        tools_enabled=tools_enabled,
+    )
+
+    if tools_enabled:
+        require_executor_serving_features(executor, declaration)
+    else:
+        with pytest.raises(RuntimeError, match="tools"):
+            require_executor_serving_features(executor, declaration)
+
+
+class ToolCallApi(GatewayApi):
+    """Returns FreeToken's real non-stream tool-call shape (with index)."""
+
+    async def chat(self, payload):
+        self.chat_payloads.append(dict(payload))
+        return {
+            "id": "chatcmpl-0",
+            "object": "chat.completion",
+            "model": "qwen3.6-35b-a3b",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "thinking",
+                        "tool_calls": [
+                            {
+                                "id": "call_synthetic-echo_0_e2c1e53b",
+                                "index": 0,
+                                "type": "function",
+                                "function": {
+                                    "name": "synthetic_echo",
+                                    "arguments": '{"text": "tsumgi"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 275, "completion_tokens": 108, "total_tokens": 383},
+        }
+
+
+@pytest.mark.asyncio
+async def test_gateway_tool_call_response_passes_gateway_normalization() -> None:
+    from astrumweaver.gateway.chat import normalize_chat_completion
+
+    result = await gateway_executor(ToolCallApi()).execute(gateway_job())
+
+    call = result.outputs["choices"][0]["message"]["tool_calls"][0]
+    assert "index" not in call
+    normalized = normalize_chat_completion(
+        result.outputs, profile_id="qwen3.6-35b-a3b", job_id="gw", created=1
+    )
+    assert normalized["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] == (
+        '{"text": "tsumgi"}'
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("thinking", [None, False, True])
+async def test_enable_thinking_is_sent_only_when_configured(thinking) -> None:
+    api = GatewayApi()
+    executor = FreeTokenExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        served_model_name="qwen3.6-35b-a3b",
+        residency_metadata={},
+        enable_thinking=thinking,
+    )
+
+    await executor.execute(gateway_job())
+
+    if thinking is None:
+        assert "chat_template_kwargs" not in api.chat_payloads[0]
+    else:
+        assert api.chat_payloads[0]["chat_template_kwargs"] == {"enable_thinking": thinking}
+        assert api.counted[0]["chat_template_kwargs"] == {"enable_thinking": thinking}

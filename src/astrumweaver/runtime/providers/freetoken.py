@@ -123,6 +123,9 @@ class FreeTokenProviderConfig:
     cuda_home: str | None = None
     library_paths: tuple[str, ...] = ()
     tools_enabled: bool = True
+    # None keeps the model's chat-template default; True/False is sent to every
+    # Gateway chat job as chat_template_kwargs.enable_thinking.
+    enable_thinking: bool | None = None
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -197,6 +200,8 @@ class FreeTokenProviderConfig:
                 raise ValueError(f"{name} must be a positive integer when set")
         if type(self.tools_enabled) is not bool:
             raise TypeError("tools_enabled must be a boolean")
+        if self.enable_thinking is not None and type(self.enable_thinking) is not bool:
+            raise TypeError("enable_thinking must be a boolean or None")
         if self.cuda_home is not None:
             object.__setattr__(
                 self, "cuda_home", _absolute_path(self.cuda_home, "cuda_home")
@@ -581,9 +586,16 @@ class FreeTokenExecutor(JobExecutor):
         served_model_name: str,
         residency_metadata: Mapping[str, Any],
         tools_enabled: bool = True,
+        enable_thinking: bool | None = None,
     ) -> None:
         self.api = api
         self.tools_enabled = tools_enabled
+        self.enable_thinking = enable_thinking
+        # Serving features this executor honors; checked against the serving
+        # manifest before the Worker advertises a deployment.
+        self.serving_features = {
+            "llm.chat": frozenset({"tools"}) if tools_enabled else frozenset()
+        }
         self.model_ref = _nonblank(model_ref, "model_ref")
         self.served_model_name = _nonblank(
             served_model_name,
@@ -706,7 +718,33 @@ class FreeTokenExecutor(JobExecutor):
                 retryable=False,
             )
         request["model"] = self.served_model_name
+        if self.enable_thinking is not None:
+            request["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
         return request, limits
+
+    @staticmethod
+    def _gateway_chat_response(response: Mapping[str, Any]) -> dict[str, Any]:
+        """Drop the stream-only tool_calls[].index FreeToken also puts on full messages."""
+        result = dict(response)
+        choices = result.get("choices")
+        if not isinstance(choices, list):
+            return result
+        normalized: list[Any] = []
+        for choice in choices:
+            message = choice.get("message") if isinstance(choice, Mapping) else None
+            calls = message.get("tool_calls") if isinstance(message, Mapping) else None
+            if isinstance(calls, list):
+                message = dict(message)
+                message["tool_calls"] = [
+                    {k: v for k, v in call.items() if k != "index"}
+                    if isinstance(call, Mapping)
+                    else call
+                    for call in calls
+                ]
+                choice = {**choice, "message": message}
+            normalized.append(choice)
+        result["choices"] = normalized
+        return result
 
     async def _enforce_chat_limits(
         self,
@@ -766,6 +804,8 @@ class FreeTokenExecutor(JobExecutor):
             response = await task
         finally:
             self._inflight.pop(job.job_id, None)
+        if gateway_chat is not None:
+            response = self._gateway_chat_response(response)
 
         text: str | None = None
         choices = response.get("choices")
@@ -942,6 +982,7 @@ class FreeTokenManagedRuntime(ManagedRuntime):
         startup_timeout_seconds: float,
         launch_policy: FreeTokenLaunchPolicy,
         tools_enabled: bool = True,
+        enable_thinking: bool | None = None,
     ) -> None:
         self.api = api
         self.process = process
@@ -972,6 +1013,7 @@ class FreeTokenManagedRuntime(ManagedRuntime):
                 "max_prefill_tokens": launch_policy.max_prefill_tokens,
             },
             tools_enabled=tools_enabled,
+            enable_thinking=enable_thinking,
         )
 
     async def _server_reachable(self) -> bool:
@@ -1417,4 +1459,5 @@ class FreeTokenProvider(RuntimeProvider):
             startup_timeout_seconds=self.config.startup_timeout_seconds,
             launch_policy=policy,
             tools_enabled=self.config.tools_enabled,
+            enable_thinking=self.config.enable_thinking,
         )

@@ -243,7 +243,12 @@ Optional provider-local settings include:
   crash the server; 2048 keeps activations small
 - \`cuda_home\` and \`library_paths\` (process environment, see below)
 - \`tools_enabled\` (default true): when false, Gateway chat jobs that use tools,
-  \`tool_choice\` or tool messages fail with \`unsupported_feature\`
+  \`tool_choice\` or tool messages fail with \`unsupported_feature\`. The executor
+  advertises the \`tools\` serving feature only when enabled, so a serving manifest
+  with \`tools\` requires it
+- \`enable_thinking\` (default unset): when true or false, every Gateway chat job
+  sends \`chat_template_kwargs.enable_thinking\`. The Gateway accepts no client
+  switch for thinking, and Qwen3.6 thinks by default, so set it explicitly
 
 \`moe_cache_size\` and \`moe_cache_rate\` are mutually exclusive.
 
@@ -346,6 +351,8 @@ For a \`chat-job-v1\` envelope the executor:
    or input plus the output reservation, exceeds the bound limits
 4. streams through the fenced Job event channel when \`stream=true\`; each chunk
    must pass the Gateway's stream-chunk validation
+5. for non-stream responses, removes the stream-only \`index\` that FreeToken also
+   puts on \`message.tool_calls\` entries, so they pass Gateway tool-call validation
 
 Upstream FreeToken 0.2.2 has no OpenAI-format token-count endpoint, so Gateway
 chat requires the TSUMGI fork (see below).
