@@ -257,6 +257,7 @@
           ${installer}/bin/astrumweaver-runtime-profile --help >/dev/null
           ${installer}/bin/astrumweaver-runtime-profile status llama-cpp >/dev/null 2>&1 || test "$?" = 1
           ${installer}/bin/astrumweaver-runtime-profile status qwen38-llama-cpp >/dev/null 2>&1 || test "$?" = 1
+          # The retired Bonsai target must hit the unsupported-package exit 2.
           if ${installer}/bin/astrumweaver-runtime-profile status bonsai-llama-cpp >/dev/null 2>&1; then exit 1; else test "$?" = 2; fi
           test -x ${control}/bin/astrumweaver-control
           test -x ${control}/bin/astrumweaver-migrate
