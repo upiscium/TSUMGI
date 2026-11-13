@@ -978,6 +978,7 @@ def test_command_adds_attention_backend_and_context_override() -> None:
 
     assert command[command.index("--attention-backend") + 1] == "triton"
     assert command[command.index("--max-seq-len-override") + 1] == "8192"
+    assert command[command.index("--kv-reserve-tokens") + 1] == "8192"
 
 
 def test_environment_adds_toolkit_paths_without_touching_gpu_selection() -> None:

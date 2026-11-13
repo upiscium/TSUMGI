@@ -236,7 +236,8 @@ Optional provider-local settings include:
 - \`moe_hybrid_max_fetch\`
 
 - \`attention_backend\` (\`--attention-backend\`)
-- \`max_seq_len\` (\`--max-seq-len-override\`)
+- \`max_seq_len\` (\`--max-seq-len-override\`, and the same \`--kv-reserve-tokens\` so the
+  KV pool holds the full context; FreeToken otherwise reserves 8192 tokens)
 - \`cuda_home\` and \`library_paths\` (process environment, see below)
 
 \`moe_cache_size\` and \`moe_cache_rate\` are mutually exclusive.

@@ -467,8 +467,15 @@ class FreeTokenSubprocessController:
                 ["--attention-backend", self.launch_policy.attention_backend]
             )
         if self.launch_policy.max_seq_len is not None:
+            # FreeToken sizes its KV pool from --kv-reserve-tokens (default 8192),
+            # not from the context override, so reserve the full context too.
             args.extend(
-                ["--max-seq-len-override", str(self.launch_policy.max_seq_len)]
+                [
+                    "--max-seq-len-override",
+                    str(self.launch_policy.max_seq_len),
+                    "--kv-reserve-tokens",
+                    str(self.launch_policy.max_seq_len),
+                ]
             )
         return tuple(args)
 
