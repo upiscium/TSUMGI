@@ -1,0 +1,12 @@
+# Files from upiscium/FreeToken tsumgi/sm61-v0.2.2 that replace the freetoken==0.2.2 wheel copies.
+# Format: sha256  path-relative-to-site-packages
+42d9a45b2536364d23c58db0416e2598e467b66d58932d4ab6c9ddca5e8f131d  freetoken/engine/sample.py
+2510dbecbbf15c36128557d49228e6ce838c265c6e3e2046dd5dece4d38fc025  freetoken/kernel/backend.py
+f3afe9dd9c3b3d552fb516586ef589695d1b827d0a02e2de0c27ae0b182d06d8  freetoken/kernel/csrc/include/freetoken/utils.cuh
+a10b972d79a86e539be32f3f33ba152e214552c16f5af0feba4f1caffde155a9  freetoken/kernel/csrc/jit/fast_index_copy.cuh
+b604cc68d3c6ff2d83640b14fbc17a946e3cc33ca0da963c843135a9581b9c20  freetoken/kernel/csrc/jit/index.cu
+4d44388d54ae1155629337738ac77e7ef2f5bf7ed18ae383d9156679825e8dbb  freetoken/kernel/csrc/jit/store.cu
+ae215da12a32b27fb864e904d988e529ef3742fcd8fec1c5097870722681db08  freetoken/kernel/torch_sampling.py
+8eacb12949901c26bbfd8a638faa5fd3470f6f6f1d403071e9afe2eace378926  freetoken/kernel/triton/attention.py
+4de40d8d8ae8879779b9fa7082fd7b77481055eff94beb0eb32e09e8fa488124  freetoken/server/api_server.py
+da6e1f449d6e410c414ed3a24e82d866343462ed192e2f9bcbbb91a4555b0cbf  freetoken/server/openai_api.py

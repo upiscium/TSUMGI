@@ -101,6 +101,7 @@ huggingface
 hf
 safetensors
 ftw
+gguf
 \`\`\`
 
 Hugging Face-style remote model references produce a reviewed SetupPlan
@@ -112,7 +113,9 @@ FTW is treated as a local FreeToken checkpoint format, so the v0.x provider
 requires an explicit local FTW path rather than interpreting an arbitrary
 remote string as an FTW checkpoint.
 
-GGUF is outside this provider contract.
+GGUF, like FTW, is served only from an explicit local file path. A remote
+GGUF reference fails with \`gguf-reference-must-be-local\`; the provider never
+downloads a GGUF file.
 
 ## GPU topology
 
@@ -232,7 +235,17 @@ Optional provider-local settings include:
 - \`moe_cpu_layers\`
 - \`moe_hybrid_max_fetch\`
 
+- \`attention_backend\` (\`--attention-backend\`)
+- \`max_seq_len\` (\`--max-seq-len-override\`)
+- \`cuda_home\` and \`library_paths\` (process environment, see below)
+
 \`moe_cache_size\` and \`moe_cache_rate\` are mutually exclusive.
+
+When \`cuda_home\` or \`library_paths\` is set, the child process inherits the
+Worker environment plus \`CUDA_HOME\`, a \`PATH\` prefix of \`<cuda_home>/bin\` and
+the directory of an absolute \`executable\` (for the JIT build tools in its
+virtualenv), and a \`LD_LIBRARY_PATH\` prefix. \`CUDA_VISIBLE_DEVICES\` is never
+changed. Without these settings no environment is passed explicitly.
 
 If neither is supplied, the provider leaves cache sizing to FreeToken rather
 than duplicating its auto-sizing logic.
@@ -271,6 +284,12 @@ Startup:
 4. verifies the configured served-model alias through \`/v1/models\`
 5. stops the process it started if startup validation fails
 
+The child is started in a new session. Stop sends SIGTERM to the whole process
+group, escalates to SIGKILL after 15 seconds, and then waits up to 15 more
+seconds for every remaining group member. FreeToken's scheduler and tokenizer
+children can otherwise outlive the server and keep the GPU and deleted model
+files open.
+
 Stop is idempotent.
 
 Release closes the provider API client idempotently. Higher-level lifecycle
@@ -297,8 +316,32 @@ external-process collision rather than silently adopted.
 
 Each request is bound to the model selected during setup.
 
-A job may omit \`model\`, or specify either the original model reference or the
-served alias. Any other per-job model value fails closed.
+### Chat Gateway jobs
+
+Chat Gateway profiles bind FreeToken deployments with the adapter
+\`freetoken-chat-v1\`. The Gateway rejects a profile whose adapter does not match
+the deployment's runtime provider (\`llama-cpp-chat-v1\` only with \`llama-cpp\`,
+\`freetoken-chat-v1\` only with \`freetoken\`).
+
+For a \`chat-job-v1\` envelope the executor:
+
+1. validates the envelope, its token limits and \`max_tokens\`, exactly like the
+   llama.cpp executor
+2. rejects a request that names a runtime model and binds the served alias
+3. counts the prompt with \`POST /v1/chat/completions/input_tokens\` (served by the
+   TSUMGI FreeToken fork with the same tokenizer and chat template as generation)
+   and fails with \`context_length_exceeded\` before any generation when the input,
+   or input plus the output reservation, exceeds the bound limits
+4. streams through the fenced Job event channel when \`stream=true\`; each chunk
+   must pass the Gateway's stream-chunk validation
+
+Upstream FreeToken 0.2.2 has no OpenAI-format token-count endpoint, so Gateway
+chat requires the TSUMGI fork (see below).
+
+### Direct jobs
+
+A direct job may omit \`model\`, or specify either the original model reference or
+the served alias. Any other per-job model value fails closed.
 
 The executor forces:
 
@@ -346,6 +389,41 @@ If the runtime does not report the value, the field remains unset.
 The provider may also record observed model identity and the upstream MoE flag
 from \`/v1/stats\`.
 
+## Pre-Turing GPUs (GTX 10 series, sm_61)
+
+Upstream FreeToken 0.2.2 targets RTX 30 and newer. TSUMGI runs it on GTX 1080 Ti
+with the fork \`upiscium/FreeToken\`, branch \`tsumgi/sm61-v0.2.2\`
+(\`TSUMGI-SM61.md\` there lists every change). The changes keep upstream behavior on
+newer GPUs:
+
+- FlashInfer and sgl-kernel (prebuilt for sm_75+) are reported unavailable below
+  sm_75, so FreeToken uses its existing fallbacks
+- \`__grid_constant__\` is dropped for sm_6x JIT builds
+- extend-attention tiles shrink to fit 48KB shared memory
+- sampling uses PyTorch below sm_70 (the fused Triton samplers need \`acq_rel\` atomics)
+- \`/v1/chat/completions/input_tokens\` for Gateway limit enforcement
+
+Install it with \`setup/install-freetoken-sm61.sh\` (root, Ubuntu 24.04, driver
+580+). The script installs the pinned CUDA 12.6 compiler/headers, creates
+\`/opt/astrumweaver/freetoken-sm61/venv\` from
+\`setup/freetoken-sm61/requirements.lock\` (PyTorch \`2.14.1+cu126\`, because the
+default cu130 build has no sm_61 kernels), and copies the fork files only after
+their SHA-256 matches \`setup/freetoken-sm61/overlay.sha256\`. It prints the
+provider settings for the host:
+
+\`\`\`json
+{
+  "executable": "/opt/astrumweaver/freetoken-sm61/venv/bin/ft",
+  "attention_backend": "triton",
+  "cuda_home": "/usr/local/cuda-12.6",
+  "library_paths": ["/opt/astrumweaver/freetoken-sm61/venv/lib/python3.12/site-packages/nvidia/cu13/lib"]
+}
+\`\`\`
+
+Verified on GTX 1080 Ti 11GB / 32GB RAM with Qwen3.6-35B-A3B GGUF UD-Q4_K_XL
+(MoE offload, 8K context): HumanEval+ 151/164 at about 34 tokens/s decode with
+the GPU to itself.
+
 ## Current limitations
 
 The first provider deliberately does not claim:
@@ -355,7 +433,7 @@ The first provider deliberately does not claim:
 - \`vram_only\` execution
 - automatic derivation of required host RAM from checkpoint size
 - GPU-driver installation or replacement
-- CUDA-toolkit installation
+- CUDA-toolkit installation outside the pinned pre-Turing installer
 - exact host-memory residency bytes
 - runtime cache rebuild control through \`/v1/cache/rebuild\`
 - multimodal capability routing
