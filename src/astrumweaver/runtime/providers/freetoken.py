@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Mapping
+import json
+import os
+import re
+import signal
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -13,7 +17,22 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ...execution import JobExecutor, JobRequest, JobResult, ResidencyItem, ResidencyReport
+from ...execution import (
+    JobEvent,
+    JobEventSink,
+    JobExecutionError,
+    JobExecutor,
+    JobRequest,
+    JobResult,
+    ResidencyItem,
+    ResidencyReport,
+)
+from ...gateway.chat import (
+    CHAT_JOB_SCHEMA,
+    FREETOKEN_CHAT_ADAPTER,
+    ChatGatewayError,
+    validate_chat_stream_chunk,
+)
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -34,8 +53,11 @@ from ..contracts import (
 FREETOKEN_PROVIDER_ID = "freetoken"
 FREETOKEN_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
 FREETOKEN_MODEL_FORMATS = frozenset(
-    {"huggingface", "hf", "safetensors", "ftw"}
+    {"huggingface", "hf", "safetensors", "ftw", "gguf"}
 )
+# Local-file checkpoint formats; a remote reference is never downloaded for them.
+_LOCAL_ONLY_FORMATS = frozenset({"ftw", "gguf"})
+_ATTENTION_BACKEND = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 
 def _nonblank(value: str, field_name: str) -> str:
@@ -43,6 +65,15 @@ def _nonblank(value: str, field_name: str) -> str:
     if not normalized:
         raise ValueError(f"{field_name} must not be blank")
     return normalized
+
+
+def _absolute_path(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-blank path")
+    path = value.strip()
+    if not os.path.isabs(path) or ":" in path or "\x00" in path:
+        raise ValueError(f"{field_name} must be an absolute path without ':'")
+    return path
 
 
 def _local_model_reference(model_ref: str) -> bool:
@@ -83,6 +114,15 @@ class FreeTokenProviderConfig:
     moe_cpu_layers: str | int | float | None = None
     moe_hybrid_max_fetch: int | None = None
     max_running_requests: int = 1
+    # Pre-Turing GPUs (TSUMGI FreeToken fork, sm_61) need the Triton attention
+    # backend, a CUDA 12.x toolkit for JIT kernels and extra runtime libraries.
+    attention_backend: str | None = None
+    max_seq_len: int | None = None
+    # Prefill chunk size; smaller chunks bound activation memory on 11GB GPUs.
+    max_prefill_tokens: int | None = None
+    cuda_home: str | None = None
+    library_paths: tuple[str, ...] = ()
+    tools_enabled: bool = True
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -144,6 +184,31 @@ class FreeTokenProviderConfig:
             raise ValueError("moe_hybrid_max_fetch must be >= -1 when set")
         if isinstance(self.moe_cpu_layers, bool):
             raise TypeError("moe_cpu_layers must not be boolean")
+        if self.attention_backend is not None and (
+            not isinstance(self.attention_backend, str)
+            or _ATTENTION_BACKEND.fullmatch(self.attention_backend) is None
+        ):
+            raise ValueError("attention_backend must be a short lowercase name")
+        for name in ("max_seq_len", "max_prefill_tokens"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            ):
+                raise ValueError(f"{name} must be a positive integer when set")
+        if type(self.tools_enabled) is not bool:
+            raise TypeError("tools_enabled must be a boolean")
+        if self.cuda_home is not None:
+            object.__setattr__(
+                self, "cuda_home", _absolute_path(self.cuda_home, "cuda_home")
+            )
+        object.__setattr__(
+            self,
+            "library_paths",
+            tuple(
+                _absolute_path(item, "library_paths entry")
+                for item in self.library_paths
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +222,9 @@ class FreeTokenLaunchPolicy:
     moe_cpu_layers: str | int | float | None
     moe_hybrid_max_fetch: int | None
     max_running_requests: int
+    attention_backend: str | None = None
+    max_seq_len: int | None = None
+    max_prefill_tokens: int | None = None
 
 
 def _launch_policy(
@@ -178,6 +246,9 @@ def _launch_policy(
         moe_cpu_layers=config.moe_cpu_layers,
         moe_hybrid_max_fetch=config.moe_hybrid_max_fetch,
         max_running_requests=config.max_running_requests,
+        attention_backend=config.attention_backend,
+        max_seq_len=config.max_seq_len,
+        max_prefill_tokens=config.max_prefill_tokens,
     )
 
 
@@ -188,6 +259,13 @@ class FreeTokenApi(Protocol):
     async def models(self) -> tuple[str, ...]: ...
 
     async def chat(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    def chat_stream(
+        self,
+        payload: Mapping[str, Any],
+    ) -> AsyncIterator[Mapping[str, Any]]: ...
+
+    async def chat_input_tokens(self, payload: Mapping[str, Any]) -> int: ...
 
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
@@ -253,6 +331,47 @@ class HttpFreeTokenApi:
             json=payload,
         )
 
+    async def chat_stream(
+        self,
+        payload: Mapping[str, Any],
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        async with self._client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json=dict(payload),
+        ) as response:
+            response.raise_for_status()
+            async for raw_line in response.aiter_lines():
+                line = raw_line.strip()
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    raise RuntimeError("FreeToken stream returned invalid SSE framing")
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    return
+                try:
+                    value = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("FreeToken stream returned invalid JSON") from exc
+                if not isinstance(value, Mapping):
+                    raise RuntimeError("FreeToken stream returned a non-object event")
+                yield value
+
+    async def chat_input_tokens(self, payload: Mapping[str, Any]) -> int:
+        # Served by the TSUMGI FreeToken fork (llama.cpp-compatible shape).
+        body = await self._json(
+            "POST",
+            "/v1/chat/completions/input_tokens",
+            json=payload,
+        )
+        value = body.get("input_tokens")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RuntimeError(
+                "FreeToken token-count endpoint returned invalid input_tokens"
+            )
+        return value
+
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return await self._json(
             "POST",
@@ -286,12 +405,16 @@ class FreeTokenSubprocessController:
         model_ref: str,
         served_model_name: str,
         launch_policy: FreeTokenLaunchPolicy,
+        cuda_home: str | None = None,
+        library_paths: tuple[str, ...] = (),
     ) -> None:
         self.executable = executable
         self.base_url = base_url
         self.model_ref = model_ref
         self.served_model_name = served_model_name
         self.launch_policy = launch_policy
+        self.cuda_home = cuda_home
+        self.library_paths = tuple(library_paths)
         self._process: asyncio.subprocess.Process | None = None
 
     @property
@@ -346,29 +469,104 @@ class FreeTokenSubprocessController:
                     str(self.launch_policy.moe_hybrid_max_fetch),
                 ]
             )
+        if self.launch_policy.attention_backend is not None:
+            args.extend(
+                ["--attention-backend", self.launch_policy.attention_backend]
+            )
+        if self.launch_policy.max_seq_len is not None:
+            # FreeToken sizes its KV pool from --kv-reserve-tokens (default 8192),
+            # not from the context override, so reserve the full context too.
+            args.extend(
+                [
+                    "--max-seq-len-override",
+                    str(self.launch_policy.max_seq_len),
+                    "--kv-reserve-tokens",
+                    str(self.launch_policy.max_seq_len),
+                ]
+            )
+        if self.launch_policy.max_prefill_tokens is not None:
+            args.extend(
+                ["--max-prefill-length", str(self.launch_policy.max_prefill_tokens)]
+            )
         return tuple(args)
+
+    def environment(
+        self,
+        base: Mapping[str, str] | None = None,
+    ) -> dict[str, str] | None:
+        """Inherited environment plus CUDA toolkit/library overrides, or None when
+        nothing is overridden. GPU selection (CUDA_VISIBLE_DEVICES) is never touched."""
+        if self.cuda_home is None and not self.library_paths:
+            return None
+        env = dict(os.environ if base is None else base)
+        path_prefix: list[str] = []
+        if self.cuda_home is not None:
+            env["CUDA_HOME"] = self.cuda_home
+            path_prefix.append(os.path.join(self.cuda_home, "bin"))
+        executable_dir = os.path.dirname(self.executable)
+        if os.path.isabs(executable_dir):
+            # JIT builds look up ninja next to the FreeToken entry point (its venv).
+            path_prefix.append(executable_dir)
+        if path_prefix:
+            env["PATH"] = os.pathsep.join(
+                [*path_prefix, *([env["PATH"]] if env.get("PATH") else [])]
+            )
+        if self.library_paths:
+            env["LD_LIBRARY_PATH"] = os.pathsep.join(
+                [
+                    *self.library_paths,
+                    *([env["LD_LIBRARY_PATH"]] if env.get("LD_LIBRARY_PATH") else []),
+                ]
+            )
+        return env
 
     async def start(self) -> None:
         if self.running:
             return
+        if self._process is not None:
+            # The previous server exited; reap any children it left behind first.
+            await self.stop()
         try:
+            # A new session makes the server the leader of a process group, so
+            # stop() also reaches the scheduler/tokenizer children it spawns.
+            env = self.environment()
             self._process = await asyncio.create_subprocess_exec(
                 *self.command(),
+                **({} if env is None else {"env": env}),
+                start_new_session=True,
             )
         except OSError as exc:
             raise RuntimeError("failed to start FreeToken server process") from exc
+
+    @staticmethod
+    def _signal_group(pgid: int, signum: int) -> bool:
+        try:
+            os.killpg(pgid, signum)
+        except (ProcessLookupError, PermissionError):
+            # Gone, or the id now belongs to another user's group: not ours.
+            return False
+        return True
 
     async def stop(self) -> None:
         process = self._process
         if process is None:
             return
+        pgid = process.pid
         if process.returncode is None:
-            process.terminate()
+            self._signal_group(pgid, signal.SIGTERM)
             try:
                 await asyncio.wait_for(process.wait(), timeout=15.0)
             except asyncio.TimeoutError:
-                process.kill()
+                self._signal_group(pgid, signal.SIGKILL)
                 await process.wait()
+        # Children may outlive the parent and keep the GPU and model files open.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 15.0
+        while self._signal_group(pgid, 0):
+            if loop.time() >= deadline:
+                self._signal_group(pgid, signal.SIGKILL)
+                break
+            await asyncio.sleep(0.2)
         self._process = None
 
 
@@ -382,15 +580,17 @@ class FreeTokenExecutor(JobExecutor):
         model_ref: str,
         served_model_name: str,
         residency_metadata: Mapping[str, Any],
+        tools_enabled: bool = True,
     ) -> None:
         self.api = api
+        self.tools_enabled = tools_enabled
         self.model_ref = _nonblank(model_ref, "model_ref")
         self.served_model_name = _nonblank(
             served_model_name,
             "served_model_name",
         )
         self.residency_metadata = dict(residency_metadata)
-        self._inflight: dict[str, asyncio.Task[Mapping[str, Any]]] = {}
+        self._inflight: dict[str, asyncio.Task[Any]] = {}
 
     def _payload(self, job: JobRequest) -> dict[str, Any]:
         payload = dict(job.payload)
@@ -406,16 +606,154 @@ class FreeTokenExecutor(JobExecutor):
         payload["stream"] = False
         return payload
 
+    def _gateway_chat_payload(
+        self,
+        job: JobRequest,
+    ) -> tuple[dict[str, Any], dict[str, int]] | None:
+        envelope = dict(job.payload)
+        if envelope.get("schema_version") != CHAT_JOB_SCHEMA:
+            return None
+        if set(envelope) != {"schema_version", "adapter_id", "request", "limits"}:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job envelope uses unsupported fields",
+                retryable=False,
+            )
+        if envelope.get("adapter_id") != FREETOKEN_CHAT_ADAPTER:
+            raise JobExecutionError(
+                "unsupported_chat_adapter",
+                "chat job targets an unsupported provider adapter",
+                retryable=False,
+            )
+        raw_request = envelope.get("request")
+        raw_limits = envelope.get("limits")
+        if not isinstance(raw_request, Mapping) or not isinstance(raw_limits, Mapping):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job request/limits must be objects",
+                retryable=False,
+            )
+        request = dict(raw_request)
+        if not isinstance(request.get("messages"), list):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job requires a messages array",
+                retryable=False,
+            )
+        if type(request.get("stream")) is not bool:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job stream flag must be boolean",
+                retryable=False,
+            )
+        output_tokens = request.get("max_tokens")
+        if (
+            isinstance(output_tokens, bool)
+            or not isinstance(output_tokens, int)
+            or output_tokens < 1
+        ):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job max_tokens must be a positive integer",
+                retryable=False,
+            )
+        limits: dict[str, int] = {}
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = raw_limits.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise JobExecutionError(
+                    "invalid_chat_job",
+                    "chat job token limits must be positive integers",
+                    retryable=False,
+                )
+            limits[key] = value
+        if (
+            limits["input_tokens"] > limits["total_tokens"]
+            or limits["output_tokens"] > limits["total_tokens"]
+        ):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job token limit exceeds total context",
+                retryable=False,
+            )
+        if output_tokens > limits["output_tokens"]:
+            raise JobExecutionError(
+                "output_limit_exceeded",
+                "chat output budget exceeds the bound serving profile",
+                retryable=False,
+            )
+        if request.pop("model", None) is not None:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "gateway chat job must not supply a runtime model name",
+                retryable=False,
+            )
+        tool_choice = request.get("tool_choice")
+        uses_tools = bool(request.get("tools")) or (
+            tool_choice is not None and tool_choice != "none"
+        )
+        for message in request.get("messages", ()):
+            if isinstance(message, Mapping) and (
+                message.get("role") == "tool"
+                or message.get("tool_calls") is not None
+            ):
+                uses_tools = True
+                break
+        if uses_tools and not self.tools_enabled:
+            raise JobExecutionError(
+                "unsupported_feature",
+                "FreeToken serving deployment does not enable structured tools",
+                retryable=False,
+            )
+        request["model"] = self.served_model_name
+        return request, limits
+
+    async def _enforce_chat_limits(
+        self,
+        payload: Mapping[str, Any],
+        limits: Mapping[str, int],
+    ) -> None:
+        input_tokens = await self.api.chat_input_tokens(payload)
+        output_tokens = int(payload["max_tokens"])
+        if input_tokens > limits["input_tokens"]:
+            raise JobExecutionError(
+                "context_length_exceeded",
+                "chat input exceeds the deployed input-token limit",
+                retryable=False,
+            )
+        if input_tokens + output_tokens > limits["total_tokens"]:
+            raise JobExecutionError(
+                "context_length_exceeded",
+                "chat input plus output reservation exceeds deployed context",
+                retryable=False,
+            )
+
     async def execute(self, job: JobRequest) -> JobResult:
         if job.capability not in self.capabilities:
             raise ValueError(
                 f"FreeToken executor does not support capability: {job.capability}"
             )
 
-        payload = self._payload(job)
+        gateway_chat = (
+            self._gateway_chat_payload(job)
+            if job.capability == "llm.chat"
+            else None
+        )
+        if gateway_chat is None:
+            payload = self._payload(job)
+        else:
+            payload, limits = gateway_chat
         if job.capability == "llm.chat":
             if not isinstance(payload.get("messages"), list):
                 raise ValueError("llm.chat requires a messages list")
+            if gateway_chat is not None:
+                if payload.get("stream") is True:
+                    raise JobExecutionError(
+                        "streaming_requires_event_sink",
+                        "streaming chat requires the fenced Job event channel",
+                        retryable=False,
+                    )
+                await self._enforce_chat_limits(payload, limits)
             call = self.api.chat(payload)
         else:
             if not isinstance(payload.get("prompt"), str):
@@ -461,6 +799,83 @@ class FreeTokenExecutor(JobExecutor):
             outputs=dict(response),
             metrics=metrics,
             text=text,
+            metadata={
+                "runtime_provider": FREETOKEN_PROVIDER_ID,
+                "model": self.model_ref,
+                "served_model_name": self.served_model_name,
+            },
+        )
+
+    async def execute_stream(
+        self,
+        job: JobRequest,
+        sink: JobEventSink,
+    ) -> JobResult:
+        if job.capability != "llm.chat":
+            return await self.execute(job)
+        gateway_chat = self._gateway_chat_payload(job)
+        if gateway_chat is None:
+            return await self.execute(job)
+        payload, limits = gateway_chat
+        if payload.get("stream") is not True:
+            return await self.execute(job)
+
+        await self._enforce_chat_limits(payload, limits)
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+
+        metrics: dict[str, int | float] = {}
+        text_parts: list[str] = []
+        current = asyncio.current_task()
+        if current is None:
+            raise RuntimeError("streaming execution task is unavailable")
+        self._inflight[job.job_id] = current
+        try:
+            async for raw_chunk in self.api.chat_stream(payload):
+                try:
+                    chunk = validate_chat_stream_chunk(raw_chunk)
+                except ChatGatewayError as exc:
+                    raise JobExecutionError(
+                        "invalid_provider_response",
+                        "FreeToken returned an invalid chat stream chunk",
+                        retryable=False,
+                    ) from exc
+                choices = chunk.get("choices")
+                if isinstance(choices, list) and choices:
+                    choice = choices[0]
+                    if isinstance(choice, Mapping):
+                        delta = choice.get("delta")
+                        if isinstance(delta, Mapping):
+                            content = delta.get("content")
+                            if isinstance(content, str):
+                                text_parts.append(content)
+                usage = chunk.get("usage")
+                if isinstance(usage, Mapping):
+                    for key in (
+                        "prompt_tokens",
+                        "completion_tokens",
+                        "total_tokens",
+                    ):
+                        value = usage.get(key)
+                        if (
+                            isinstance(value, (int, float))
+                            and not isinstance(value, bool)
+                        ):
+                            metrics[key] = value
+                await sink.emit(
+                    JobEvent(
+                        kind="chat.completion.chunk",
+                        payload=chunk,
+                    )
+                )
+        finally:
+            if self._inflight.get(job.job_id) is current:
+                self._inflight.pop(job.job_id, None)
+
+        return JobResult(
+            outputs={"streamed": True},
+            metrics=metrics,
+            text="".join(text_parts) if text_parts else None,
             metadata={
                 "runtime_provider": FREETOKEN_PROVIDER_ID,
                 "model": self.model_ref,
@@ -526,6 +941,7 @@ class FreeTokenManagedRuntime(ManagedRuntime):
         served_model_name: str,
         startup_timeout_seconds: float,
         launch_policy: FreeTokenLaunchPolicy,
+        tools_enabled: bool = True,
     ) -> None:
         self.api = api
         self.process = process
@@ -551,7 +967,11 @@ class FreeTokenManagedRuntime(ManagedRuntime):
                 "moe_cpu_threads": launch_policy.moe_cpu_threads,
                 "moe_cpu_layers": launch_policy.moe_cpu_layers,
                 "moe_hybrid_max_fetch": launch_policy.moe_hybrid_max_fetch,
+                "attention_backend": launch_policy.attention_backend,
+                "max_seq_len": launch_policy.max_seq_len,
+                "max_prefill_tokens": launch_policy.max_prefill_tokens,
             },
+            tools_enabled=tools_enabled,
         )
 
     async def _server_reachable(self) -> bool:
@@ -728,7 +1148,7 @@ class FreeTokenProvider(RuntimeProvider):
                     code="model-format-unsupported",
                     message=(
                         "AstrumWeaver FreeToken provider requires a Hugging Face/"
-                        "safetensors or local FTW model reference"
+                        "safetensors, local FTW or local GGUF model reference"
                     ),
                 )
             )
@@ -743,6 +1163,20 @@ class FreeTokenProvider(RuntimeProvider):
                     message=(
                         "FTW is a local FreeToken checkpoint format; the v0.x "
                         "provider requires an explicit local FTW path"
+                    ),
+                )
+            )
+
+        if (
+            model.model_format == "gguf"
+            and not _local_model_reference(model.model_ref)
+        ):
+            reasons.append(
+                CompatibilityReason(
+                    code="gguf-reference-must-be-local",
+                    message=(
+                        "the FreeToken provider serves GGUF only from an explicit "
+                        "local file path; it never downloads a GGUF reference"
                     ),
                 )
             )
@@ -861,6 +1295,9 @@ class FreeTokenProvider(RuntimeProvider):
                 "moe_cpu_layers": policy.moe_cpu_layers,
                 "moe_hybrid_max_fetch": policy.moe_hybrid_max_fetch,
                 "max_running_requests": policy.max_running_requests,
+                "attention_backend": policy.attention_backend,
+                "max_seq_len": policy.max_seq_len,
+                "max_prefill_tokens": policy.max_prefill_tokens,
                 "capabilities": sorted(FREETOKEN_CAPABILITIES),
             },
             model_preparation=_model_preparation(
@@ -944,6 +1381,20 @@ class FreeTokenProvider(RuntimeProvider):
                     self.config.max_running_requests,
                 )
             ),
+            attention_backend=cfg.get(
+                "attention_backend",
+                self.config.attention_backend,
+            ),
+            max_seq_len=(
+                int(cfg["max_seq_len"])
+                if cfg.get("max_seq_len") is not None
+                else self.config.max_seq_len
+            ),
+            max_prefill_tokens=(
+                int(cfg["max_prefill_tokens"])
+                if cfg.get("max_prefill_tokens") is not None
+                else self.config.max_prefill_tokens
+            ),
         )
 
         api = self._api_factory(base_url)
@@ -953,6 +1404,8 @@ class FreeTokenProvider(RuntimeProvider):
             model_ref=model_ref,
             served_model_name=served_model_name,
             launch_policy=policy,
+            cuda_home=self.config.cuda_home,
+            library_paths=self.config.library_paths,
         )
 
         return FreeTokenManagedRuntime(
@@ -963,4 +1416,5 @@ class FreeTokenProvider(RuntimeProvider):
             served_model_name=served_model_name,
             startup_timeout_seconds=self.config.startup_timeout_seconds,
             launch_policy=policy,
+            tools_enabled=self.config.tools_enabled,
         )
