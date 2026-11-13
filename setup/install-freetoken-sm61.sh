@@ -4,6 +4,9 @@ IFS=$'\n\t'
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
+# common.sh sets umask 027, but the Worker runs `ft` as the unprivileged
+# astrumweaver user, so the virtualenv must be world-readable (never writable).
+umask 022
 
 PIN_DIR="$SCRIPT_DIR/freetoken-sm61"
 PREFIX='/opt/astrumweaver/freetoken-sm61'
@@ -123,6 +126,9 @@ done < "$PIN_DIR/overlay.sha256"
 
 CU13_LIB="$SITE/nvidia/cu13/lib"
 [[ -f "$CU13_LIB/libcudart.so.13" ]] || die "missing CUDA 13 runtime library in $CU13_LIB"
+
+# Repair installs made before the umask fix, which left the venv root-only.
+chmod -R a+rX "$VENV"
 
 cat > "$PREFIX/INSTALL.json" <<JSON
 {
