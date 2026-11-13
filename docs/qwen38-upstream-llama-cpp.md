@@ -1,6 +1,6 @@
 # Qwen3.8 27B — upstream llama.cpp Coding Leaf on sirius
 
-This package adds an **opt-in, pinned, upstream** `ggml-org/llama.cpp` CUDA runtime to TSUMGI without changing the GA default `#runtime-llama-cpp` or modifying PrismML-only Bonsai support. Qwen3.8 Q4_K_M is a regular GGUF and **does not require PrismML's PQ2_0 fork**.
+This package adds an **opt-in, pinned, upstream** `ggml-org/llama.cpp` CUDA runtime to TSUMGI without changing the GA default `#runtime-llama-cpp`. Qwen3.8 Q4_K_M is a regular GGUF.
 
 ## Immutable supply-chain pins
 
@@ -43,7 +43,7 @@ Safe rollback after another Coding Leaf was added: the current production Contro
 - Independently SHA-256 verified upstream `b11430` assets on sirius. Real upstream native dual-GPU load with Context 8192 passed, GPU usage 7,329MiB / 8,401MiB, text Chat and forced named Tool Call / tool-result roundtrip passed.
 - Production cutover is only accepted after running this same model through the actual Nix package and the TSUMGI Control/Worker stack, with preserving the old Qwen3.6 profile and full service rollback.
 
-**Scope:** use `llama-cpp` Provider (runtime flavor `upstream`) with this selected executable. This output does not claim the standard `#runtime-llama-cpp` nixpkgs version works with Qwen3.8; that remains untested. It also does not change Bonsai's PrismML-only PQ2_0 support or resolve #149/#150.
+**Scope:** use `llama-cpp` Provider (runtime flavor `upstream`) with this selected executable. This output does not claim the standard `#runtime-llama-cpp` nixpkgs version works with Qwen3.8; that remains untested. It does not resolve #149/#150.
 
 
 ## Installed runtime qualification (2026-10-21)
