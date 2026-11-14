@@ -218,6 +218,93 @@ def _stream_error(error: Mapping[str, Any] | str) -> StrataHttpError:
     return StrataHttpError(status, message)
 
 
+def _boolean_parameters(tools: object) -> dict[str, frozenset[str]]:
+    """Top-level boolean parameters per tool name, from an OpenAI `tools` list."""
+    result: dict[str, frozenset[str]] = {}
+    if not isinstance(tools, list):
+        return result
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, Mapping) else None
+        if not isinstance(function, Mapping) or not isinstance(function.get("name"), str):
+            continue
+        params = function.get("parameters")
+        props = params.get("properties") if isinstance(params, Mapping) else None
+        if not isinstance(props, Mapping):
+            continue
+        names = set()
+        for name, schema in props.items():
+            kind = schema.get("type") if isinstance(schema, Mapping) else None
+            if kind == "boolean" or (isinstance(kind, list) and "boolean" in kind and "string" not in kind):
+                names.add(name)
+        if names:
+            result[function["name"]] = frozenset(names)
+    return result
+
+
+def _fix_boolean_arguments(arguments: object, booleans: frozenset[str]) -> object:
+    """Strata 0.2.13 passes a boolean the model wrote as Python `True`/`False` through as a
+    string (serve/frontend.py coerce_value). Restore booleans the tool schema declares."""
+    if not booleans or not isinstance(arguments, str):
+        return arguments
+    try:
+        decoded = json.loads(arguments)
+    except ValueError:
+        return arguments  # a stream fragment, or not an object at all
+    if not isinstance(decoded, dict):
+        return arguments
+    changed = False
+    for name in booleans:
+        value = decoded.get(name)
+        if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+            decoded[name] = value.strip().lower() == "true"
+            changed = True
+    return json.dumps(decoded, ensure_ascii=False) if changed else arguments
+
+
+def _fix_tool_call(call: object, booleans: Mapping[str, frozenset[str]], name: str | None = None) -> object:
+    if not isinstance(call, Mapping):
+        return call
+    function = call.get("function")
+    if not isinstance(function, Mapping):
+        return call
+    tool = function.get("name") if isinstance(function.get("name"), str) else name
+    fixed = _fix_boolean_arguments(function.get("arguments"), booleans.get(tool or "", frozenset()))
+    if fixed is function.get("arguments"):
+        return call
+    return {**call, "function": {**function, "arguments": fixed}}
+
+
+def _fix_stream_chunk(
+    chunk: Mapping[str, Any],
+    booleans: Mapping[str, frozenset[str]],
+    call_names: dict[int, str],
+) -> Mapping[str, Any]:
+    """Restore booleans in a streamed tool call whose arguments arrive as one complete
+    JSON object; partial fragments pass through unchanged."""
+    choices = chunk.get("choices")
+    if not isinstance(choices, list):
+        return chunk
+    fixed_choices: list[Any] = []
+    changed = False
+    for choice in choices:
+        delta = choice.get("delta") if isinstance(choice, Mapping) else None
+        calls = delta.get("tool_calls") if isinstance(delta, Mapping) else None
+        if not isinstance(calls, list):
+            fixed_choices.append(choice)
+            continue
+        fixed_calls = []
+        for call in calls:
+            index = call.get("index") if isinstance(call, Mapping) else None
+            function = call.get("function") if isinstance(call, Mapping) else None
+            if isinstance(index, int) and isinstance(function, Mapping) and isinstance(function.get("name"), str):
+                call_names[index] = function["name"]
+            fixed = _fix_tool_call(call, booleans, call_names.get(index) if isinstance(index, int) else None)
+            changed = changed or fixed is not call
+            fixed_calls.append(fixed)
+        fixed_choices.append({**choice, "delta": {**delta, "tool_calls": fixed_calls}})
+    return {**chunk, "choices": fixed_choices} if changed else chunk
+
+
 @runtime_checkable
 class StrataApi(Protocol):
     async def models(self) -> Mapping[str, str]: ...
@@ -622,8 +709,12 @@ class StrataExecutor(JobExecutor):
         return request
 
     @staticmethod
-    def _gateway_chat_response(response: Mapping[str, Any]) -> dict[str, Any]:
-        """Drop the stream-only tool_calls[].index from full messages."""
+    def _gateway_chat_response(
+        response: Mapping[str, Any],
+        booleans: Mapping[str, frozenset[str]] | None = None,
+    ) -> dict[str, Any]:
+        """Drop the stream-only tool_calls[].index from full messages and restore
+        schema-declared booleans in tool arguments."""
         result = dict(response)
         choices = result.get("choices")
         if not isinstance(choices, list):
@@ -635,7 +726,9 @@ class StrataExecutor(JobExecutor):
             if isinstance(calls, list):
                 message = dict(message)
                 message["tool_calls"] = [
-                    {k: v for k, v in call.items() if k != "index"}
+                    _fix_tool_call(
+                        {k: v for k, v in call.items() if k != "index"}, booleans or {}
+                    )
                     if isinstance(call, Mapping)
                     else call
                     for call in calls
@@ -732,7 +825,9 @@ class StrataExecutor(JobExecutor):
             ) from exc
         finally:
             self._inflight.pop(job.job_id, None)
-        response = self._gateway_chat_response(response)
+        response = self._gateway_chat_response(
+            response, _boolean_parameters(payload.get("tools"))
+        )
 
         text: str | None = None
         choices = response.get("choices")
@@ -756,6 +851,8 @@ class StrataExecutor(JobExecutor):
         if payload is None or payload.get("stream") is not True:
             return await self.execute(job)
         payload["stream_options"] = {"include_usage": True}
+        booleans = _boolean_parameters(payload.get("tools"))
+        call_names: dict[int, str] = {}
 
         metrics: dict[str, int | float] = {}
         text_parts: list[str] = []
@@ -773,6 +870,8 @@ class StrataExecutor(JobExecutor):
                         "Strata returned an invalid chat stream chunk",
                         retryable=False,
                     ) from exc
+                if booleans:
+                    chunk = _fix_stream_chunk(chunk, booleans, call_names)
                 choices = chunk.get("choices")
                 if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
                     delta = choices[0].get("delta")

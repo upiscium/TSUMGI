@@ -681,3 +681,47 @@ async def test_cancel_aborts_the_inflight_request() -> None:
     with pytest.raises(asyncio.CancelledError):
         await job
     assert e._inflight == {}
+
+
+TOOLS = [{"type": "function", "function": {"name": "route", "parameters": {"type": "object", "properties": {
+    "avoid_tolls": {"type": "boolean"}, "note": {"type": "string"}, "years": {"type": "integer"}}}}}]
+
+
+async def test_schema_booleans_are_restored_in_tool_arguments() -> None:
+    raw = '{"avoid_tolls":"True","note":"True","years":5}'
+    call = {"index": 0, "id": "call_1", "type": "function", "function": {"name": "route", "arguments": raw}}
+    api = FakeApi(response={
+        "id": "c1", "object": "chat.completion", "created": 1, "model": NAME,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": None, "tool_calls": [call]}, "finish_reason": "tool_calls"}],
+    })
+    result = await executor(api).execute(gateway_job(tools=TOOLS))
+    args = json.loads(result.outputs["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert args == {"avoid_tolls": True, "note": "True", "years": 5}
+
+
+async def test_arguments_without_schema_booleans_are_untouched() -> None:
+    raw = '{"avoid_tolls":"True"}'
+    call = {"id": "call_1", "type": "function", "function": {"name": "other", "arguments": raw}}
+    api = FakeApi(response={
+        "id": "c1", "object": "chat.completion", "created": 1, "model": NAME,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": None, "tool_calls": [call]}, "finish_reason": "tool_calls"}],
+    })
+    result = await executor(api).execute(gateway_job(tools=TOOLS))
+    assert result.outputs["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] == raw
+
+
+async def test_stream_restores_complete_arguments_and_keeps_fragments() -> None:
+    def chunk(calls):
+        return {"id": "c", "object": "chat.completion.chunk", "created": 1, "model": NAME,
+                "choices": [{"index": 0, "delta": {"tool_calls": calls}, "finish_reason": None}]}
+
+    chunks = [
+        chunk([{"index": 0, "id": "call_1", "type": "function", "function": {"name": "route", "arguments": ""}}]),
+        chunk([{"index": 0, "function": {"arguments": '{"avoid_tolls":"False","years":2}'}}]),
+        chunk([{"index": 1, "id": "call_2", "type": "function", "function": {"name": "route", "arguments": '{"avoid_'}}]),
+    ]
+    sink = Sink()
+    await executor(FakeApi(chunks=chunks)).execute_stream(gateway_job(stream=True, tools=TOOLS), sink)
+    sent = [e.payload["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] for e in sink.events]
+    assert json.loads(sent[1]) == {"avoid_tolls": False, "years": 2}
+    assert sent[2] == '{"avoid_'
