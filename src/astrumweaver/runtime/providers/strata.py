@@ -248,7 +248,7 @@ def _fix_boolean_arguments(arguments: object, booleans: frozenset[str]) -> objec
         return arguments
     try:
         decoded = json.loads(arguments)
-    except ValueError:
+    except (ValueError, RecursionError):
         return arguments  # a stream fragment, or not an object at all
     if not isinstance(decoded, dict):
         return arguments

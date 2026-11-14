@@ -725,3 +725,28 @@ async def test_stream_restores_complete_arguments_and_keeps_fragments() -> None:
     sent = [e.payload["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] for e in sink.events]
     assert json.loads(sent[1]) == {"avoid_tolls": False, "years": 2}
     assert sent[2] == '{"avoid_'
+
+
+@pytest.mark.parametrize("fragment", ['"True"}', "true", '"True"', '{"avoid_'])
+def test_non_object_fragments_pass_through(fragment) -> None:
+    from astrumweaver.runtime.providers.strata import _fix_boolean_arguments
+
+    assert _fix_boolean_arguments(fragment, frozenset({"avoid_tolls"})) == fragment
+
+
+def test_boolean_parameters_follow_type_lists() -> None:
+    from astrumweaver.runtime.providers.strata import _boolean_parameters
+
+    tools = [{"type": "function", "function": {"name": "t", "parameters": {"properties": {
+        "a": {"type": ["boolean", "null"]}, "b": {"type": ["string", "boolean"]}, "c": {"type": "boolean"}}}}}]
+    assert _boolean_parameters(tools) == {"t": frozenset({"a", "c"})}
+
+
+async def test_stream_first_delta_with_name_and_lowercase_value() -> None:
+    chunks = [{"id": "c", "object": "chat.completion.chunk", "created": 1, "model": NAME,
+               "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                   "function": {"name": "route", "arguments": '{"avoid_tolls":"true"}'}}]}, "finish_reason": None}]}]
+    sink = Sink()
+    await executor(FakeApi(chunks=chunks)).execute_stream(gateway_job(stream=True, tools=TOOLS), sink)
+    args = sink.events[0].payload["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
+    assert json.loads(args) == {"avoid_tolls": True}
