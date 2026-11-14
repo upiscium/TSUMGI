@@ -112,11 +112,11 @@ class StrataProviderConfig:
         parsed = urlsplit(base_url)
         if (
             parsed.scheme != "http"
-            or parsed.hostname not in {"127.0.0.1", "localhost"}
+            or parsed.hostname != "127.0.0.1"
             or parsed.port is None
         ):
             raise ValueError(
-                "Strata provider requires a local loopback HTTP endpoint with port"
+                "Strata provider requires http://127.0.0.1:<port> (Strata binds IPv4 loopback)"
             )
         object.__setattr__(self, "base_url", base_url)
         for name in ("executable", "run_config", "home", "data_dir", "ready_dir"):
@@ -206,6 +206,16 @@ def _error_message(response: httpx.Response) -> str:
         if isinstance(error, str):
             return error
     return response.text[:500]
+
+
+def _stream_error(error: Mapping[str, Any] | str) -> StrataHttpError:
+    """An error event inside an SSE stream, with the HTTP status it stands for."""
+    if isinstance(error, str):
+        return StrataHttpError(500, error)
+    message = str(error.get("message") or "")
+    kind = error.get("type")
+    status = 400 if kind == "invalid_request_error" else 409 if kind == "model_busy" else 500
+    return StrataHttpError(status, message)
 
 
 @runtime_checkable
@@ -303,8 +313,9 @@ class HttpStrataApi:
                     raise RuntimeError("Strata stream returned invalid JSON") from exc
                 if not isinstance(value, Mapping):
                     raise RuntimeError("Strata stream returned a non-object event")
-                if isinstance(value.get("error"), (Mapping, str)):
-                    raise StrataHttpError(500, str(value["error"]))
+                error = value.get("error")
+                if isinstance(error, (Mapping, str)):
+                    raise _stream_error(error)
                 yield value
 
     async def close(self) -> None:
@@ -335,7 +346,7 @@ class StrataSubprocessController:
         ready_dir: str,
         parallel: int,
         shutdown_timeout_seconds: float,
-        api_key_file: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.executable = executable
         self.run_config = run_config
@@ -344,7 +355,7 @@ class StrataSubprocessController:
         self.data_dir = data_dir
         self.parallel = parallel
         self.shutdown_timeout_seconds = shutdown_timeout_seconds
-        self.api_key_file = api_key_file
+        self.api_key = api_key
         parsed = urlsplit(base_url)
         assert parsed.port is not None
         self.ready_file = os.path.join(ready_dir, f"strata-{parsed.port}.ready.json")
@@ -384,11 +395,8 @@ class StrataSubprocessController:
         env["HOME"] = self.home
         env["STRATA_DATA_DIR"] = self.data_dir
         env.pop("STRATA_API_KEY", None)
-        if self.api_key_file is not None:
-            key = Path(self.api_key_file).read_text(encoding="utf-8").strip()
-            if not key:
-                raise RuntimeError("Strata API key file is empty")
-            env["STRATA_API_KEY"] = key
+        if self.api_key is not None:
+            env["STRATA_API_KEY"] = self.api_key
         return env
 
     def ready_record(self) -> Mapping[str, Any] | None:
@@ -645,12 +653,19 @@ class StrataExecutor(JobExecutor):
                 "chat input plus output reservation exceeds deployed context",
                 retryable=False,
             )
-        if exc.status_code == 409:
-            # ModelBusy: the engine is loading or answering another request.
+        if exc.status_code in {408, 409, 429}:
+            # 409 is ModelBusy: the engine is loading or answering another request.
             return JobExecutionError(
                 "provider_busy",
                 "Strata is busy",
                 retryable=True,
+            )
+        if exc.status_code in {401, 403, 404}:
+            # A key or route mismatch is a deployment fault, not the client's.
+            return JobExecutionError(
+                "provider_error",
+                "Strata refused the Worker's request",
+                retryable=False,
             )
         if 400 <= exc.status_code < 500:
             return JobExecutionError(
@@ -705,6 +720,16 @@ class StrataExecutor(JobExecutor):
             response = await task
         except StrataHttpError as exc:
             raise self._provider_error(exc) from exc
+        except httpx.HTTPError as exc:
+            raise JobExecutionError(
+                "provider_error", "Strata is unreachable", retryable=True
+            ) from exc
+        except (RuntimeError, ValueError) as exc:
+            raise JobExecutionError(
+                "invalid_provider_response",
+                "Strata returned an invalid chat response",
+                retryable=False,
+            ) from exc
         finally:
             self._inflight.pop(job.job_id, None)
         response = self._gateway_chat_response(response)
@@ -757,6 +782,10 @@ class StrataExecutor(JobExecutor):
                 await sink.emit(JobEvent(kind="chat.completion.chunk", payload=chunk))
         except StrataHttpError as exc:
             raise self._provider_error(exc) from exc
+        except httpx.HTTPError as exc:
+            raise JobExecutionError(
+                "provider_error", "Strata is unreachable", retryable=True
+            ) from exc
         finally:
             if self._inflight.get(job.job_id) is current:
                 self._inflight.pop(job.job_id, None)
@@ -1106,7 +1135,10 @@ class StrataProvider(RuntimeProvider):
 
         api_key = None
         if self.config.api_key_file is not None:
+            # Read once so the Worker client and the server always share one key.
             api_key = Path(self.config.api_key_file).read_text(encoding="utf-8").strip()
+            if not api_key:
+                raise ValueError("Strata API key file is empty")
         api = self._api_factory(self.config.base_url, api_key)
         process = self._process_factory(
             executable=self.config.executable,
@@ -1117,7 +1149,7 @@ class StrataProvider(RuntimeProvider):
             ready_dir=self.config.ready_dir,
             parallel=self.config.parallel,
             shutdown_timeout_seconds=self.config.shutdown_timeout_seconds,
-            api_key_file=self.config.api_key_file,
+            api_key=api_key,
         )
         return StrataManagedRuntime(
             api=api,

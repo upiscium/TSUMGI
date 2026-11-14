@@ -92,6 +92,7 @@ def provider(rc: StrataRunConfig | None = None, **kwargs) -> StrataProvider:
     [
         {"base_url": "http://10.0.0.1:8080"},
         {"base_url": "http://127.0.0.1"},
+        {"base_url": "http://localhost:8080"},
         {"executable": "strata"},
         {"run_config": "relative.json"},
         {"ready_dir": "/run/a:b"},
@@ -217,9 +218,7 @@ def test_command_runs_strata_serve_in_the_foreground(tmp_path: Path) -> None:
 
 
 def test_environment_points_at_the_install_and_keeps_the_key_out_of_argv(tmp_path: Path) -> None:
-    key = tmp_path / "key"
-    key.write_text("s3cret\n")
-    c = controller(tmp_path, api_key_file=str(key))
+    c = controller(tmp_path, api_key="s3cret")
     env = c.environment({"PATH": "/usr/bin", "STRATA_API_KEY": "stale", "CUDA_VISIBLE_DEVICES": "GPU-a"})
     assert env["HOME"] == "/opt/strata/home"
     assert env["STRATA_DATA_DIR"] == "/opt/strata/data"
@@ -382,7 +381,8 @@ async def test_strata_context_overflow_becomes_context_length_exceeded() -> None
 
 @pytest.mark.parametrize(
     ("status", "code", "retryable"),
-    [(400, "invalid_request", False), (409, "provider_busy", True), (503, "provider_error", True)],
+    [(400, "invalid_request", False), (409, "provider_busy", True), (429, "provider_busy", True),
+     (401, "provider_error", False), (404, "provider_error", False), (503, "provider_error", True)],
 )
 async def test_other_strata_errors_are_mapped(status, code, retryable) -> None:
     api = FakeApi(error=StrataHttpError(status, "nope"))
@@ -585,3 +585,99 @@ async def test_runtime_stops_when_the_model_name_is_missing() -> None:
     with pytest.raises(RuntimeError, match="model name"):
         await rt.start()
     assert process.stopped == 1
+
+
+def test_provider_reads_the_key_file_once_for_client_and_server(tmp_path: Path) -> None:
+    key = tmp_path / "key"
+    key.write_text("k1\n")
+    seen: dict = {}
+
+    def api_factory(base_url, api_key):
+        seen["client"] = api_key
+        return FakeApi()
+
+    def process_factory(**kwargs):
+        seen["server"] = kwargs["api_key"]
+        return FakeController()
+
+    p = StrataProvider(config(api_key_file=str(key)), api_factory=api_factory,
+                       process_factory=process_factory, run_config_loader=lambda path: run_config())
+    p.create_runtime(ctx(), p.setup_intent(ctx()))
+    assert seen == {"client": "k1", "server": "k1"}
+    key.write_text("  \n")
+    with pytest.raises(ValueError, match="empty"):
+        p.create_runtime(ctx(), p.setup_intent(ctx()))
+
+
+async def test_http_stream_error_events_keep_their_meaning() -> None:
+    events = {
+        "overflow": {"error": {"type": "invalid_request_error", "message": OVERFLOW}},
+        "busy": {"error": {"type": "model_busy", "message": "busy"}},
+        "engine": {"error": {"type": "server_error", "message": "engine died"}},
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        kind = json.loads(request.content)["kind"]
+        body = 'data: {"id":"c","choices":[]}\n\ndata: ' + json.dumps(events[kind]) + "\n\n"
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    api = HttpStrataApi("http://127.0.0.1:8080", transport=httpx.MockTransport(handler))
+    statuses = {}
+    for kind in events:
+        with pytest.raises(StrataHttpError) as exc:
+            async for _ in api.chat_stream({"kind": kind}):
+                pass
+        statuses[kind] = exc.value.status_code
+    await api.close()
+    assert statuses == {"overflow": 400, "busy": 409, "engine": 500}
+    assert StrataExecutor._provider_error(StrataHttpError(400, OVERFLOW)).code == "context_length_exceeded"
+
+
+class BrokenApi(FakeApi):
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self.failure = error
+
+    async def chat(self, payload):
+        raise self.failure
+
+    async def chat_stream(self, payload):
+        raise self.failure
+        yield  # pragma: no cover
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "retryable"),
+    [
+        (httpx.ConnectError("refused"), "provider_error", True),
+        (httpx.ReadTimeout("slow"), "provider_error", True),
+        (ValueError("not json"), "invalid_provider_response", False),
+    ],
+)
+async def test_transport_and_body_failures_are_job_errors(error, code, retryable) -> None:
+    with pytest.raises(JobExecutionError) as exc:
+        await executor(BrokenApi(error)).execute(gateway_job())
+    assert (exc.value.code, exc.value.retryable) == (code, retryable)
+
+
+async def test_stream_transport_failure_is_retryable() -> None:
+    with pytest.raises(JobExecutionError) as exc:
+        await executor(BrokenApi(httpx.ConnectError("refused"))).execute_stream(gateway_job(stream=True), Sink())
+    assert (exc.value.code, exc.value.retryable) == ("provider_error", True)
+
+
+async def test_cancel_aborts_the_inflight_request() -> None:
+    started = asyncio.Event()
+
+    class SlowApi(FakeApi):
+        async def chat(self, payload):
+            started.set()
+            await asyncio.sleep(60)
+
+    e = executor(SlowApi())
+    job = asyncio.create_task(e.execute(gateway_job()))
+    await started.wait()
+    await e.cancel("j1")
+    with pytest.raises(asyncio.CancelledError):
+        await job
+    assert e._inflight == {}

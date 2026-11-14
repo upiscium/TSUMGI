@@ -42,11 +42,11 @@ checks the run config against the deployment and refuses on any mismatch. It che
 | `run_config` | absolute path of the prepared run config |
 | `home`, `data_dir` | `HOME` and `STRATA_DATA_DIR` of the Strata install. Engines, packs and logs live there, so the Worker user must be able to write them |
 | `ready_dir` | private directory for the ready file. The default is the Worker unit's `RuntimeDirectory`, `/run/astrumweaver-worker` |
-| `base_url` | loopback endpoint (default `http://127.0.0.1:8080`) |
+| `base_url` | `http://127.0.0.1:<port>` only (default port 8080); Strata binds IPv4 loopback |
 | `served_model_name` | the run config's `model_name` |
 | `context_tokens` | the run config's `--max-context` |
 | `parallel` | concurrent requests, 1 to 8 (default 1) |
-| `api_key_file` | optional key file. It is passed to Strata as `STRATA_API_KEY`, never on argv, and sent as a Bearer token |
+| `api_key_file` | optional key file, read once per runtime. It is passed to Strata as `STRATA_API_KEY`, never on argv, and sent as a Bearer token |
 | `shutdown_timeout_seconds` | drain time Strata gives running requests on stop, 0 to 300 (default 30) |
 | `enable_thinking`, `tools_enabled` | same meaning as for FreeToken |
 
@@ -77,13 +77,19 @@ Strata has no separate input-only limit. A Strata serving contract therefore dec
 (`validate_serving_contract`). The Gateway still caps `max_tokens` at `output_tokens` before a request
 reaches the Worker.
 
-Other Strata errors are mapped as follows:
+Other Strata errors are mapped as follows. An `error` event inside an SSE stream keeps its meaning:
+`invalid_request_error` counts as 400, `model_busy` as 409, anything else as 500.
 
 | Strata response | Mapped to |
 | --- | --- |
-| 409 (model busy) | retryable `provider_busy` |
+| 408, 409 (model busy), 429 | retryable `provider_busy` |
+| 401, 403, 404 (key or route mismatch, a deployment fault) | `provider_error`, not retryable |
 | any other 4xx | `invalid_request` |
-| 5xx | retryable `provider_error` |
+| 5xx, or Strata unreachable | retryable `provider_error` |
+| a response body that is not valid JSON | `invalid_provider_response` |
+
+Cancelling a Job closes the HTTP request. Strata may still finish that answer, so with `parallel: 1` the
+next request can briefly get `provider_busy`.
 
 ## Models
 
