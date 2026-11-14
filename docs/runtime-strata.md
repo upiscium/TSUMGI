@@ -91,6 +91,15 @@ Other Strata errors are mapped as follows. An `error` event inside an SSE stream
 Cancelling a Job closes the HTTP request. Strata may still finish that answer, so with `parallel: 1` the
 next request can briefly get `provider_busy`.
 
+## Tool-call booleans
+
+Strata 0.2.13 (`serve/frontend.py`, `coerce_value`) returns a boolean argument that the model wrote as
+Python `True`/`False` as the string `"True"`/`"False"`. In BFCL simple, 37 of the 46 tasks that have a
+boolean parameter were affected; integers, arrays and other types were not. The executor converts such a
+string back to a JSON boolean when the request's tool schema declares that parameter `boolean`. It does
+this for full responses, and for streamed tool calls whose arguments arrive as one complete JSON object.
+Arguments streamed in fragments pass through unchanged.
+
 ## Models
 
 Qwen3.6-35B-A3B needs Unsloth's GGUF **with the MTP layer** (`unsloth/Qwen3.6-35B-A3B-MTP-GGUF`). The
