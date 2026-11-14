@@ -321,6 +321,10 @@ def require_executor_serving_features(
                 "executor does not support advertised serving features for "
                 f"{contract.capability}: " + ", ".join(sorted(missing))
             )
+        # Optional: an executor that enforces limits itself checks it can honor them.
+        validate = getattr(executor, "validate_serving_contract", None)
+        if callable(validate):
+            validate(contract)
 
 
 def load_executor(specifier: str, config: Mapping[str, Any] | None = None) -> JobExecutor:

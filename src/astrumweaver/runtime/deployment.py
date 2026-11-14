@@ -31,6 +31,7 @@ from .providers import (
     FREETOKEN_PROVIDER_ID,
     LLAMA_CPP_PROVIDER_ID,
     OLLAMA_PROVIDER_ID,
+    STRATA_PROVIDER_ID,
     VLLM_PROVIDER_ID,
     ExLlamaV3Provider,
     ExLlamaV3ProviderConfig,
@@ -40,6 +41,8 @@ from .providers import (
     LlamaCppProviderConfig,
     OllamaProvider,
     OllamaProviderConfig,
+    StrataProvider,
+    StrataProviderConfig,
     VllmProvider,
     VllmProviderConfig,
 )
@@ -257,6 +260,7 @@ _PROVIDER_TYPES: Mapping[
         ExLlamaV3Provider,
         ExLlamaV3ProviderConfig,
     ),
+    STRATA_PROVIDER_ID: (StrataProvider, StrataProviderConfig),
 }
 
 

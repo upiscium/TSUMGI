@@ -27,10 +27,12 @@ CHAT_CATALOG_SCHEMA = "chat-gateway-catalog-v1"
 CHAT_JOB_SCHEMA = "chat-job-v1"
 LLAMA_CPP_CHAT_ADAPTER = "llama-cpp-chat-v1"
 FREETOKEN_CHAT_ADAPTER = "freetoken-chat-v1"
+STRATA_CHAT_ADAPTER = "strata-chat-v1"
 # Each reviewed chat adapter executes only on the runtime provider it was written for.
 _CHAT_ADAPTER_PROVIDERS = {
     LLAMA_CPP_CHAT_ADAPTER: "llama-cpp",
     FREETOKEN_CHAT_ADAPTER: "freetoken",
+    STRATA_CHAT_ADAPTER: "strata",
 }
 CHAT_OPERATION_SCHEMA = "openai-chat-completions-v1"
 
@@ -1174,6 +1176,7 @@ __all__ = [
     "CHAT_JOB_SCHEMA",
     "CHAT_OPERATION_SCHEMA",
     "FREETOKEN_CHAT_ADAPTER",
+    "STRATA_CHAT_ADAPTER",
     "LLAMA_CPP_CHAT_ADAPTER",
     "ChatGatewayError",
     "ChatGatewayProfile",
