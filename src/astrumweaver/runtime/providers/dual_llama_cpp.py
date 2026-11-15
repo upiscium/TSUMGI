@@ -139,6 +139,9 @@ class DualLlamaCppProviderConfig:
             if not isinstance(value, LlamaCppProviderConfig):
                 raise TypeError(f"{attr} must be LlamaCppProviderConfig")
             object.__setattr__(self, attr, value)
+            # The dual bundle identity and VRAM reservation do not cover KV cache types.
+            if value.cache_type_k is not None or value.cache_type_v is not None:
+                raise ValueError(f"{attr} must not set KV cache types in a dual runtime")
         if type(self.required_total_vram_mb) is not int or self.required_total_vram_mb <= 0:
             raise ValueError("combined VRAM reservation must be positive")
         emb = self.embedding_provider

@@ -2260,10 +2260,11 @@ def test_kv_cache_types_are_passed_only_when_set() -> None:
     assert quant[quant.index("--cache-type-v") + 1] == "q8_0"
 
 
+@pytest.mark.parametrize("field", ["cache_type_k", "cache_type_v"])
 @pytest.mark.parametrize("value", ["q8", "Q8_0", "", "fp8"])
-def test_kv_cache_type_rejects_unknown_values(value) -> None:
-    with pytest.raises(ValueError, match="cache_type_k"):
-        LlamaCppProviderConfig(cache_type_k=value)
+def test_kv_cache_type_rejects_unknown_values(field, value) -> None:
+    with pytest.raises(ValueError, match=field):
+        LlamaCppProviderConfig(**{field: value})
 
 
 def test_kv_cache_types_flow_through_setup_and_reject_tampering() -> None:
@@ -2292,6 +2293,16 @@ def test_kv_cache_types_flow_through_setup_and_reject_tampering() -> None:
     )
     with pytest.raises(ValueError, match="cache_type_v"):
         provider.create_runtime(ctx, tampered)
+
+    # A manifest reviewed before the cache types were set must be reviewed again.
+    stale = type(intent)(
+        provider_id=intent.provider_id, package_references=intent.package_references,
+        configuration={k: v for k, v in intent.configuration.items() if not k.startswith("cache_type_")},
+        model_preparation=intent.model_preparation, model_ref=intent.model_ref,
+        requires_privilege=intent.requires_privilege, metadata=intent.metadata,
+    )
+    with pytest.raises(ValueError, match="cache_type_k"):
+        provider.create_runtime(ctx, stale)
 
 
 def test_default_setup_intent_has_no_kv_cache_keys() -> None:
