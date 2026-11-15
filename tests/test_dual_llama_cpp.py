@@ -806,3 +806,12 @@ async def test_native_http_client_bearer_header_is_scoped_to_private_child():
     assert await api.health() is True
     assert observed==["Bearer opaque-test-token"]
     await api.close()
+
+
+def test_dual_children_cannot_set_kv_cache_types(tmp_path):
+    provider, _ = setup_pair(tmp_path)
+    from dataclasses import replace
+    for attr in ("embedding_provider", "decision_provider"):
+        child = replace(getattr(provider.config, attr), cache_type_v="q8_0")
+        with pytest.raises(ValueError, match="KV cache types"):
+            replace(provider.config, **{attr: child})
