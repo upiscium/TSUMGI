@@ -69,6 +69,9 @@ LLAMA_CPP_QWEN38_RUNTIME = LLAMA_CPP_QWEN38_PROFILE + "/bin/llama-server"
 LLAMA_CPP_QWEN38_PACKAGE = "qwen38-llama-cpp"
 LLAMA_CPP_STANDARD_RUNTIME = "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server"
 LLAMA_CPP_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
+LLAMA_CPP_CACHE_TYPES = frozenset(
+    {"f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"}
+)
 LLAMA_CPP_EMBEDDING_CAPABILITIES = frozenset({"text.embed"})
 LLAMA_CPP_DECISION_CAPABILITIES = frozenset({"decision.system_one"})
 
@@ -113,6 +116,10 @@ class LlamaCppProviderConfig:
     decision: bool = False
     # Only "upstream" remains; kept so existing manifests that name it still load.
     runtime_flavor: str = "upstream"
+    # KV cache element types (llama.cpp --cache-type-k/-v); None keeps f16.
+    # A quantized V cache needs flash attention in the selected runtime.
+    cache_type_k: str | None = None
+    cache_type_v: str | None = None
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -138,6 +145,10 @@ class LlamaCppProviderConfig:
         )
         if self.startup_timeout_seconds <= 0:
             raise ValueError("startup_timeout_seconds must be positive")
+        for name in ("cache_type_k", "cache_type_v"):
+            value = getattr(self, name)
+            if value is not None and value not in LLAMA_CPP_CACHE_TYPES:
+                raise ValueError(f"{name} must be one of {sorted(LLAMA_CPP_CACHE_TYPES)}")
         if self.request_timeout_seconds <= 0:
             raise ValueError("request_timeout_seconds must be positive")
         if self.context_size < 0:
@@ -538,6 +549,8 @@ class LlamaCppSubprocessController:
         pooling: str | None = None,
         api_key_file: str | None = None,
         unix_socket_path: str | None = None,
+        cache_type_k: str | None = None,
+        cache_type_v: str | None = None,
     ) -> None:
         if api_key_file is not None and not Path(api_key_file).is_absolute():
             raise ValueError("llama.cpp API-key file must be absolute")
@@ -562,6 +575,8 @@ class LlamaCppSubprocessController:
         self.chat_template_file = chat_template_file
         self.embeddings = embeddings
         self.pooling = pooling
+        self.cache_type_k = cache_type_k
+        self.cache_type_v = cache_type_v
         self._process: asyncio.subprocess.Process | None = None
 
     @property
@@ -597,6 +612,10 @@ class LlamaCppSubprocessController:
             "--fit",
             "on" if self.launch_policy.fit else "off",
         ]
+        if self.cache_type_k is not None:
+            args.extend(["--cache-type-k", self.cache_type_k])
+        if self.cache_type_v is not None:
+            args.extend(["--cache-type-v", self.cache_type_v])
         if self.no_webui:
             args.append("--no-webui")
         if self.offline:
@@ -2059,6 +2078,11 @@ class LlamaCppProvider(RuntimeProvider):
                 "model_ref": context.demand.model.model_ref,
                 "model_alias": "astrumweaver",
                 "context_size": self.config.context_size,
+                **{
+                    name: getattr(self.config, name)
+                    for name in ("cache_type_k", "cache_type_v")
+                    if getattr(self.config, name) is not None
+                },
                 "gpu_uuids": list(context.worker.gpu_uuids),
                 "gpu_layers": policy.gpu_layers,
                 "split_mode": policy.split_mode.value,
@@ -2114,6 +2138,9 @@ class LlamaCppProvider(RuntimeProvider):
         cfg = dict(setup.configuration)
         if cfg.get("runtime_flavor", "upstream") != self.config.runtime_flavor:
             raise ValueError("runtime flavor does not match reviewed setup")
+        for name in ("cache_type_k", "cache_type_v"):
+            if cfg.get(name) != getattr(self.config, name):
+                raise ValueError(f"{name} does not match reviewed setup")
         if (
             cfg.get("executable") == LLAMA_CPP_QWEN38_RUNTIME
             and self.config.executable != LLAMA_CPP_QWEN38_RUNTIME
@@ -2233,6 +2260,12 @@ class LlamaCppProvider(RuntimeProvider):
             chat_template_file=chat_template_file,
             embeddings=embeddings,
             pooling=pooling,
+            # Only passed when set, so custom process factories keep working.
+            **{
+                name: getattr(self.config, name)
+                for name in ("cache_type_k", "cache_type_v")
+                if getattr(self.config, name) is not None
+            },
         )
 
         return LlamaCppManagedRuntime(

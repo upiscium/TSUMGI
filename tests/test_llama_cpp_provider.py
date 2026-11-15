@@ -2239,3 +2239,61 @@ async def test_managed_decision_runtime_requires_native_decision_model() -> None
         {"decision.system_one"}
     )
     await runtime.stop()
+
+def _kv_policy() -> LlamaCppLaunchPolicy:
+    return LlamaCppLaunchPolicy(
+        gpu_layers="all", split_mode=LlamaCppSplitMode.NONE, fit=False, tensor_split=None,
+        fit_target_mb=None, main_gpu=0, cpu_moe=False, n_cpu_moe=None, n_cpu_ffn=None,
+    )
+
+
+def test_kv_cache_types_are_passed_only_when_set() -> None:
+    base = dict(
+        executable="llama-server", base_url="http://127.0.0.1:8080", model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver", gpu_uuids=("GPU-one",), context_size=196608,
+        launch_policy=_kv_policy(), offline=True, no_webui=True,
+    )
+    plain = LlamaCppSubprocessController(**base).command()
+    assert "--cache-type-k" not in plain and "--cache-type-v" not in plain
+    quant = LlamaCppSubprocessController(**base, cache_type_k="q8_0", cache_type_v="q8_0").command()
+    assert quant[quant.index("--cache-type-k") + 1] == "q8_0"
+    assert quant[quant.index("--cache-type-v") + 1] == "q8_0"
+
+
+@pytest.mark.parametrize("value", ["q8", "Q8_0", "", "fp8"])
+def test_kv_cache_type_rejects_unknown_values(value) -> None:
+    with pytest.raises(ValueError, match="cache_type_k"):
+        LlamaCppProviderConfig(cache_type_k=value)
+
+
+def test_kv_cache_types_flow_through_setup_and_reject_tampering() -> None:
+    captured: dict = {}
+
+    def process_factory(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(context_size=196608, cache_type_k="q8_0", cache_type_v="q8_0"),
+        api_factory=lambda base_url: object(),
+        process_factory=process_factory,
+    )
+    ctx = context()
+    intent = provider.setup_intent(ctx)
+    assert intent.configuration["cache_type_k"] == "q8_0"
+    provider.create_runtime(ctx, intent)
+    assert (captured["cache_type_k"], captured["cache_type_v"]) == ("q8_0", "q8_0")
+
+    tampered = type(intent)(
+        provider_id=intent.provider_id, package_references=intent.package_references,
+        configuration={**intent.configuration, "cache_type_v": "f16"},
+        model_preparation=intent.model_preparation, model_ref=intent.model_ref,
+        requires_privilege=intent.requires_privilege, metadata=intent.metadata,
+    )
+    with pytest.raises(ValueError, match="cache_type_v"):
+        provider.create_runtime(ctx, tampered)
+
+
+def test_default_setup_intent_has_no_kv_cache_keys() -> None:
+    intent = LlamaCppProvider().setup_intent(context())
+    assert "cache_type_k" not in intent.configuration and "cache_type_v" not in intent.configuration
