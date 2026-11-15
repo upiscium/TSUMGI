@@ -1470,3 +1470,43 @@ async def test_opencode_text_parts_do_not_bypass_tool_history_admission(invalid_
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_request"
     assert repository.list_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_waiting_stream_sends_sse_keepalive_comments():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(timeout=0.2)
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository,
+        ChatProfileCatalog((gateway,)),
+        poll_interval_seconds=0.005,
+        stream_keepalive_seconds=0.03,
+    )
+    iterator = await service.stream(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "long prompt read"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    )
+    frames = [frame async for frame in iterator]
+
+    keepalives = [frame for frame in frames if frame == ": keep-alive\n\n"]
+    assert len(keepalives) >= 3
+    # Comments only: no data before the terminal error, and the error is last.
+    assert all(frame.startswith(":") for frame in frames[:-1])
+    assert json.loads(frames[-1][len("data: "):].strip())["error"]["code"] == "gateway_timeout"
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), True])
+def test_stream_keepalive_must_be_positive(value):
+    gateway, _ = serving_values()
+    with pytest.raises(ValueError, match="stream_keepalive_seconds"):
+        ChatGatewayService(
+            InMemoryControlRepository(),
+            ChatProfileCatalog((gateway,)),
+            stream_keepalive_seconds=value,
+        )
