@@ -159,6 +159,7 @@ class ChatGatewayService:
         poll_interval_seconds: float = 0.05,
         max_pending_admissions: int = 8,
         max_postadmit_cancellations: int = 8,
+        stream_keepalive_seconds: float = 15.0,
     ) -> None:
         if type(max_pending_admissions) is not int or max_pending_admissions < 1:
             raise ValueError("max_pending_admissions must be a positive integer")
@@ -174,6 +175,16 @@ class ChatGatewayService:
         self.repository = repository
         self.catalog = catalog
         self.poll_interval_seconds = float(poll_interval_seconds)
+        if (
+            isinstance(stream_keepalive_seconds, bool)
+            or not isinstance(stream_keepalive_seconds, (int, float))
+            or not math.isfinite(float(stream_keepalive_seconds))
+            or stream_keepalive_seconds <= 0
+        ):
+            raise ValueError("stream_keepalive_seconds must be finite and positive")
+        # An SSE comment sent while a stream waits (long prompt reads), so idle
+        # timeouts in front of the Gateway do not cut a healthy stream.
+        self.stream_keepalive_seconds = float(stream_keepalive_seconds)
         # A nonblocking per-service gate: reserve before starting a thread.
         # Cancellation transfers its permit to late cleanup until completion.
         self.max_pending_admissions = max_pending_admissions
@@ -621,6 +632,7 @@ class ChatGatewayService:
         async def generate() -> AsyncIterator[str]:
             sequence = 0
             terminal = False
+            last_sent = loop.time()
             try:
                 while True:
                     if await request.is_disconnected():
@@ -657,6 +669,7 @@ class ChatGatewayService:
                             return
                         sequence = event.sequence
                         yield _stream_data(chunk)
+                        last_sent = loop.time()
 
                     current = await asyncio.to_thread(
                         self.repository.get_job,
@@ -720,6 +733,9 @@ class ChatGatewayService:
                             "chat stream exceeded the bounded gateway deadline",
                         )
                         return
+                    if loop.time() - last_sent >= self.stream_keepalive_seconds:
+                        yield ": keep-alive\n\n"
+                        last_sent = loop.time()
                     await asyncio.sleep(
                         min(self.poll_interval_seconds, remaining)
                     )
@@ -766,6 +782,7 @@ def create_chat_router(
     poll_interval_seconds: float = 0.05,
     max_pending_admissions: int = 8,
     max_postadmit_cancellations: int = 8,
+    stream_keepalive_seconds: float = 15.0,
 ) -> APIRouter:
     mode = ClientAuthMode(client_auth)
     if mode is ClientAuthMode.BEARER and not client_token:
@@ -777,6 +794,7 @@ def create_chat_router(
         poll_interval_seconds=poll_interval_seconds,
         max_pending_admissions=max_pending_admissions,
         max_postadmit_cancellations=max_postadmit_cancellations,
+        stream_keepalive_seconds=stream_keepalive_seconds,
     )
     router = APIRouter()
 
