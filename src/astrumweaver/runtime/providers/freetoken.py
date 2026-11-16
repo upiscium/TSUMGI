@@ -33,6 +33,7 @@ from ...gateway.chat import (
     ChatGatewayError,
     validate_chat_stream_chunk,
 )
+from ...serving import ServingContract
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -198,6 +199,7 @@ class FreeTokenProviderConfig:
                 isinstance(value, bool) or not isinstance(value, int) or value <= 0
             ):
                 raise ValueError(f"{name} must be a positive integer when set")
+        _check_prefill_within_seq_len(self.max_seq_len, self.max_prefill_tokens)
         if type(self.tools_enabled) is not bool:
             raise TypeError("tools_enabled must be a boolean")
         if self.enable_thinking is not None and type(self.enable_thinking) is not bool:
@@ -216,6 +218,17 @@ class FreeTokenProviderConfig:
         )
 
 
+def _check_prefill_within_seq_len(
+    max_seq_len: int | None, max_prefill_tokens: int | None
+) -> None:
+    if (
+        max_seq_len is not None
+        and max_prefill_tokens is not None
+        and max_prefill_tokens > max_seq_len
+    ):
+        raise ValueError("max_prefill_tokens must not exceed max_seq_len")
+
+
 @dataclass(frozen=True, slots=True)
 class FreeTokenLaunchPolicy:
     gpu_uuid: str
@@ -230,6 +243,9 @@ class FreeTokenLaunchPolicy:
     attention_backend: str | None = None
     max_seq_len: int | None = None
     max_prefill_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        _check_prefill_within_seq_len(self.max_seq_len, self.max_prefill_tokens)
 
 
 def _launch_policy(
@@ -587,10 +603,13 @@ class FreeTokenExecutor(JobExecutor):
         residency_metadata: Mapping[str, Any],
         tools_enabled: bool = True,
         enable_thinking: bool | None = None,
+        max_seq_len: int | None = None,
     ) -> None:
         self.api = api
         self.tools_enabled = tools_enabled
         self.enable_thinking = enable_thinking
+        # The server's --max-seq-len; None means its model default.
+        self.max_seq_len = max_seq_len
         # Serving features this executor honors; checked against the serving
         # manifest before the Worker advertises a deployment.
         self.serving_features = {
@@ -603,6 +622,17 @@ class FreeTokenExecutor(JobExecutor):
         )
         self.residency_metadata = dict(residency_metadata)
         self._inflight: dict[str, asyncio.Task[Any]] = {}
+
+    def validate_serving_contract(self, contract: ServingContract) -> None:
+        """A chat contract may not promise more tokens than --max-seq-len."""
+        if contract.capability != "llm.chat" or self.max_seq_len is None:
+            return
+        total = contract.limits.get("total_tokens")
+        if total is not None and total > self.max_seq_len:
+            raise RuntimeError(
+                "FreeToken serving contract total_tokens exceeds the server "
+                f"max_seq_len ({self.max_seq_len})"
+            )
 
     def _payload(self, job: JobRequest) -> dict[str, Any]:
         payload = dict(job.payload)
@@ -1014,6 +1044,7 @@ class FreeTokenManagedRuntime(ManagedRuntime):
             },
             tools_enabled=tools_enabled,
             enable_thinking=enable_thinking,
+            max_seq_len=launch_policy.max_seq_len,
         )
 
     async def _server_reachable(self) -> bool:
