@@ -43,6 +43,7 @@ from ...gateway.decision import (
     DecisionGatewayError,
     validate_decision_provider_response,
 )
+from ...serving import ServingContract
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -727,8 +728,11 @@ class LlamaCppExecutor(JobExecutor):
         embeddings: bool = False,
         pooling: str | None = None,
         decision: bool = False,
+        context_size: int | None = None,
     ) -> None:
         self.api = api
+        # The server's --ctx-size; None or 0 means it is not known here.
+        self.context_size = context_size
         self.model_ref = _nonblank(model_ref, "model_ref")
         self.model_alias = _nonblank(model_alias, "model_alias")
         self.residency_metadata = dict(residency_metadata)
@@ -798,6 +802,18 @@ class LlamaCppExecutor(JobExecutor):
             }
         )
         self._inflight: dict[str, asyncio.Task[Any]] = {}
+
+    def validate_serving_contract(self, contract: ServingContract) -> None:
+        """The server runs one slot of --ctx-size tokens, so a chat contract may
+        not promise a larger total."""
+        if contract.capability != "llm.chat" or not self.context_size:
+            return
+        total = contract.limits.get("total_tokens")
+        if total is not None and total > self.context_size:
+            raise RuntimeError(
+                "llama.cpp serving contract total_tokens exceeds the server "
+                f"context ({self.context_size})"
+            )
 
     def _payload(self, job: JobRequest) -> dict[str, Any]:
         payload = dict(job.payload)
@@ -1619,6 +1635,7 @@ class LlamaCppManagedRuntime(ManagedRuntime):
         embeddings: bool = False,
         pooling: str | None = None,
         decision: bool = False,
+        context_size: int | None = None,
     ) -> None:
         self.api = api
         self.process = process
@@ -1637,6 +1654,7 @@ class LlamaCppManagedRuntime(ManagedRuntime):
             embeddings=embeddings,
             pooling=pooling,
             decision=decision,
+            context_size=context_size,
             residency_metadata={
                 "residency_policy": context.demand.residency_policy.value,
                 "gpu_topology": context.demand.gpu_topology.value,
@@ -2243,6 +2261,7 @@ class LlamaCppProvider(RuntimeProvider):
             ),
         )
 
+        context_size = int(cfg.get("context_size", self.config.context_size))
         api = self._api_factory(base_url)
         process = self._process_factory(
             executable=executable,
@@ -2250,9 +2269,7 @@ class LlamaCppProvider(RuntimeProvider):
             model_ref=model_ref,
             model_alias=model_alias,
             gpu_uuids=context.worker.gpu_uuids,
-            context_size=int(
-                cfg.get("context_size", self.config.context_size)
-            ),
+            context_size=context_size,
             launch_policy=policy,
             offline=bool(cfg.get("offline", self.config.offline)),
             no_webui=bool(cfg.get("no_webui", self.config.no_webui)),
@@ -2280,4 +2297,5 @@ class LlamaCppProvider(RuntimeProvider):
             embeddings=embeddings,
             pooling=pooling,
             decision=decision,
+            context_size=context_size,
         )

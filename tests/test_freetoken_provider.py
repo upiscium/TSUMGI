@@ -1490,3 +1490,44 @@ async def test_enable_thinking_is_sent_only_when_configured(thinking) -> None:
     else:
         assert api.chat_payloads[0]["chat_template_kwargs"] == {"enable_thinking": thinking}
         assert api.counted[0]["chat_template_kwargs"] == {"enable_thinking": thinking}
+
+
+def test_prefill_chunk_must_fit_the_sequence_length() -> None:
+    FreeTokenProviderConfig(max_seq_len=8192, max_prefill_tokens=8192)
+    FreeTokenProviderConfig(max_prefill_tokens=65536)  # model default length
+    with pytest.raises(ValueError, match="max_prefill_tokens must not exceed max_seq_len"):
+        FreeTokenProviderConfig(max_seq_len=8192, max_prefill_tokens=16384)
+    with pytest.raises(ValueError, match="max_prefill_tokens must not exceed max_seq_len"):
+        replace(launch_policy(), max_seq_len=8192, max_prefill_tokens=16384)
+
+
+def test_chat_contract_must_fit_max_seq_len() -> None:
+    from astrumweaver.serving import ServingContract
+
+    def contract(total_tokens: int) -> ServingContract:
+        return ServingContract(
+            deployment_revision="sha256:" + "0" * 64,
+            capability="llm.chat",
+            operation_schema="openai-chat-completions-v1",
+            validation_evidence_sha256="sha256:" + "1" * 64,
+            limits={"input_tokens": total_tokens - 2048, "output_tokens": 2048, "total_tokens": total_tokens},
+        )
+
+    runtime = FreeTokenManagedRuntime(
+        api=FakeApi(),
+        process=FakeProcess(FakeApi()),
+        context=context(),
+        model_ref="/models/qwen.gguf",
+        served_model_name="qwen3.6-35b-a3b",
+        startup_timeout_seconds=1.0,
+        launch_policy=replace(launch_policy(), max_seq_len=12288),
+    )
+    runtime.executor().validate_serving_contract(contract(12288))
+    with pytest.raises(RuntimeError, match=r"exceeds the server max_seq_len \(12288\)"):
+        runtime.executor().validate_serving_contract(contract(16384))
+    # Without an override the model's own length applies; nothing to compare.
+    unbounded = FreeTokenExecutor(
+        api=FakeApi(), model_ref="/models/qwen.gguf",
+        served_model_name="qwen3.6-35b-a3b", residency_metadata={},
+    )
+    unbounded.validate_serving_contract(contract(262144))

@@ -2308,3 +2308,45 @@ def test_kv_cache_types_flow_through_setup_and_reject_tampering() -> None:
 def test_default_setup_intent_has_no_kv_cache_keys() -> None:
     intent = LlamaCppProvider().setup_intent(context())
     assert "cache_type_k" not in intent.configuration and "cache_type_v" not in intent.configuration
+
+
+def chat_contract(total_tokens: int, capability: str = "llm.chat"):
+    from astrumweaver.serving import ServingContract
+
+    return ServingContract(
+        deployment_revision="sha256:" + "0" * 64,
+        capability=capability,
+        operation_schema="openai-chat-completions-v1",
+        validation_evidence_sha256="sha256:" + "1" * 64,
+        limits={"input_tokens": total_tokens - 2048, "output_tokens": 2048, "total_tokens": total_tokens},
+    )
+
+
+def test_chat_contract_must_fit_the_server_context() -> None:
+    def make(context_size):
+        return LlamaCppExecutor(
+            api=FakeApi(), model_ref="/models/qwen.gguf", model_alias="astrumweaver",
+            residency_metadata={}, tools_enabled=True, context_size=context_size,
+        )
+
+    make(196608).validate_serving_contract(chat_contract(196608))
+    make(196608).validate_serving_contract(chat_contract(65536))
+    with pytest.raises(RuntimeError, match=r"exceeds the server context \(65536\)"):
+        make(65536).validate_serving_contract(chat_contract(196608))
+    # Unknown (None) or model-default (0) context: nothing to compare against.
+    make(None).validate_serving_contract(chat_contract(196608))
+    make(0).validate_serving_contract(chat_contract(196608))
+    # Only chat contracts carry a token budget against --ctx-size.
+    make(4096).validate_serving_contract(chat_contract(196608, capability="text.generate"))
+
+
+def test_provider_passes_context_size_to_the_executor() -> None:
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(context_size=12288),
+        api_factory=lambda base_url: object(),
+        process_factory=lambda **kwargs: object(),
+    )
+    ctx = context()
+    runtime = provider.create_runtime(ctx, provider.setup_intent(ctx))
+    with pytest.raises(RuntimeError, match="exceeds the server context"):
+        runtime.executor().validate_serving_contract(chat_contract(16384))
