@@ -95,6 +95,14 @@ def _require_client(
         )
 
 
+class _PreStreamFailure(ChatGatewayError):
+    """The Job ended before any SSE byte was produced.
+
+    The route answers it with an ordinary JSON error and status, so clients
+    can react (OpenCode compacts only on an HTTP context-overflow error).
+    """
+
+
 class _OwnedChatStream:
     """Durable Job owner that also works before the first SSE iteration."""
 
@@ -109,17 +117,33 @@ class _OwnedChatStream:
         self._cancel = cancel
         self._closed = False
         self._terminal_seen = False
+        self._prefetched: str | None = None
 
     def __aiter__(self):
         return self
 
+    async def prefetch(self) -> None:
+        """Read the first frame before response headers are sent.
+
+        Raises ChatGatewayError when the Job failed before any frame, and
+        StopAsyncIteration when the stream ended without one.
+        """
+        self._prefetched = await self.__anext__()
+
     async def __anext__(self) -> str:
         if self._closed:
             raise StopAsyncIteration
+        if self._prefetched is not None:
+            value, self._prefetched = self._prefetched, None
+            return value
         try:
             value = await anext(self._iterator)
         except StopAsyncIteration:
             # Natural exhaustion is not an abandoned response.
+            self._terminal_seen = True
+            raise
+        except _PreStreamFailure:
+            # The generator saw the terminal Job; nothing is left to cancel.
             self._terminal_seen = True
             raise
         if value == "data: [DONE]\n\n":
@@ -632,6 +656,7 @@ class ChatGatewayService:
         async def generate() -> AsyncIterator[str]:
             sequence = 0
             terminal = False
+            started = False
             last_sent = loop.time()
             try:
                 while True:
@@ -668,6 +693,7 @@ class ChatGatewayService:
                             )
                             return
                         sequence = event.sequence
+                        started = True
                         yield _stream_data(chunk)
                         last_sent = loop.time()
 
@@ -692,6 +718,15 @@ class ChatGatewayService:
                             terminal = True
                             yield "data: [DONE]\n\n"
                             return
+                        if not started:
+                            terminal = True
+                            try:
+                                self._terminal(current, profile_id=profile.profile_id)
+                            except ChatGatewayError as exc:
+                                raise _PreStreamFailure(
+                                    exc.code, str(exc), status_code=exc.status_code
+                                ) from exc
+                            raise RuntimeError("terminal Job neither failed nor was cancelled")
                         if current.status is JobStatus.CANCELLED:
                             terminal = True
                             yield _stream_error(
@@ -734,6 +769,9 @@ class ChatGatewayService:
                         )
                         return
                     if loop.time() - last_sent >= self.stream_keepalive_seconds:
+                        # Response headers go out with the first frame, so
+                        # a keep-alive also commits this stream to SSE.
+                        started = True
                         yield ": keep-alive\n\n"
                         last_sent = loop.time()
                     await asyncio.sleep(
@@ -890,6 +928,18 @@ def create_chat_router(
                     value,
                     request_size_bytes=len(raw),
                 )
+                try:
+                    await iterator.prefetch()
+                except StopAsyncIteration:
+                    await iterator.aclose()
+                    return _error(
+                        499,
+                        code="client_disconnected",
+                        message="chat client disconnected",
+                    )
+                except BaseException:
+                    await iterator.aclose()
+                    raise
                 return _OwnedChatStreamingResponse(
                     iterator,
                     media_type="text/event-stream",

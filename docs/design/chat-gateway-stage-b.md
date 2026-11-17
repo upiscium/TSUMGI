@@ -93,6 +93,13 @@ persisted event has been delivered. A terminal failure/cancellation after any
 visible chunk terminates the SSE stream without `[DONE]`; the gateway never
 fabricates success or retries another attempt.
 
+Response headers are sent with the first frame, which is the first chunk or
+the first `: keep-alive` comment. If the Job fails or is cancelled before that,
+the response is an ordinary JSON error with the same status and code as the
+non-streaming path, for example 400 `context_length_exceeded`. OpenCode
+compacts a session only on such an HTTP error. It retries an in-stream error
+and then fails the session.
+
 Client disconnect/cancellation cancels only the owned durable Job. Subsequent
 Worker event publication is fenced by Control.
 
