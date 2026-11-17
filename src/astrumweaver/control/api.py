@@ -189,6 +189,10 @@ def create_app(
                 await task
             except asyncio.CancelledError:
                 pass
+            # Release pooled database connections (PostgreSQL repository).
+            close = getattr(repository, "close", None)
+            if callable(close):
+                await asyncio.to_thread(close)
 
     app = FastAPI(
         title="AstrumWeaver Control API",

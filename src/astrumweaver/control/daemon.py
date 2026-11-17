@@ -84,6 +84,9 @@ def build_app(config_path: str):
             section.get("event_max_total_bytes", 4 * 1024 * 1024)
         ),
         event_max_read=int(section.get("event_max_read", 512)),
+        pool_min_size=int(section.get("db_pool_min_size", 1)),
+        pool_max_size=int(section.get("db_pool_max_size", 10)),
+        pool_timeout_seconds=float(section.get("db_pool_timeout_seconds", 2.0)),
     )
     audio_setup = audio_config.build(repository) if audio_config is not None else None
     audio_input_channel = audio_setup.input_channel if audio_setup is not None else None

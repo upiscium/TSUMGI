@@ -16,6 +16,7 @@ from astrumweaver.control import (
     NoCompatibleDeployment,
     JobSubmission,
     PostgresControlRepository,
+    StorageUnavailable,
     WorkerRegistration,
     WorkerState,
     utc_now,
@@ -508,3 +509,49 @@ def test_postgres_serving_lease_never_extends_past_request_deadline():
         now=now + timedelta(seconds=1),
     )
     assert repo.get_job(job.job_id).lease_expires_at == request.deadline_at
+
+
+def test_postgres_repository_reuses_pooled_connections():
+    """Hot paths borrow one pooled connection instead of reconnecting."""
+    if DATABASE_URL is None:
+        pytest.skip("NOT_VERIFIED: ASTRUMWEAVER_TEST_DATABASE_URL absent")
+    repo = PostgresControlRepository(DATABASE_URL, pool_min_size=1, pool_max_size=1)
+    try:
+        pids = set()
+        for _ in range(3):
+            with repo._connection() as connection:
+                pids.add(connection.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"])
+        assert len(pids) == 1
+        # A server-side termination is noticed and replaced, not handed out.
+        with repo._connection() as connection:
+            pid = connection.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"]
+        import psycopg
+
+        with psycopg.connect(DATABASE_URL, autocommit=True) as admin:
+            admin.execute("SELECT pg_terminate_backend(%s)", (pid,))
+        with repo._connection() as connection:
+            assert connection.execute("SELECT 1 AS one").fetchone()["one"] == 1
+        # After close(), calls still work on per-call connections and no
+        # new pool is created behind the caller's back.
+        repo.close()
+        with repo._connection() as connection:
+            assert connection.execute("SELECT 1 AS one").fetchone()["one"] == 1
+        assert repo._pool is None
+    finally:
+        repo.close()
+
+
+def test_postgres_unreachable_database_fails_within_the_pool_wait():
+    import time
+
+    repo = PostgresControlRepository(
+        "postgresql://nobody@127.0.0.1:1/none?connect_timeout=1",
+        pool_timeout_seconds=1.0,
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(StorageUnavailable):
+            repo.get_job("00000000-0000-4000-8000-000000000000")
+        assert time.monotonic() - started < 3
+    finally:
+        repo.close()
