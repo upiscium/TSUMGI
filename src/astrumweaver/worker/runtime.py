@@ -43,6 +43,7 @@ from ..gpu_mapping import (
     verify_isolated_gpu_access,
 )
 from .client import ClaimedJob, ControlClient, ControlTransportError
+from .event_coalescing import CoalescingJobEventSink
 from .supervision import RuntimeHealthSupervisor, RuntimeUnavailable
 
 
@@ -346,15 +347,35 @@ def load_executor(specifier: str, config: Mapping[str, Any] | None = None) -> Jo
     return executor
 
 
-class _WorkerJobEventSink:
-    def __init__(self, runtime: "WorkerRuntime", claimed: ClaimedJob) -> None:
-        self._runtime = runtime
-        self._claimed = claimed
+async def _execute_stream_coalesced(
+    runtime: "WorkerRuntime",
+    executor: StreamingJobExecutor,
+    request: JobRequest,
+    claimed: ClaimedJob,
+) -> JobResult:
+    """Run a streaming executor with at most one event publish in flight.
 
-    async def emit(self, event: JobEvent) -> None:
-        if not isinstance(event, JobEvent):
-            raise TypeError("streaming executor must emit JobEvent values")
-        await self._runtime._publish_job_event(self._claimed, event)
+    Chunks that arrive while a publish is pending merge into the next event,
+    so delivery keeps up with decode speed. Every queued event is published
+    before the result returns, so the terminal write still follows them.
+    """
+    sink = CoalescingJobEventSink(
+        lambda event: runtime._publish_job_event(claimed, event)
+    )
+    try:
+        try:
+            result = await executor.execute_stream(request, sink)
+        except Exception:
+            # Partial output still reaches Control before the failure is
+            # reported; a publish failure must not mask the executor's error.
+            # Cancellation skips this and drops queued events in aclose().
+            with contextlib.suppress(Exception):
+                await sink.flush()
+            raise
+        await sink.flush()
+        return result
+    finally:
+        await sink.aclose()
 
 
 class WorkerRuntime:
@@ -876,9 +897,8 @@ class WorkerRuntime:
         if is_audio:
             execution_call = self._execute_audio(claimed, executor_request)
         elif isinstance(self.executor, StreamingJobExecutor):
-            execution_call = self.executor.execute_stream(
-                executor_request,
-                _WorkerJobEventSink(self, claimed),
+            execution_call = _execute_stream_coalesced(
+                self, self.executor, executor_request, claimed
             )
         else:
             execution_call = self.executor.execute(executor_request)
