@@ -40,6 +40,7 @@ _log = logging.getLogger(__name__)
 _POSTADMIT_CANCEL_TIMEOUT_SECONDS = 5
 # Poll interval while an admission waits for a busy replica.
 _ADMISSION_RETRY_SECONDS = 0.25
+_WAITABLE_CODES = frozenset({"overloaded", "admission_overloaded"})
 
 
 def load_chat_catalog(path: str) -> ChatProfileCatalog:
@@ -63,7 +64,7 @@ def _error(
     error_type: str = "invalid_request_error",
 ) -> JSONResponse:
     # A busy replica usually frees within seconds; say so to retrying clients.
-    headers = {"Retry-After": "1"} if code == "overloaded" else None
+    headers = {"Retry-After": "1"} if code in _WAITABLE_CODES else None
     return JSONResponse(
         status_code=status_code,
         headers=headers,
@@ -448,7 +449,9 @@ class ChatGatewayService:
                         max_attempts=max_attempts,
                     )
                 except ChatGatewayError as exc:
-                    if exc.code != "overloaded" or loop.time() >= deadline:
+                    # admission_overloaded: this Gateway's own permits are
+                    # busy, often with other waiters' retries. Both clear soon.
+                    if exc.code not in _WAITABLE_CODES or loop.time() >= deadline:
                         raise
                     if not waiting:
                         if self._admission_waiters >= self.max_admission_waiters:

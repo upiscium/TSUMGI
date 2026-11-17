@@ -14,6 +14,7 @@ from astrumweaver.gateway.api import ChatGatewayService, create_chat_router
 from astrumweaver.gateway.chat import ChatProfileCatalog
 
 from test_chat_gateway_api import (
+    _ConnectedRequest,
     CLIENT_TOKEN,
     EPOCH,
     WORKER_TOKEN,
@@ -179,3 +180,29 @@ def test_admission_wait_options_are_validated(options):
         ChatGatewayService(
             InMemoryControlRepository(), ChatProfileCatalog((gateway,)), **options
         )
+
+
+@pytest.mark.asyncio
+async def test_waiter_retries_when_gateway_permits_are_busy():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository,
+        ChatProfileCatalog((gateway,)),
+        poll_interval_seconds=0.005,
+        max_pending_admissions=1,
+        admission_wait_seconds=5,
+    )
+    # Another admission holds the only permit for a moment.
+    service._admissions_in_flight = 1
+
+    async def release_and_serve():
+        await asyncio.sleep(0.3)
+        service._admissions_in_flight = 0
+        await serve_next(repository, "after permit")
+
+    worker = asyncio.create_task(release_and_serve())
+    result = await service.complete(_ConnectedRequest(), dict(REQUEST), request_size_bytes=64)
+    await worker
+    assert result["choices"][0]["message"]["content"] == "after permit"

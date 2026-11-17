@@ -408,6 +408,14 @@ many requests wait at once; the rest get the 429 at once. Waiters are not
 served in strict arrival order. Clients such as OpenCode send a
 title-generation request next to the main request, so on a single-replica
 profile a short wait (for example 30 s) avoids a 429 on every new session.
+A waiting request also retries `admission_overloaded` (this Gateway's own
+`max_pending_admissions` permits), and both 429s carry `Retry-After: 1`.
+
+No response byte is sent while a request waits, and a streaming response
+sends its headers with the first chunk or the first keep-alive. Keep
+`admission_wait_seconds + stream_keepalive_seconds` below the read timeout
+of any proxy in front of the Gateway. The wait does not count against the
+profile's `request_timeout_seconds`, which starts once the Job is admitted.
 
 ```toml
 [chat_gateway]
