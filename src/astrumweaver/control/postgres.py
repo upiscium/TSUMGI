@@ -203,7 +203,7 @@ class PostgresControlRepository:
         event_max_read: int = 512,
         pool_min_size: int = 1,
         pool_max_size: int = 10,
-        pool_timeout_seconds: float = 10.0,
+        pool_timeout_seconds: float = 2.0,
     ) -> None:
         if not database_url:
             raise ValueError("database_url is required")
@@ -238,16 +238,23 @@ class PostgresControlRepository:
         # event, heartbeat and Gateway poll paid it. Calls without an
         # admission deadline borrow a pooled connection instead. Bounded
         # admissions keep a fresh connection with their own connect timeout.
+        # The short wait keeps an unreachable database a fast
+        # StorageUnavailable, well inside the Worker client's 10 s timeout.
         self.pool_min_size = pool_min_size
         self.pool_max_size = pool_max_size
         self.pool_timeout_seconds = float(pool_timeout_seconds)
         self._pool: Any = None
+        self._pool_closed = False
         self._pool_lock = threading.Lock()
 
     def _get_pool(self) -> Any:
         if ConnectionPool is None:
             return None
         with self._pool_lock:
+            if self._pool_closed:
+                # After close(), late calls (for example a maintenance thread
+                # still finishing) use a fresh connection, not a new pool.
+                return None
             if self._pool is None:
                 pool = ConnectionPool(
                     self.database_url,
@@ -269,9 +276,10 @@ class PostgresControlRepository:
             return self._pool
 
     def close(self) -> None:
-        """Close pooled connections. The repository stays usable afterwards."""
+        """Close pooled connections. Later calls connect per call."""
         with self._pool_lock:
             pool, self._pool = self._pool, None
+            self._pool_closed = True
         if pool is not None:
             pool.close()
 
