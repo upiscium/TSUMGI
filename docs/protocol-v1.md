@@ -398,6 +398,31 @@ a permanently blocked database can exhaust all available permits and require
 operator recovery. See [#137](https://github.com/upiscium/TSUMGI/issues/137)
 and the proposed [ADR 0002 PR](https://github.com/upiscium/TSUMGI/pull/139).
 
+When every compatible replica is busy, the Gateway answers
+`429 overloaded` with `Retry-After: 1`. The optional
+`admission_wait_seconds` (default `0`, fail-fast) lets a request wait that
+long for a replica instead. It retries admission every 0.25 s and checks for
+a client disconnect between attempts. The retry is safe because a rejected
+admission creates no Job. `max_admission_waiters` (default `16`) bounds how
+many requests wait at once; the rest get the 429 at once. Waiters are not
+served in strict arrival order. Clients such as OpenCode send a
+title-generation request next to the main request, so on a single-replica
+profile a short wait (for example 30 s) avoids a 429 on every new session.
+A waiting request also retries `admission_overloaded` (this Gateway's own
+`max_pending_admissions` permits), and both 429s carry `Retry-After: 1`.
+
+No response byte is sent while a request waits, and a streaming response
+sends its headers with the first chunk or the first keep-alive. Keep
+`admission_wait_seconds + stream_keepalive_seconds` below the read timeout
+of any proxy in front of the Gateway. The wait does not count against the
+profile's `request_timeout_seconds`, which starts once the Job is admitted.
+
+```toml
+[chat_gateway]
+admission_wait_seconds = 30
+max_admission_waiters = 16
+```
+
 In proposed Stage 2 for [#137](https://github.com/upiscium/TSUMGI/issues/137),
 chat admission also propagates the request's absolute deadline into the
 synchronous repository call and, for real PostgreSQL, enforces bounded
