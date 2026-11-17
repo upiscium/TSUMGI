@@ -8,6 +8,7 @@ let
   pythonEnv = python312.withPackages (_: [
     astrumweaver
     python312Packages.psycopg
+    python312Packages.psycopg-pool
   ]);
 
   # Bind each executable to the interpreter that actually contains psycopg.

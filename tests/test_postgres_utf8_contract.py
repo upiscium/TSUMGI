@@ -62,6 +62,9 @@ def test_migration_preflight_refuses_bad_database_before_any_ddl(monkeypatch):
 def test_control_readiness_refuses_bad_database_before_schema_queries(monkeypatch):
     from astrumweaver.control import postgres as postgres_module
 
+    # The per-call connection contract (no pool).
+    monkeypatch.setattr(postgres_module, "ConnectionPool", None)
+
     connection = EncodingConnection(False, dictionary=True)
     closed = []
     connection.close = lambda: closed.append(True)
@@ -78,6 +81,9 @@ def test_control_readiness_refuses_bad_database_before_schema_queries(monkeypatc
 
 def test_all_control_requests_refuse_unsupported_encoding_not_only_ready(monkeypatch):
     from astrumweaver.control import postgres as postgres_module
+
+    # The per-call connection contract (no pool).
+    monkeypatch.setattr(postgres_module, "ConnectionPool", None)
 
     connection = EncodingConnection(False, dictionary=True)
     closed = []
@@ -104,6 +110,9 @@ def test_all_control_requests_refuse_unsupported_encoding_not_only_ready(monkeyp
 def test_utf8_probe_finishes_implicit_tx_before_explicit_read_committed(monkeypatch):
     """A successful preflight must not preempt the ownership isolation SET."""
     from astrumweaver.control import postgres as postgres_module
+
+    # The per-call connection contract (no pool).
+    monkeypatch.setattr(postgres_module, "ConnectionPool", None)
 
     class TxAwareConnection:
         def __init__(self):
@@ -163,6 +172,9 @@ def test_utf8_probe_finishes_implicit_tx_before_explicit_read_committed(monkeypa
 def test_utf8_probe_transaction_cleanup_error_denies_database_access(monkeypatch):
     from astrumweaver.control import postgres as postgres_module
 
+    # The per-call connection contract (no pool).
+    monkeypatch.setattr(postgres_module, "ConnectionPool", None)
+
     class RollbackFails(EncodingConnection):
         def __init__(self):
             super().__init__(True, dictionary=True)
@@ -183,3 +195,87 @@ def test_utf8_probe_transaction_cleanup_error_denies_database_access(monkeypatch
         PostgresControlRepository("postgresql://test").get_worker("probe")
     assert conn.closed
     assert len(conn.statements) == 1
+
+
+class FakePool:
+    """Stand-in for psycopg_pool.ConnectionPool that hands out one connection."""
+
+    def __init__(self, connection):
+        self.connection = connection
+        self.trace = []
+
+    def getconn(self, timeout=None):
+        self.trace.append("get")
+        return self.connection
+
+    def putconn(self, connection):
+        assert connection is self.connection
+        self.trace.append("put")
+
+
+def _pooled_repo(monkeypatch, connection):
+    from astrumweaver.control import postgres as postgres_module
+
+    pool = FakePool(connection)
+    repo = PostgresControlRepository("postgresql://test")
+    monkeypatch.setattr(repo, "_get_pool", lambda: pool)
+    monkeypatch.setattr(
+        postgres_module, "psycopg",
+        SimpleNamespace(connect=lambda *_a, **_k: pytest.fail("pooled path must not connect")),
+    )
+    return repo, pool
+
+
+def test_pooled_connection_failing_utf8_is_closed_not_reused(monkeypatch):
+    connection = EncodingConnection(False, dictionary=True)
+    closed = []
+    connection.close = lambda: closed.append(True)
+    repo, pool = _pooled_repo(monkeypatch, connection)
+    with pytest.raises(StorageUnavailable, match="UTF8"):
+        repo.get_worker("probe")
+    assert len(connection.statements) == 1
+    assert closed == [True]
+    assert pool.trace == ["get", "put"]
+
+
+def test_pooled_connection_is_probed_per_checkout_and_rolled_back_on_return(monkeypatch):
+    class Reusable(EncodingConnection):
+        def __init__(self):
+            super().__init__(True, dictionary=True)
+            self.events = []
+
+        def rollback(self):
+            self.events.append("rollback")
+
+        def close(self):
+            pytest.fail("a healthy pooled connection is returned, not closed")
+
+    connection = Reusable()
+    repo, pool = _pooled_repo(monkeypatch, connection)
+    for _ in range(2):
+        with repo._connection() as entered:
+            assert entered is connection
+    # Each checkout: UTF8 probe, probe rollback, rollback before return.
+    assert len(connection.statements) == 2
+    assert connection.events == ["rollback"] * 4
+    assert pool.trace == ["get", "put", "get", "put"]
+
+
+def test_bounded_admission_never_borrows_from_the_pool(monkeypatch):
+    from datetime import timedelta
+
+    from astrumweaver.control import postgres as postgres_module
+    from astrumweaver.control.models import utc_now
+
+    repo = PostgresControlRepository("postgresql://test")
+    monkeypatch.setattr(repo, "_get_pool", lambda: pytest.fail("admission used the pool"))
+
+    def connect(*_args, **_kwargs):
+        raise OSError("no server")
+
+    monkeypatch.setattr(postgres_module, "psycopg", SimpleNamespace(
+        connect=connect, conninfo=postgres_module.psycopg.conninfo,
+    ))
+    with pytest.raises(StorageUnavailable):
+        with repo._connection(admission_deadline_at=utc_now() + timedelta(seconds=5)):
+            pass

@@ -4,6 +4,7 @@ let
   pythonEnv = python312.withPackages (_: [
     astrumweaver
     python312Packages.psycopg
+    python312Packages.psycopg-pool
   ]);
   controlCli = callPackage ./control-cli-env.nix { inherit astrumweaver; };
 

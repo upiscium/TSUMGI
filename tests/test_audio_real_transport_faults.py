@@ -409,3 +409,6 @@ def test_real_postgres_commit_ack_lost_after_successful_commit(
                 job_id, worker_id="other", attempt=claimed.attempts,
                 lease_token=claimed.lease_token, runtime_instance_epoch=EPOCH,
             )
+        # Pooled connections stay open by design; close them before the
+        # proxy checks that every proxied connection has ended.
+        fault_repo.close()
