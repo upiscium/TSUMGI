@@ -96,7 +96,9 @@ def _require_client(
 
 
 class _PreStreamFailure(ChatGatewayError):
-    """The Job ended before any SSE byte was produced.
+    """The stream failed before any SSE byte was produced.
+
+    The Job is already terminal, or this stream has requested its cancel.
 
     The route answers it with an ordinary JSON error and status, so clients
     can react (OpenCode compacts only on an HTTP context-overflow error).
@@ -658,6 +660,12 @@ class ChatGatewayService:
             terminal = False
             started = False
             last_sent = loop.time()
+
+            def failure(code: str, message: str, status_code: int) -> str:
+                # Before any frame, the route turns this into a JSON error.
+                if not started:
+                    raise _PreStreamFailure(code, message, status_code=status_code)
+                return _stream_error(code, message)
             try:
                 while True:
                     if await request.is_disconnected():
@@ -673,9 +681,10 @@ class ChatGatewayService:
                     for event in events:
                         if event.kind != "chat.completion.chunk":
                             await self._cancel(job_id)
-                            yield _stream_error(
+                            yield failure(
                                 "invalid_stream_event",
                                 "chat backend emitted an unsupported event",
+                                502,
                             )
                             return
                         try:
@@ -687,9 +696,10 @@ class ChatGatewayService:
                             )
                         except ChatGatewayError:
                             await self._cancel(job_id)
-                            yield _stream_error(
+                            yield failure(
                                 "invalid_provider_response",
                                 "chat backend emitted an invalid stream chunk",
+                                502,
                             )
                             return
                         sequence = event.sequence
@@ -763,9 +773,10 @@ class ChatGatewayService:
                     remaining = stop_at - loop.time()
                     if remaining <= 0:
                         await self._cancel(job_id)
-                        yield _stream_error(
+                        yield failure(
                             "gateway_timeout",
                             "chat stream exceeded the bounded gateway deadline",
+                            504,
                         )
                         return
                     if loop.time() - last_sent >= self.stream_keepalive_seconds:

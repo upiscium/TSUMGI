@@ -1148,7 +1148,7 @@ async def test_streaming_caller_task_cancellation_cancels_owned_job():
 
 
 @pytest.mark.asyncio
-async def test_streaming_timeout_emits_error_without_done_and_cancels_job():
+async def test_streaming_timeout_before_first_frame_raises_and_cancels_job():
     repository = InMemoryControlRepository()
     gateway, advertisement = serving_values(timeout=0.01)
     register_worker(repository, advertisement)
@@ -1166,11 +1166,14 @@ async def test_streaming_timeout_emits_error_without_done_and_cancels_job():
         },
         request_size_bytes=128,
     )
-    frames = [frame async for frame in iterator]
+    # No frame was sent, so the route answers with a 504 JSON error instead
+    # of an SSE error frame (after a keep-alive it stays in-stream).
+    with pytest.raises(ChatGatewayError) as raised:
+        await iterator.prefetch()
+    await iterator.aclose()
 
-    assert all("[DONE]" not in frame for frame in frames)
-    payload = json.loads(frames[-1][len("data: "):].strip())
-    assert payload["error"]["code"] == "gateway_timeout"
+    assert raised.value.code == "gateway_timeout"
+    assert raised.value.status_code == 504
     assert repository.list_jobs()[0].status is JobStatus.CANCELLED
 
 
@@ -1656,3 +1659,41 @@ async def test_prestream_failure_does_not_request_cancellation():
     assert raised.value.status_code == 400
     assert service._unresolved_cancellations == 0
     assert service._postadmit_cancellations == {}
+
+
+@pytest.mark.asyncio
+async def test_stream_timeout_before_first_frame_is_504():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(timeout=0.05)
+    register_worker(repository, advertisement)
+    response = await _post_stream(app_with_gateway(repository, gateway))
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "gateway_timeout"
+    assert repository.list_jobs()[0].status is JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_stream_invalid_first_event_is_502():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+
+    async def worker():
+        claimed = await _claim(repository)
+        repository.append_job_event(
+            claimed.job_id,
+            worker_id="chat-worker",
+            lease_token=claimed.lease_token or "",
+            runtime_instance_epoch=EPOCH,
+            kind="debug.other",
+            payload={},
+        )
+
+    task = asyncio.create_task(worker())
+    response = await _post_stream(app)
+    await task
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "invalid_stream_event"
