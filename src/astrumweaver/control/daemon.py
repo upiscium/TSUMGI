@@ -122,6 +122,12 @@ def build_app(config_path: str):
                     max_pending_admissions=chat_section.get(
                         "max_pending_admissions", 8
                     ),
+                    admission_wait_seconds=chat_section.get(
+                        "admission_wait_seconds", 0.0
+                    ),
+                    max_admission_waiters=chat_section.get(
+                        "max_admission_waiters", 16
+                    ),
                 )
             )
 

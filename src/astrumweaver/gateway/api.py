@@ -38,6 +38,8 @@ from .chat import (
 _log = logging.getLogger(__name__)
 # Post-admission cancellation gets a separate bounded resource budget.
 _POSTADMIT_CANCEL_TIMEOUT_SECONDS = 5
+# Poll interval while an admission waits for a busy replica.
+_ADMISSION_RETRY_SECONDS = 0.25
 
 
 def load_chat_catalog(path: str) -> ChatProfileCatalog:
@@ -60,8 +62,11 @@ def _error(
     message: str,
     error_type: str = "invalid_request_error",
 ) -> JSONResponse:
+    # A busy replica usually frees within seconds; say so to retrying clients.
+    headers = {"Retry-After": "1"} if code == "overloaded" else None
     return JSONResponse(
         status_code=status_code,
+        headers=headers,
         content={
             "error": {
                 "message": message,
@@ -160,6 +165,8 @@ class ChatGatewayService:
         max_pending_admissions: int = 8,
         max_postadmit_cancellations: int = 8,
         stream_keepalive_seconds: float = 15.0,
+        admission_wait_seconds: float = 0.0,
+        max_admission_waiters: int = 16,
     ) -> None:
         if type(max_pending_admissions) is not int or max_pending_admissions < 1:
             raise ValueError("max_pending_admissions must be a positive integer")
@@ -185,6 +192,21 @@ class ChatGatewayService:
         # An SSE comment sent while a stream waits (long prompt reads), so idle
         # timeouts in front of the Gateway do not cut a healthy stream.
         self.stream_keepalive_seconds = float(stream_keepalive_seconds)
+        if (
+            isinstance(admission_wait_seconds, bool)
+            or not isinstance(admission_wait_seconds, (int, float))
+            or not math.isfinite(float(admission_wait_seconds))
+            or admission_wait_seconds < 0
+        ):
+            raise ValueError("admission_wait_seconds must be finite and non-negative")
+        if type(max_admission_waiters) is not int or max_admission_waiters < 1:
+            raise ValueError("max_admission_waiters must be a positive integer")
+        # How long a request may wait for a busy replica before 429. Each
+        # profile usually has one replica, and clients such as OpenCode send
+        # a title request next to the main one. 0 keeps the fail-fast 429.
+        self.admission_wait_seconds = float(admission_wait_seconds)
+        self.max_admission_waiters = max_admission_waiters
+        self._admission_waiters = 0
         # A nonblocking per-service gate: reserve before starting a thread.
         # Cancellation transfers its permit to late cleanup until completion.
         self.max_pending_admissions = max_pending_admissions
@@ -399,6 +421,53 @@ class ChatGatewayService:
             status_code=502,
         )
 
+    async def _submit_when_free(
+        self,
+        request: Request,
+        body: dict[str, object],
+        *,
+        request_size_bytes: int,
+        max_attempts: int | None = None,
+    ):
+        """Submit, retrying an overloaded admission for admission_wait_seconds.
+
+        An overloaded submission inserts no Job, so retrying is safe. Waiters
+        are bounded; the rest get 429 at once. Order among waiters is not
+        strictly FIFO: each polls every _ADMISSION_RETRY_SECONDS.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.admission_wait_seconds
+        waiting = False
+        try:
+            while True:
+                try:
+                    return await self._submit(
+                        request,
+                        body,
+                        request_size_bytes=request_size_bytes,
+                        max_attempts=max_attempts,
+                    )
+                except ChatGatewayError as exc:
+                    if exc.code != "overloaded" or loop.time() >= deadline:
+                        raise
+                    if not waiting:
+                        if self._admission_waiters >= self.max_admission_waiters:
+                            raise
+                        self._admission_waiters += 1
+                        waiting = True
+                if await request.is_disconnected():
+                    raise ChatGatewayError(
+                        "client_disconnected",
+                        "chat client disconnected while waiting for a replica",
+                        status_code=499,
+                    )
+                await asyncio.sleep(
+                    min(_ADMISSION_RETRY_SECONDS, max(0.0, deadline - loop.time()))
+                )
+        finally:
+            if waiting:
+                self._admission_waiters -= 1
+
     async def _submit(
         self,
         request: Request,
@@ -568,7 +637,7 @@ class ChatGatewayService:
         *,
         request_size_bytes: int,
     ) -> dict[str, object]:
-        profile, record = await self._submit(
+        profile, record = await self._submit_when_free(
             request,
             body,
             request_size_bytes=request_size_bytes,
@@ -618,7 +687,7 @@ class ChatGatewayService:
         *,
         request_size_bytes: int,
     ) -> AsyncIterator[str]:
-        profile, record = await self._submit(
+        profile, record = await self._submit_when_free(
             request,
             body,
             request_size_bytes=request_size_bytes,
@@ -783,6 +852,8 @@ def create_chat_router(
     max_pending_admissions: int = 8,
     max_postadmit_cancellations: int = 8,
     stream_keepalive_seconds: float = 15.0,
+    admission_wait_seconds: float = 0.0,
+    max_admission_waiters: int = 16,
 ) -> APIRouter:
     mode = ClientAuthMode(client_auth)
     if mode is ClientAuthMode.BEARER and not client_token:
@@ -795,6 +866,8 @@ def create_chat_router(
         max_pending_admissions=max_pending_admissions,
         max_postadmit_cancellations=max_postadmit_cancellations,
         stream_keepalive_seconds=stream_keepalive_seconds,
+        admission_wait_seconds=admission_wait_seconds,
+        max_admission_waiters=max_admission_waiters,
     )
     router = APIRouter()
 
