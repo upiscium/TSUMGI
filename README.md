@@ -8,7 +8,7 @@ It is GPU-first, but its control-plane contracts are intentionally not tied to L
 
 > **Published stable release:** [v0.1.3](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.3), the scoped OpenCode Chat compatibility and managed-only audio Worker safety release. [v0.1.3 release notes](docs/releases/v0.1.3.md). Native audio engine Serving remains opt-in and unqualified.
 >
-> **v0.2.0 release candidate:** [v0.2.0-rc.1 notes](docs/releases/v0.2.0-rc.1.md) describe the Strata and FreeToken runtimes, the Bonsai 2 removal (a breaking change for `bonsai2-pq2` manifests), llama.cpp KV cache types, SSE keep-alive and the startup contract-versus-context check. It is not stable GA, and publishing it does not update running services.
+> **v0.2.0 release candidate:** [v0.2.0-rc.2 notes](docs/releases/v0.2.0-rc.2.md) add Worker chunk coalescing (streaming at decode speed), HTTP errors for pre-stream chat failures (so OpenCode can compact) and a bounded wait for busy replicas, on top of [v0.2.0-rc.1](docs/releases/v0.2.0-rc.1.md): the Strata and FreeToken runtimes, the Bonsai 2 removal (a breaking change for `bonsai2-pq2` manifests), llama.cpp KV cache types, SSE keep-alive and the startup contract-versus-context check. It is not stable GA, and publishing it does not update running services.
 >
 > **Prior prereleases:** [v0.1.3-rc.2](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.3-rc.2) and [v0.1.3-rc.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.1.3-rc.1) remain immutable historical source candidates. This GA preserves RC2 functional code, and its publication does not update running services.
 >
@@ -100,6 +100,7 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 - Existing development machines may later participate as drainable/borrowable workers without reprovisioning.
 
 ## Documentation
+- [v0.2.0-rc.2 candidate notes](docs/releases/v0.2.0-rc.2.md) — OpenCode streaming speed, pre-stream HTTP errors and admission wait.
 - [v0.2.0-rc.1 candidate notes](docs/releases/v0.2.0-rc.1.md) — Qwen3.6 serving runtimes, the breaking Bonsai 2 removal, and carried-over work.
 - [v0.1.3 GA release notes](docs/releases/v0.1.3.md) and [historical RC2](docs/releases/v0.1.3-rc.2.md) / [RC1](docs/releases/v0.1.3-rc.1.md) notes — reviewed Chat compatibility and fail-closed audio Worker scope.
 - [v0.1.2 GA release notes](docs/releases/v0.1.2.md) and [earlier v0.1.2-rc.1 notes](docs/releases/v0.1.2-rc.1.md) — verified maintenance release scope, version and qualification.

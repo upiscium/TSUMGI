@@ -9,7 +9,7 @@ PROJECT_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"
 # Only the v0.2.0 RC is accepted for the current source.
 # A GA promotion must be reviewed separately before adding stable metadata.
 EXPECTED_NIX_VERSION_BY_PYTHON = {
-    "0.2.0rc1": "0.2.0pre1",
+    "0.2.0rc2": "0.2.0pre2",
 }
 assert PROJECT_VERSION in EXPECTED_NIX_VERSION_BY_PYTHON, PROJECT_VERSION
 CURRENT_NIX_VERSION = EXPECTED_NIX_VERSION_BY_PYTHON[PROJECT_VERSION]
@@ -109,9 +109,9 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
 def test_rc_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "astrumweaver"
-    assert project["version"] == "0.2.0rc1"
+    assert project["version"] == "0.2.0rc2"
     assert project["version"] == PROJECT_VERSION
-    assert re.fullmatch(r"0\.2\.0rc1", project["version"])
+    assert re.fullmatch(r"0\.2\.0rc2", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
         _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
     assert (ROOT / "src/astrumweaver").is_dir()
@@ -310,18 +310,18 @@ def test_v013_ga_notes_and_rc_history_remain_historical_releases() -> None:
         "docs/releases/v0.1.3-rc.1.md": "2341640d9848c523a0ffdf7ed7136df906c18368c3d26b7c2fb707b9e1dfe0cf",
         "docs/releases/v0.1.3-rc.2.md": "bf884ffe46edab399ccaa2f54d8089b005ded6ad78fefa8d6c8bf1820b2f3775",
         "docs/releases/v0.1.3.md": "4830378533124f2fe29263b321bf9db42ffd348a80b1e48a58b927536af213f4",
+        "docs/releases/v0.2.0-rc.1.md": "e41861fae2bf631f70681aa4956490db8994d732fda076bb6f4c78730d4abf92",
     }
     for path, digest in frozen_docs.items():
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 
-def test_v020_rc_notes_match_metadata_and_state_the_breaking_change() -> None:
+def test_v020_rc1_notes_remain_a_historical_candidate() -> None:
     rc = (ROOT / "docs/releases/v0.2.0-rc.1.md").read_text()
     readme = (ROOT / "README.md").read_text()
-    assert PROJECT_VERSION == "0.2.0rc1" and CURRENT_NIX_VERSION == "0.2.0pre1"
     assert "| Git tag | `v0.2.0-rc.1`" in rc
-    assert f"`astrumweaver=={PROJECT_VERSION}`" in rc
-    assert f"`{CURRENT_NIX_VERSION}`" in rc
+    assert "`astrumweaver==0.2.0rc1`" in rc
+    assert "`0.2.0pre1`" in rc
     assert "Published `v0.1.3`" in rc
     # The breaking Bonsai removal and the unchanged migrations are stated.
     assert "bonsai2-pq2" in rc and "PR #265" in rc
@@ -333,4 +333,27 @@ def test_v020_rc_notes_match_metadata_and_state_the_breaking_change() -> None:
     assert "SHA256SUMS" in rc
     assert "docs/releases/v0.2.0-rc.1.md" in readme
     # The published stable line stays v0.1.3 until GA is promoted.
+    assert "> **Published stable release:** [v0.1.3]" in readme
+
+
+def test_v020_rc2_notes_match_metadata_and_carry_the_breaking_change() -> None:
+    rc = (ROOT / "docs/releases/v0.2.0-rc.2.md").read_text()
+    readme = (ROOT / "README.md").read_text()
+    flat = " ".join(rc.split())
+    assert PROJECT_VERSION == "0.2.0rc2" and CURRENT_NIX_VERSION == "0.2.0pre2"
+    assert "| Git tag | `v0.2.0-rc.2`" in rc
+    assert f"`astrumweaver=={PROJECT_VERSION}`" in rc
+    assert f"`{CURRENT_NIX_VERSION}`" in rc
+    assert "Published `v0.1.3`" in rc and "Published `v0.2.0-rc.1`" in rc
+    assert "92f023d0c2746150845d43e5d097bd1c9549e83c" in rc
+    # rc.1's breaking Bonsai removal still applies to this candidate.
+    assert "bonsai2-pq2" in rc and "PR #265" in rc
+    for pr in ("#272", "#273", "#274"):
+        assert pr in rc, pr
+    assert "`000`–`005` are unchanged since v0.1.3" in flat
+    assert "No audio engine is qualified" in flat
+    assert "does not update running services" in rc
+    assert "`admission_wait_seconds` is off unless configured" in rc
+    assert "SHA256SUMS" in rc
+    assert "docs/releases/v0.2.0-rc.2.md" in readme
     assert "> **Published stable release:** [v0.1.3]" in readme
