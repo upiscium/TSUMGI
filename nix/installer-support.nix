@@ -10,7 +10,7 @@ let
 
   migrations = stdenvNoCC.mkDerivation {
     pname = "astrumweaver-installer-assets";
-    version = "0.2.0";
+    version = "0.2.1";
     src = ../.;
     dontBuild = true;
     installPhase = ''
@@ -19,7 +19,7 @@ let
     '';
   };
   base = buildEnv {
-    name = "astrumweaver-installer-support-base-0.2.0";
+    name = "astrumweaver-installer-support-base-0.2.1";
     paths = [
       controlCli
       migrations
@@ -29,7 +29,7 @@ let
   };
 in
 stdenvNoCC.mkDerivation {
-  name = "astrumweaver-installer-support-0.2.0";
+  name = "astrumweaver-installer-support-0.2.1";
   dontUnpack = true;
   installPhase = ''
     mkdir -p "$out"

@@ -6,7 +6,7 @@ TSUMGI is a deployment-agnostic compute fabric for scheduling capability-based w
 
 It is GPU-first, but its control-plane contracts are intentionally not tied to LLMs, a particular accelerator generation, Proxmox, or a one-GPU-per-worker topology.
 
-> **Published stable release:** [v0.2.0](https://github.com/upiscium/TSUMGI/releases/tag/v0.2.0), the Qwen3.6 serving runtimes release: Strata and FreeToken runtimes, llama.cpp KV cache types, and OpenCode-ready streaming (Worker chunk coalescing, HTTP errors for pre-stream failures, bounded admission wait). **Breaking:** the Bonsai 2 runtime flavor is removed, so stored `bonsai2-pq2` manifests no longer load. [v0.2.0 release notes](docs/releases/v0.2.0.md). Native audio engine Serving remains opt-in and unqualified.
+> **Published stable release:** [v0.2.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.2.1), a patch release that pools Control's PostgreSQL connections (lower per-request latency). [v0.2.1 release notes](docs/releases/v0.2.1.md). It builds on [v0.2.0](https://github.com/upiscium/TSUMGI/releases/tag/v0.2.0) ([notes](docs/releases/v0.2.0.md)): Strata and FreeToken runtimes, llama.cpp KV cache types, and OpenCode-ready streaming. **Breaking since v0.1.x:** the Bonsai 2 runtime flavor is removed, so stored `bonsai2-pq2` manifests no longer load. Native audio engine Serving remains opt-in and unqualified.
 >
 > **Prior prereleases:** [v0.2.0-rc.2](https://github.com/upiscium/TSUMGI/releases/tag/v0.2.0-rc.2) and [v0.2.0-rc.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.2.0-rc.1) remain immutable historical source candidates. This GA preserves RC2 functional code, and its publication does not update running services.
 >
@@ -98,6 +98,7 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 - Existing development machines may later participate as drainable/borrowable workers without reprovisioning.
 
 ## Documentation
+- [v0.2.1 release notes](docs/releases/v0.2.1.md) — Control PostgreSQL connection pooling.
 - [v0.2.0 GA release notes](docs/releases/v0.2.0.md) and [historical RC2](docs/releases/v0.2.0-rc.2.md) / [RC1](docs/releases/v0.2.0-rc.1.md) notes — Qwen3.6 serving runtimes, OpenCode-ready streaming, and the breaking Bonsai 2 removal.
 - [v0.1.3 GA release notes](docs/releases/v0.1.3.md) and [historical RC2](docs/releases/v0.1.3-rc.2.md) / [RC1](docs/releases/v0.1.3-rc.1.md) notes — reviewed Chat compatibility and fail-closed audio Worker scope.
 - [v0.1.2 GA release notes](docs/releases/v0.1.2.md) and [earlier v0.1.2-rc.1 notes](docs/releases/v0.1.2-rc.1.md) — verified maintenance release scope, version and qualification.
