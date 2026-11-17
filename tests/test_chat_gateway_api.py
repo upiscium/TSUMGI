@@ -1148,7 +1148,7 @@ async def test_streaming_caller_task_cancellation_cancels_owned_job():
 
 
 @pytest.mark.asyncio
-async def test_streaming_timeout_emits_error_without_done_and_cancels_job():
+async def test_streaming_timeout_before_first_frame_raises_and_cancels_job():
     repository = InMemoryControlRepository()
     gateway, advertisement = serving_values(timeout=0.01)
     register_worker(repository, advertisement)
@@ -1166,11 +1166,14 @@ async def test_streaming_timeout_emits_error_without_done_and_cancels_job():
         },
         request_size_bytes=128,
     )
-    frames = [frame async for frame in iterator]
+    # No frame was sent, so the route answers with a 504 JSON error instead
+    # of an SSE error frame (after a keep-alive it stays in-stream).
+    with pytest.raises(ChatGatewayError) as raised:
+        await iterator.prefetch()
+    await iterator.aclose()
 
-    assert all("[DONE]" not in frame for frame in frames)
-    payload = json.loads(frames[-1][len("data: "):].strip())
-    assert payload["error"]["code"] == "gateway_timeout"
+    assert raised.value.code == "gateway_timeout"
+    assert raised.value.status_code == 504
     assert repository.list_jobs()[0].status is JobStatus.CANCELLED
 
 
@@ -1510,3 +1513,187 @@ def test_stream_keepalive_must_be_positive(value):
             ChatProfileCatalog((gateway,)),
             stream_keepalive_seconds=value,
         )
+
+
+async def _claim(repository):
+    deadline = asyncio.get_running_loop().time() + 1
+    while True:
+        claimed = repository.claim_next_job("chat-worker", runtime_instance_epoch=EPOCH)
+        if claimed is not None:
+            return claimed
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("job not submitted")
+        await asyncio.sleep(0.001)
+
+
+def _fail(repository, claimed, code, message):
+    repository.fail_job(
+        claimed.job_id,
+        {"type": "JobExecutionError", "code": code, "message": message},
+        retryable=False,
+        worker_id="chat-worker",
+        lease_token=claimed.lease_token or "",
+        runtime_instance_epoch=EPOCH,
+    )
+
+
+def _publish(repository, claimed, content):
+    repository.append_job_event(
+        claimed.job_id,
+        worker_id="chat-worker",
+        lease_token=claimed.lease_token or "",
+        runtime_instance_epoch=EPOCH,
+        kind="chat.completion.chunk",
+        payload={"choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]},
+    )
+
+
+async def _post_stream(app):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://control"
+    ) as client:
+        return await client.post(
+            "/v1/chat/completions",
+            headers={"authorization": f"Bearer {CLIENT_TOKEN}"},
+            json={
+                "model": "local-code-v1",
+                "messages": [{"role": "user", "content": "too large"}],
+                "stream": True,
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_stream_failure_before_first_frame_is_an_http_error():
+    # OpenCode compacts only when context overflow arrives as an HTTP error;
+    # an in-stream error is retried and then fails the session.
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+
+    async def worker():
+        claimed = await _claim(repository)
+        _fail(
+            repository,
+            claimed,
+            "context_length_exceeded",
+            "request exceeds the context window: prompt (15467 tokens) + max tokens (2048) "
+            "exceeds the context (12288)",
+        )
+        return claimed
+
+    task = asyncio.create_task(worker())
+    response = await _post_stream(app)
+    claimed = await task
+
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("application/json")
+    error = response.json()["error"]
+    assert error["code"] == "context_length_exceeded"
+    assert "exceeds the context window" in error["message"]
+    assert error["type"] == "invalid_request_error"
+    assert repository.get_job(claimed.job_id).status is JobStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_stream_backend_failure_before_first_frame_is_502():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+
+    async def worker():
+        _fail(repository, await _claim(repository), "runtime_crashed", "private detail")
+
+    task = asyncio.create_task(worker())
+    response = await _post_stream(app)
+    await task
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "backend_failure"
+    assert "private detail" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_stream_failure_after_first_frame_stays_in_stream():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+
+    async def worker():
+        claimed = await _claim(repository)
+        _publish(repository, claimed, "partial")
+        await asyncio.sleep(0.05)
+        _fail(repository, claimed, "output_limit_exceeded", "too long")
+
+    task = asyncio.create_task(worker())
+    response = await _post_stream(app)
+    await task
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    frames = [line for line in response.text.split("\n\n") if line.startswith("data: ")]
+    assert json.loads(frames[0][6:])["choices"][0]["delta"]["content"] == "partial"
+    assert json.loads(frames[-1][6:])["error"]["code"] == "output_limit_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_prestream_failure_does_not_request_cancellation():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository, ChatProfileCatalog((gateway,)), poll_interval_seconds=0.005
+    )
+    iterator = await service.stream(
+        _ConnectedRequest(),
+        {"model": "local-code-v1", "messages": [{"role": "user", "content": "x"}], "stream": True},
+        request_size_bytes=64,
+    )
+    _fail(repository, await _claim(repository), "context_length_exceeded", "too large")
+    with pytest.raises(ChatGatewayError) as raised:
+        await iterator.prefetch()
+    await iterator.aclose()
+    assert raised.value.status_code == 400
+    assert service._unresolved_cancellations == 0
+    assert service._postadmit_cancellations == {}
+
+
+@pytest.mark.asyncio
+async def test_stream_timeout_before_first_frame_is_504():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(timeout=0.05)
+    register_worker(repository, advertisement)
+    response = await _post_stream(app_with_gateway(repository, gateway))
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "gateway_timeout"
+    assert repository.list_jobs()[0].status is JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_stream_invalid_first_event_is_502():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+
+    async def worker():
+        claimed = await _claim(repository)
+        repository.append_job_event(
+            claimed.job_id,
+            worker_id="chat-worker",
+            lease_token=claimed.lease_token or "",
+            runtime_instance_epoch=EPOCH,
+            kind="debug.other",
+            payload={},
+        )
+
+    task = asyncio.create_task(worker())
+    response = await _post_stream(app)
+    await task
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "invalid_stream_event"
