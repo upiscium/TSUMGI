@@ -1,4 +1,4 @@
-"""Validate the v0.2.0 RC tier while preserving historical release evidence."""
+"""Validate the v0.2.0 GA tier while preserving historical release evidence."""
 import re
 import hashlib
 import tomllib
@@ -6,10 +6,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-# Only the v0.2.0 RC is accepted for the current source.
-# A GA promotion must be reviewed separately before adding stable metadata.
+# Only the v0.2.0 GA is accepted for the current source. It is a
+# metadata-only promotion of the published v0.2.0-rc.2 functional source.
 EXPECTED_NIX_VERSION_BY_PYTHON = {
-    "0.2.0rc2": "0.2.0pre2",
+    "0.2.0": "0.2.0",
 }
 assert PROJECT_VERSION in EXPECTED_NIX_VERSION_BY_PYTHON, PROJECT_VERSION
 CURRENT_NIX_VERSION = EXPECTED_NIX_VERSION_BY_PYTHON[PROJECT_VERSION]
@@ -109,9 +109,9 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
 def test_rc_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "astrumweaver"
-    assert project["version"] == "0.2.0rc2"
+    assert project["version"] == "0.2.0"
     assert project["version"] == PROJECT_VERSION
-    assert re.fullmatch(r"0\.2\.0rc2", project["version"])
+    assert re.fullmatch(r"0\.2\.0", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
         _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
     assert (ROOT / "src/astrumweaver").is_dir()
@@ -271,7 +271,7 @@ def test_ga_release_notes_constrain_claims_and_publication() -> None:
     assert "v0.1.0-rc.1 was" not in readme  # README links to published RC, avoids stale preparation.
     # README must reflect the current published stable line and next
     # maintenance release instead of claiming v0.1.0 is still current.
-    assert "> **Published stable release:** [v0.1.3]" in readme
+    assert "> **Published stable release:** [v0.2.0]" in readme
     assert "> **Prior prereleases:**" in readme
     assert "v0.1.2" in readme
     assert "v0.1.0.md" in readme and "ga-qualification-v0.1.0.md" in readme
@@ -301,7 +301,7 @@ def test_v013_ga_notes_and_rc_history_remain_historical_releases() -> None:
     assert "opt-in" in ga.lower() and "not" in ga.lower()
     assert "v0.1.3-rc.2" in rc2 and "astrumweaver==0.1.3rc2" in rc2
     assert "0.1.3pre2" in rc2 and "v0.1.3-rc.1" in rc1
-    assert "> **Published stable release:** [v0.1.3]" in readme
+    assert "releases/tag/v0.1.3)" in readme
     assert "docs/releases/v0.1.3.md" in readme
     assert "docs/releases/v0.1.3-rc.2.md" in readme
     frozen_docs = {
@@ -311,6 +311,7 @@ def test_v013_ga_notes_and_rc_history_remain_historical_releases() -> None:
         "docs/releases/v0.1.3-rc.2.md": "bf884ffe46edab399ccaa2f54d8089b005ded6ad78fefa8d6c8bf1820b2f3775",
         "docs/releases/v0.1.3.md": "4830378533124f2fe29263b321bf9db42ffd348a80b1e48a58b927536af213f4",
         "docs/releases/v0.2.0-rc.1.md": "e41861fae2bf631f70681aa4956490db8994d732fda076bb6f4c78730d4abf92",
+        "docs/releases/v0.2.0-rc.2.md": "26cbf9e98c4166fbab32977b8ccc018d32272134708531d29ee8f19c1d4a35b7",
     }
     for path, digest in frozen_docs.items():
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
@@ -332,18 +333,15 @@ def test_v020_rc1_notes_remain_a_historical_candidate() -> None:
     assert "does not update running services" in rc
     assert "SHA256SUMS" in rc
     assert "docs/releases/v0.2.0-rc.1.md" in readme
-    # The published stable line stays v0.1.3 until GA is promoted.
-    assert "> **Published stable release:** [v0.1.3]" in readme
 
 
-def test_v020_rc2_notes_match_metadata_and_carry_the_breaking_change() -> None:
+def test_v020_rc2_notes_remain_a_historical_candidate() -> None:
     rc = (ROOT / "docs/releases/v0.2.0-rc.2.md").read_text()
     readme = (ROOT / "README.md").read_text()
     flat = " ".join(rc.split())
-    assert PROJECT_VERSION == "0.2.0rc2" and CURRENT_NIX_VERSION == "0.2.0pre2"
     assert "| Git tag | `v0.2.0-rc.2`" in rc
-    assert f"`astrumweaver=={PROJECT_VERSION}`" in rc
-    assert f"`{CURRENT_NIX_VERSION}`" in rc
+    assert "`astrumweaver==0.2.0rc2`" in rc
+    assert "`0.2.0pre2`" in rc
     assert "Published `v0.1.3`" in rc and "Published `v0.2.0-rc.1`" in rc
     assert "92f023d0c2746150845d43e5d097bd1c9549e83c" in rc
     # rc.1's breaking Bonsai removal still applies to this candidate.
@@ -356,4 +354,27 @@ def test_v020_rc2_notes_match_metadata_and_carry_the_breaking_change() -> None:
     assert "`admission_wait_seconds` is off unless configured" in rc
     assert "SHA256SUMS" in rc
     assert "docs/releases/v0.2.0-rc.2.md" in readme
-    assert "> **Published stable release:** [v0.1.3]" in readme
+
+
+def test_v020_ga_notes_match_metadata_and_promote_rc2_unchanged() -> None:
+    ga = (ROOT / "docs/releases/v0.2.0.md").read_text()
+    readme = (ROOT / "README.md").read_text()
+    flat = " ".join(ga.split())
+    assert PROJECT_VERSION == "0.2.0" and CURRENT_NIX_VERSION == "0.2.0"
+    assert "| Intended Git tag | `v0.2.0`" in ga
+    assert "`astrumweaver==0.2.0`" in ga
+    assert "| Nix Control, Worker, Installer and Integration | `0.2.0` |" in ga
+    assert "Published `v0.1.3`" in ga
+    assert "`v0.2.0-rc.1` and `v0.2.0-rc.2`" in ga
+    # GA is a metadata-only promotion of the exact published rc.2 source.
+    assert "94434a652f76ba088d1e85f58b76c7ab8e4ae05d" in ga
+    assert "version-and-release-metadata-only" in ga
+    assert "bonsai2-pq2" in ga and "#265" in ga
+    for pr in ("#266", "#268", "#269", "#270", "#272", "#273", "#274"):
+        assert pr in ga, pr
+    assert "`000`–`005` are unchanged since v0.1.3" in flat
+    assert "No audio engine is qualified" in flat
+    assert "does not update running services" in flat
+    assert "SHA256SUMS" in ga
+    assert "> **Published stable release:** [v0.2.0]" in readme
+    assert "docs/releases/v0.2.0.md" in readme
