@@ -59,6 +59,10 @@ def _text_delta(delta: Mapping[str, Any], *, allow_role: bool) -> bool:
     return all(delta.get(key) is None or isinstance(delta[key], str) for key in _TEXT_KEYS)
 
 
+def _text_keys(delta: Mapping[str, Any]) -> set[str]:
+    return {key for key in _TEXT_KEYS if delta.get(key) is not None}
+
+
 def _tool_fragment(delta: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """The single tool call of a delta that carries only tool_calls."""
     if set(delta) != {"tool_calls"}:
@@ -93,7 +97,13 @@ def merge_chat_chunks(
         return None
     left_delta, right_delta = left["delta"], right["delta"]
 
-    if _text_delta(left_delta, allow_role=True) and _text_delta(right_delta, allow_role=False):
+    if (
+        _text_delta(left_delta, allow_role=True)
+        and _text_delta(right_delta, allow_role=False)
+        # Only extend channels the left delta already has: content then
+        # reasoning merged into one delta would lose their order.
+        and _text_keys(right_delta) <= (_text_keys(left_delta) or _text_keys(right_delta))
+    ):
         delta: dict[str, Any] = dict(left_delta)
         for key in _TEXT_KEYS:
             if right_delta.get(key) is not None:

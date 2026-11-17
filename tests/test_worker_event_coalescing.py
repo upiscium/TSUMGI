@@ -56,6 +56,17 @@ def test_text_deltas_merge_after_llama_cpp_role_chunk():
     validate_chat_stream_chunk(merged)
 
 
+def test_role_opener_takes_either_channel():
+    merged = merge_chat_chunks(
+        chunk({"role": "assistant", "content": None}), chunk({"reasoning_content": "think"})
+    )
+    assert merged["choices"][0]["delta"] == {
+        "role": "assistant", "content": None, "reasoning_content": "think"
+    }
+    # The opener now has a channel, so the other one starts a new event.
+    assert merge_chat_chunks(merged, chunk({"content": "answer"})) is None
+
+
 def test_reasoning_and_content_merge_per_key():
     merged = merge_chat_chunks(chunk({"reasoning_content": "a"}), chunk({"reasoning_content": "b"}))
     assert merged["choices"][0]["delta"] == {"reasoning_content": "ab"}
@@ -67,6 +78,8 @@ def test_reasoning_and_content_merge_per_key():
         (chunk({"content": "a"}), chunk({"content": "b"}, finish_reason="stop")),
         (chunk({"content": "a"}, finish_reason="stop"), chunk({"content": "b"})),
         (chunk({"content": "a"}), chunk({"role": "assistant", "content": "b"})),
+        (chunk({"content": "a"}), chunk({"reasoning_content": "b"})),
+        (chunk({"reasoning_content": "a"}), chunk({"content": "b"})),
         (chunk({"content": "a"}), {**chunk({"content": "b"}), "usage": {"total_tokens": 1}}),
         (chunk({"content": "a"}), {**chunk({"content": "b"}), "timings": {}}),
         (chunk({"content": "a"}), {**chunk({"content": "b"}), "id": "other"}),
