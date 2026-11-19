@@ -9,8 +9,8 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.control import (
     ConflictError,
     JobStatus,
     NoCompatibleDeployment,
@@ -21,9 +21,9 @@ from astrumweaver.control import (
     WorkerState,
     utc_now,
 )
-from astrumweaver.control.migrate import apply_migrations
-from astrumweaver.execution import JobResult
-from astrumweaver.serving import (
+from tsumgi.control.migrate import apply_migrations
+from tsumgi.execution import JobResult
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     RuntimeInstance,
@@ -34,10 +34,10 @@ from astrumweaver.serving import (
 )
 
 
-DATABASE_URL = os.environ.get("ASTRUMWEAVER_TEST_DATABASE_URL")
+DATABASE_URL = os.environ.get("TSUMGI_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(
     not DATABASE_URL,
-    reason="ASTRUMWEAVER_TEST_DATABASE_URL is not configured",
+    reason="TSUMGI_TEST_DATABASE_URL is not configured",
 )
 
 
@@ -497,7 +497,7 @@ def test_postgres_serving_lease_never_extends_past_request_deadline():
     assert claimed is not None and claimed.lease_token
     assert claimed.lease_expires_at == request.deadline_at
 
-    from astrumweaver.control import WorkerHeartbeat
+    from tsumgi.control import WorkerHeartbeat
 
     repo.heartbeat_worker(
         "worker",
@@ -514,7 +514,7 @@ def test_postgres_serving_lease_never_extends_past_request_deadline():
 def test_postgres_repository_reuses_pooled_connections():
     """Hot paths borrow one pooled connection instead of reconnecting."""
     if DATABASE_URL is None:
-        pytest.skip("NOT_VERIFIED: ASTRUMWEAVER_TEST_DATABASE_URL absent")
+        pytest.skip("NOT_VERIFIED: TSUMGI_TEST_DATABASE_URL absent")
     repo = PostgresControlRepository(DATABASE_URL, pool_min_size=1, pool_max_size=1)
     try:
         pids = set()

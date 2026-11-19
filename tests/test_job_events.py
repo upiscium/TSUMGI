@@ -6,8 +6,8 @@ from datetime import timedelta
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.control import (
     ConflictError,
     EventBufferFull,
     InMemoryControlRepository,
@@ -15,8 +15,8 @@ from astrumweaver.control import (
     WorkerRegistration,
     utc_now,
 )
-from astrumweaver.control.api import create_app
-from astrumweaver.serving import (
+from tsumgi.control.api import create_app
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     RuntimeInstance,
@@ -25,7 +25,7 @@ from astrumweaver.serving import (
     WorkerServingAdvertisement,
     resolve_profile,
 )
-from astrumweaver.transport import (
+from tsumgi.transport import (
     JOB_EVENTS_EXTENSION,
     PROTOCOL_VERSION,
     SERVING_EXTENSION,

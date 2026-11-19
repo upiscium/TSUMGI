@@ -8,17 +8,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrumweaver.runtime import RuntimeHealth, RuntimeHealthState
-from astrumweaver.gateway.audio import (
+from tsumgi.runtime import RuntimeHealth, RuntimeHealthState
+from tsumgi.gateway.audio import (
     SPEECH_OPERATION_SCHEMA,
     TRANSCRIPTION_OPERATION_SCHEMA,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     ServingContract,
     ServingDeploymentDeclaration,
 )
-from astrumweaver.worker import daemon
+from tsumgi.worker import daemon
 
 
 SPEECH = ("audio.synthesize", SPEECH_OPERATION_SCHEMA)
@@ -130,7 +130,7 @@ async def worker_harness(monkeypatch, tmp_path):
             manifest.write_text(json.dumps(serving.to_dict()), encoding="utf-8")
             config["serving"] = {"manifest": str(manifest)}
 
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "synthetic-secret-token")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "synthetic-secret-token")
     monkeypatch.setattr(daemon, "_load_toml", lambda _path: config)
     monkeypatch.setattr(daemon, "_run_gpu_preflight", lambda *_args: events.append("gpu"))
     monkeypatch.setattr(daemon, "ControlClient", FakeClient)
@@ -412,9 +412,9 @@ async def test_valid_managed_audio_runtime_passes_existing_supervisor_before_reg
     worker_harness, monkeypatch,
 ):
     """Real lifecycle/supervisor + fake owned runtime, no process/network/GPU."""
-    from astrumweaver.runtime import RuntimeLifecycleManager
-    from astrumweaver.execution import ResidencyReport
-    from astrumweaver.worker.supervision import RuntimeHealthSupervisor
+    from tsumgi.runtime import RuntimeLifecycleManager
+    from tsumgi.execution import ResidencyReport
+    from tsumgi.worker.supervision import RuntimeHealthSupervisor
 
     harness = worker_harness
     harness.configure((SPEECH[0],), declaration(SPEECH), backend="runtime")

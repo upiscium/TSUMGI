@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from astrumweaver.validation.opencode_chat import (
+from tsumgi.validation.opencode_chat import (
     PINNED_AI_SDK_VERSION,
     PINNED_OPENAI_COMPATIBLE_ERROR_BLOB,
     PINNED_OPENAI_COMPATIBLE_STREAM_BLOB,
@@ -101,7 +101,7 @@ def gateway_response(
                     "id": "local-code-v1",
                     "object": "model",
                     "created": 0,
-                    "owned_by": "astrumweaver",
+                    "owned_by": "tsumgi",
                     "x_astrumweaver": {
                         "profile_revision": profile_revision,
                         "deployment_revision": deployment_revision,
@@ -184,14 +184,14 @@ def test_real_client_runner_uses_isolated_pinned_opencode_shape():
         assert env["OPENCODE_DISABLE_AUTOCOMPACT"] == "1"
         assert env["OPENCODE_DISABLE_MODELS_FETCH"] == "1"
         assert env["OPENCODE_AUTH_CONTENT"] == "{}"
-        assert env["ASTRUMWEAVER_CLIENT_TOKEN"] == "private-token"
+        assert env["TSUMGI_CLIENT_TOKEN"] == "private-token"
         config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-        provider = config["provider"]["astrumweaver-acceptance"]
+        provider = config["provider"]["tsumgi-acceptance"]
         assert provider["options"]["baseURL"] == (
             "https://gateway.example.invalid/v1"
         )
         assert provider["options"]["apiKey"] == (
-            "{env:ASTRUMWEAVER_CLIENT_TOKEN}"
+            "{env:TSUMGI_CLIENT_TOKEN}"
         )
         assert "private-token" not in env["OPENCODE_CONFIG_CONTENT"]
 
@@ -202,7 +202,7 @@ def test_real_client_runner_uses_isolated_pinned_opencode_shape():
         assert "--format" in args
         assert args[args.index("--format") + 1] == "json"
         assert args[args.index("--model") + 1] == (
-            "astrumweaver-acceptance/local-code-v1"
+            "tsumgi-acceptance/local-code-v1"
         )
         assert "--auto" not in args
         assert "--dangerously-skip-permissions" not in args

@@ -1,11 +1,11 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.services.astrumweaver.worker;
-  astrumweaverPackage = pkgs.callPackage ../package.nix { };
+  cfg = config.services.tsumgi.worker;
+  tsumgiPackage = pkgs.callPackage ../package.nix { };
   integrationPackage = pkgs.callPackage ../integration-package.nix { };
   defaultPackage = pkgs.callPackage ../worker-support.nix {
-    astrumweaver = astrumweaverPackage;
+    tsumgi = tsumgiPackage;
     integration = integrationPackage;
   };
   toml = pkgs.formats.toml { };
@@ -44,7 +44,7 @@ let
     };
     setup_intent = null;
   };
-  runtimeManifest = pkgs.writeText "astrumweaver-runtime-deployment.json" (
+  runtimeManifest = pkgs.writeText "tsumgi-runtime-deployment.json" (
     builtins.toJSON runtimeManifestData
   );
   coreSettings = {
@@ -75,33 +75,33 @@ let
       shutdown_timeout_seconds = cfg.runtime.shutdownTimeoutSeconds;
     };
   };
-  generatedConfig = toml.generate "astrumweaver-worker.toml" (
+  generatedConfig = toml.generate "tsumgi-worker.toml" (
     lib.recursiveUpdate cfg.settings coreSettings
   );
-  expectedGpuUuids = pkgs.writeText "astrumweaver-gpu-uuids" (
+  expectedGpuUuids = pkgs.writeText "tsumgi-gpu-uuids" (
     lib.concatStringsSep "\n" (lib.sort builtins.lessThan cfg.gpuUuids) + "\n"
   );
   gpuIsolationDevicePaths = map (
     uuid: cfg.gpuIsolation.deviceMap.${uuid} or ""
   ) cfg.gpuUuids;
-  gpuIsolationMap = pkgs.writeText "astrumweaver-gpu-device-map" (
+  gpuIsolationMap = pkgs.writeText "tsumgi-gpu-device-map" (
     lib.concatStringsSep "\n" (
       map (
         uuid: "${uuid}=${cfg.gpuIsolation.deviceMap.${uuid} or ""}"
       ) (lib.sort builtins.lessThan cfg.gpuUuids)
     ) + "\n"
   );
-  gpuMappingPython = pkgs.writeText "astrumweaver-gpu-mapping.py" (
-    builtins.readFile ../../src/astrumweaver/gpu_mapping.py
+  gpuMappingPython = pkgs.writeText "tsumgi-gpu-mapping.py" (
+    builtins.readFile ../../src/tsumgi/gpu_mapping.py
   );
   preflight = pkgs.writeShellApplication {
-    name = "astrumweaver-gpu-preflight";
+    name = "tsumgi-gpu-preflight";
     runtimeInputs = [ pkgs.coreutils pkgs.gawk ]
       ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
     text = builtins.readFile ../../libexec/gpu-preflight;
   };
   gpuDeviceMapVerifier = pkgs.writeShellApplication {
-    name = "astrumweaver-gpu-device-map";
+    name = "tsumgi-gpu-device-map";
     runtimeInputs = [ pkgs.coreutils pkgs.gawk pkgs.python312 ]
       ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
     text = ''
@@ -110,7 +110,7 @@ let
   };
   effectiveCommand =
     if cfg.command == null
-    then "${cfg.package}/bin/astrumweaver-worker"
+    then "${cfg.package}/bin/tsumgi-worker"
     else cfg.command;
   execStart = lib.escapeShellArgs ([ effectiveCommand "--config" generatedConfig ] ++ cfg.extraArgs);
   gpuUuidArgs = lib.concatMapStringsSep " " (uuid:
@@ -121,14 +121,14 @@ let
     then "nvidia-smi"
     else "${cfg.nvidiaSmiPackage}/bin/nvidia-smi";
   borrowableMode = pkgs.writeShellApplication {
-    name = "astrumweaver-gpu-mode";
+    name = "tsumgi-gpu-mode";
     text = ''
       if [ "$#" -ne 1 ]; then
-        echo "usage: astrumweaver-gpu-mode {development|astrumweaver|status}" >&2
+        echo "usage: tsumgi-gpu-mode {development|tsumgi|status}" >&2
         exit 2
       fi
-      exec ${cfg.package}/bin/astrumweaver-worker-mode "$1" \
-        --service astrumweaver-worker.service \
+      exec ${cfg.package}/bin/tsumgi-worker-mode "$1" \
+        --service tsumgi-worker.service \
         ${gpuUuidArgs} \
         --health-url ${lib.escapeShellArg "http://${cfg.healthHost}:${toString cfg.healthPort}"} \
         --systemctl ${pkgs.systemd}/bin/systemctl \
@@ -139,21 +139,21 @@ let
   };
 in
 {
-  options.services.astrumweaver.worker = {
-    enable = lib.mkEnableOption "AstrumWeaver Worker service";
+  options.services.tsumgi.worker = {
+    enable = lib.mkEnableOption "TSUMGI Worker service";
 
     package = lib.mkOption {
       type = lib.types.package;
       default = defaultPackage;
-      defaultText = lib.literalExpression "AstrumWeaver worker package from this module";
+      defaultText = lib.literalExpression "TSUMGI worker package from this module";
       description = "Worker runtime package.";
     };
 
     command = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "/custom/bin/astrumweaver-worker";
-      description = "Optional daemon executable override. Defaults to the packaged astrumweaver-worker entrypoint.";
+      example = "/custom/bin/tsumgi-worker";
+      description = "Optional daemon executable override. Defaults to the packaged tsumgi-worker entrypoint.";
     };
 
     workerId = lib.mkOption {
@@ -174,7 +174,7 @@ in
       type = lib.types.str;
       default = "";
       example = "https://control.example.invalid";
-      description = "AstrumWeaver Control API base URL.";
+      description = "TSUMGI Control API base URL.";
     };
 
     capabilities = lib.mkOption {
@@ -286,8 +286,8 @@ in
     environmentFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "/run/secrets/astrumweaver-worker.env";
-      description = "Protected EnvironmentFile containing ASTRUMWEAVER_WORKER_TOKEN and other secret overrides.";
+      example = "/run/secrets/tsumgi-worker.env";
+      description = "Protected EnvironmentFile containing TSUMGI_WORKER_TOKEN and other secret overrides.";
     };
 
     nvidiaSmiPackage = lib.mkOption {
@@ -306,12 +306,12 @@ in
 
     user = lib.mkOption {
       type = lib.types.str;
-      default = "astrumweaver";
+      default = "tsumgi";
     };
 
     group = lib.mkOption {
       type = lib.types.str;
-      default = "astrumweaver";
+      default = "tsumgi";
     };
 
     healthHost = lib.mkOption {
@@ -450,7 +450,7 @@ in
       startTimeoutSeconds = lib.mkOption {
         type = lib.types.ints.positive;
         default = 60;
-        description = "Seconds to wait for the Worker service and local readiness when returning GPU ownership to AstrumWeaver.";
+        description = "Seconds to wait for the Worker service and local readiness when returning GPU ownership to TSUMGI.";
       };
     };
     extraArgs = lib.mkOption {
@@ -468,15 +468,15 @@ in
     assertions = [
       {
         assertion = cfg.workerId != "";
-        message = "services.astrumweaver.worker.workerId must be set.";
+        message = "services.tsumgi.worker.workerId must be set.";
       }
       {
         assertion = cfg.controlUrl != "";
-        message = "services.astrumweaver.worker.controlUrl must be set.";
+        message = "services.tsumgi.worker.controlUrl must be set.";
       }
       {
         assertion = cfg.capabilities != [ ];
-        message = "services.astrumweaver.worker.capabilities must not be empty.";
+        message = "services.tsumgi.worker.capabilities must not be empty.";
       }
       {
         assertion =
@@ -487,15 +487,15 @@ in
       }
       {
         assertion = !cfg.runtime.enable || cfg.runtime.modelRef != "";
-        message = "services.astrumweaver.worker.runtime.modelRef must be set when RuntimeProvider execution is enabled.";
+        message = "services.tsumgi.worker.runtime.modelRef must be set when RuntimeProvider execution is enabled.";
       }
       {
         assertion = !cfg.runtime.enable || cfg.runtime.modelFormat != "";
-        message = "services.astrumweaver.worker.runtime.modelFormat must be set when RuntimeProvider execution is enabled.";
+        message = "services.tsumgi.worker.runtime.modelFormat must be set when RuntimeProvider execution is enabled.";
       }
       {
         assertion = !cfg.runtime.enable || cfg.runtime.packages != [ ];
-        message = "services.astrumweaver.worker.runtime.packages must provide the selected runtime closure.";
+        message = "services.tsumgi.worker.runtime.packages must provide the selected runtime closure.";
       }
       {
         assertion = !cfg.runtime.enable || cfg.runtime.preferredHostRamMb >= cfg.runtime.minHostRamMb;
@@ -508,15 +508,15 @@ in
             builtins.length cfg.accelerators == builtins.length cfg.gpuUuids
             && map (item: item.uuid) cfg.accelerators == cfg.gpuUuids
           );
-        message = "services.astrumweaver.worker.accelerators must be empty or exactly match gpuUuids order.";
+        message = "services.tsumgi.worker.accelerators must be empty or exactly match gpuUuids order.";
       }
       {
         assertion = cfg.maxConcurrency == 1;
-        message = "AstrumWeaver v1 Worker daemon currently requires maxConcurrency = 1.";
+        message = "TSUMGI v1 Worker daemon currently requires maxConcurrency = 1.";
       }
       {
         assertion = builtins.length cfg.gpuUuids == builtins.length (lib.unique cfg.gpuUuids);
-        message = "services.astrumweaver.worker.gpuUuids must not contain duplicates.";
+        message = "services.tsumgi.worker.gpuUuids must not contain duplicates.";
       }
       {
         assertion = !cfg.gpuIsolation.enable || cfg.gpuUuids != [ ];
@@ -527,7 +527,7 @@ in
           !cfg.gpuIsolation.enable
           || lib.sort builtins.lessThan (builtins.attrNames cfg.gpuIsolation.deviceMap)
              == lib.sort builtins.lessThan cfg.gpuUuids;
-        message = "gpuIsolation.deviceMap keys must exactly match services.astrumweaver.worker.gpuUuids.";
+        message = "gpuIsolation.deviceMap keys must exactly match services.tsumgi.worker.gpuUuids.";
       }
       {
         assertion =
@@ -547,15 +547,15 @@ in
       }
       {
         assertion = cfg.gpuUuids == [ ] || cfg.nvidiaSmiPackage != null;
-        message = "services.astrumweaver.worker.nvidiaSmiPackage is required for GPU Workers.";
+        message = "services.tsumgi.worker.nvidiaSmiPackage is required for GPU Workers.";
       }
       {
         assertion = !cfg.borrowable.enable || cfg.gpuUuids != [ ];
-        message = "services.astrumweaver.worker.borrowable requires at least one GPU UUID.";
+        message = "services.tsumgi.worker.borrowable requires at least one GPU UUID.";
       }
       {
         assertion = !cfg.borrowable.enable || cfg.nvidiaSmiPackage != null;
-        message = "services.astrumweaver.worker.borrowable requires nvidiaSmiPackage.";
+        message = "services.tsumgi.worker.borrowable requires nvidiaSmiPackage.";
       }
       {
         assertion = !cfg.borrowable.enable || builtins.elem cfg.healthHost [ "127.0.0.1" "localhost" ];
@@ -577,7 +577,7 @@ in
       isSystemUser = lib.mkDefault true;
       group = lib.mkDefault cfg.group;
       extraGroups = cfg.supplementaryGroups;
-      home = lib.mkDefault "/var/lib/astrumweaver";
+      home = lib.mkDefault "/var/lib/tsumgi";
       createHome = lib.mkDefault true;
     };
 
@@ -585,25 +585,25 @@ in
       [ cfg.package ]
       ++ lib.optional cfg.borrowable.enable borrowableMode;
 
-    systemd.services.astrumweaver-worker-gpu-isolation-preflight =
+    systemd.services.tsumgi-worker-gpu-isolation-preflight =
       lib.mkIf (cfg.gpuIsolation.enable && cfg.gpuUuids != [ ]) {
-        description = "Verify AstrumWeaver Worker GPU UUID/device mapping";
-        before = [ "astrumweaver-worker.service" ];
+        description = "Verify TSUMGI Worker GPU UUID/device mapping";
+        before = [ "tsumgi-worker.service" ];
         path = [ gpuDeviceMapVerifier ]
           ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
         serviceConfig = {
           Type = "oneshot";
-          ExecStart = "${gpuDeviceMapVerifier}/bin/astrumweaver-gpu-device-map verify ${expectedGpuUuids} ${gpuIsolationMap}";
+          ExecStart = "${gpuDeviceMapVerifier}/bin/tsumgi-gpu-device-map verify ${expectedGpuUuids} ${gpuIsolationMap}";
         };
       };
 
-    systemd.services.astrumweaver-worker = {
-      description = "AstrumWeaver Worker";
+    systemd.services.tsumgi-worker = {
+      description = "TSUMGI Worker";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ]
-        ++ lib.optional cfg.gpuIsolation.enable "astrumweaver-worker-gpu-isolation-preflight.service";
-      requires = lib.optional cfg.gpuIsolation.enable "astrumweaver-worker-gpu-isolation-preflight.service";
+        ++ lib.optional cfg.gpuIsolation.enable "tsumgi-worker-gpu-isolation-preflight.service";
+      requires = lib.optional cfg.gpuIsolation.enable "tsumgi-worker-gpu-isolation-preflight.service";
       path = [ cfg.package ]
         ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage
         ++ cfg.runtime.packages
@@ -616,9 +616,9 @@ in
         ExecStart = execStart;
         Restart = "on-failure";
         RestartSec = "5s";
-        RuntimeDirectory = "astrumweaver-worker";
+        RuntimeDirectory = "tsumgi-worker";
         RuntimeDirectoryMode = "0750";
-        StateDirectory = "astrumweaver";
+        StateDirectory = "tsumgi";
         StateDirectoryMode = "0750";
         NoNewPrivileges = true;
         PrivateTmp = true;
@@ -639,15 +639,15 @@ in
         );
         Environment = [
           "CUDA_VISIBLE_DEVICES=${lib.concatStringsSep "," cfg.gpuUuids}"
-          "ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access"
-          "ASTRUMWEAVER_GPU_DEVICE_MAP=${gpuIsolationMap}"
-          "ASTRUMWEAVER_GPU_WORKER_CONFIG=${generatedConfig}"
-          "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=${gpuDeviceMapVerifier}/bin/astrumweaver-gpu-device-map"
-          "ASTRUMWEAVER_NVIDIA_SMI=${nvidiaSmiCommand}"
+          "TSUMGI_GPU_PREFLIGHT_MODE=isolated-access"
+          "TSUMGI_GPU_DEVICE_MAP=${gpuIsolationMap}"
+          "TSUMGI_GPU_WORKER_CONFIG=${generatedConfig}"
+          "TSUMGI_GPU_DEVICE_MAP_COMMAND=${gpuDeviceMapVerifier}/bin/tsumgi-gpu-device-map"
+          "TSUMGI_NVIDIA_SMI=${nvidiaSmiCommand}"
         ];
       }
       // lib.optionalAttrs (cfg.gpuUuids != [ ]) {
-        ExecStartPre = "+${preflight}/bin/astrumweaver-gpu-preflight ${expectedGpuUuids}";
+        ExecStartPre = "+${preflight}/bin/tsumgi-gpu-preflight ${expectedGpuUuids}";
       }
       // lib.optionalAttrs (cfg.environmentFile != null) {
         EnvironmentFile = cfg.environmentFile;

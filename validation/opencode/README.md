@@ -1,7 +1,7 @@
 # OpenCode acceptance evidence
 
 This directory is reserved for redacted output produced by
-`astrumweaver-opencode-chat-accept`.
+`tsumgi-opencode-chat-accept`.
 
 Do not commit raw OpenCode stdout/stderr, gateway URLs, bearer tokens, prompts,
 tool arguments/results, local paths, source payloads, Worker IDs, GPU UUIDs or

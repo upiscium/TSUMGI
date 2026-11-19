@@ -9,7 +9,7 @@ without corresponding reviewed serving declarations. Passing this gate proves
 only the required declaration shape and operation-schema match; it does not
 qualify a provider or attest that its evidence is genuine.
 
-The source-only scope is limited to `src/astrumweaver/worker/daemon.py`, the new
+The source-only scope is limited to `src/tsumgi/worker/daemon.py`, the new
 `tests/test_audio_worker_serving_gate.py`, and this document. No shared Nix,
 Control, setup, provider or executor sources are changed. PR #204 (Phase B1)
 remains a separate OPEN Draft; this phase neither edits nor merges it.

@@ -11,23 +11,23 @@ import pytest
 from test_style_bert_vits2_provider import FakeMedia, job
 from test_style_bert_vits2_provider import config as adapter_config
 
-from astrumweaver.contracts import ResourceShape, WorkerSpec
-from astrumweaver.execution import JobExecutionError
-from astrumweaver.runtime.contracts import RuntimeHealthState, RuntimeHostFacts
-from astrumweaver.runtime.lifecycle import RuntimeLifecycleManager
-from astrumweaver.runtime.providers.style_bert_vits2 import StyleBertVits2ModelPin
-from astrumweaver.runtime.providers.style_bert_vits2_managed import (
+from tsumgi.contracts import ResourceShape, WorkerSpec
+from tsumgi.execution import JobExecutionError
+from tsumgi.runtime.contracts import RuntimeHealthState, RuntimeHostFacts
+from tsumgi.runtime.lifecycle import RuntimeLifecycleManager
+from tsumgi.runtime.providers.style_bert_vits2 import StyleBertVits2ModelPin
+from tsumgi.runtime.providers.style_bert_vits2_managed import (
     StyleBertOwnedManagedRuntime,
     StyleBertOwnedRuntimeSpec,
     StyleBertRuntimeFailure,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     ServingContract,
     ServingDeploymentDeclaration,
 )
-from astrumweaver.worker.runtime import require_executor_serving_features
-from astrumweaver.worker.supervision import RuntimeHealthSupervisor
+from tsumgi.worker.runtime import require_executor_serving_features
+from tsumgi.worker.supervision import RuntimeHealthSupervisor
 
 
 def digest(body: bytes) -> str:

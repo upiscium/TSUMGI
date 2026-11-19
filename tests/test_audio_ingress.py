@@ -11,7 +11,7 @@ import struct
 import pytest
 from starlette.requests import Request
 
-from astrumweaver.gateway.audio import (
+from tsumgi.gateway.audio import (
     SPEECH_OPERATION_SCHEMA,
     TRANSCRIPTION_OPERATION_SCHEMA,
     AudioGatewayError,
@@ -22,12 +22,12 @@ from astrumweaver.gateway.audio import (
     validate_speech_request,
     validate_transcription_metadata,
 )
-from astrumweaver.gateway.audio_ingress import (
+from tsumgi.gateway.audio_ingress import (
     AudioIngressLimits,
     parse_speech_ingress,
     parse_transcription_ingress,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,

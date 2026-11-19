@@ -3,7 +3,7 @@
 Tracking: #91 / #94.
 
 This file records client-side compatibility evidence separately from
-AstrumWeaver schema/unit tests. It does not claim a successful real-client smoke
+TSUMGI schema/unit tests. It does not claim a successful real-client smoke
 until one is explicitly recorded below.
 
 ## Pinned client
@@ -36,7 +36,7 @@ Initial target:
 At this pin, the ordinary session path invokes AI SDK `streamText(...)` and
 the configured `@ai-sdk/openai-compatible` adapter sends `stream: true`.
 Its streaming schema is a union of ordinary chat chunks and the provider error
-schema. AstrumWeaver's top-level `{"error": {"message": ...}}` SSE event on a
+schema. TSUMGI's top-level `{"error": {"message": ...}}` SSE event on a
 failed partial stream is therefore consumed as an explicit client-side stream
 error rather than a successful chat chunk. The non-streaming Stage A gateway is
 intentionally not accepted as OpenCode-compatible.
@@ -45,7 +45,7 @@ intentionally not accepted as OpenCode-compatible.
 
 OpenCode v1.18.30 documents custom OpenAI-compatible providers using
 `@ai-sdk/openai-compatible` with a `baseURL` ending at the API's `/v1`
-prefix and an explicitly enumerated model ID. AstrumWeaver model IDs are logical
+prefix and an explicitly enumerated model ID. TSUMGI model IDs are logical
 serving profile IDs returned by `GET /v1/models`.
 
 Illustrative configuration only:
@@ -54,16 +54,16 @@ Illustrative configuration only:
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "astrumweaver-local": {
+    "tsumgi-local": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "AstrumWeaver local",
+      "name": "TSUMGI local",
       "options": {
-        "baseURL": "https://astrumweaver.example.invalid/v1",
-        "apiKey": "{env:ASTRUMWEAVER_CLIENT_TOKEN}"
+        "baseURL": "https://tsumgi.example.invalid/v1",
+        "apiKey": "{env:TSUMGI_CLIENT_TOKEN}"
       },
       "models": {
         "local-code-v1": {
-          "name": "AstrumWeaver local-code-v1",
+          "name": "TSUMGI local-code-v1",
           "limit": {
             "context": 5120,
             "output": 1024
@@ -83,7 +83,7 @@ The example limits are placeholders and must match the selected
 - Stage A schema/provider tests: implemented and integrated through #104.
 - Stage A real OpenCode smoke: **NOT APPLICABLE / BLOCKED BY STREAMING**.
 - Stage B fenced streaming protocol: implemented and integrated through #105.
-- Live gateway identity preflight: **PASS** on AstrumWeaver
+- Live gateway identity preflight: **PASS** on TSUMGI
   `35fb7295bb8802c63df5b66da006563ce2fa255a`.
 - Plain-chat OpenCode v1.18.30 streamed smoke: **PASS**.
 - Structured tool call -> client tool result -> final response smoke: **PASS**.
@@ -95,7 +95,7 @@ The example limits are placeholders and must match the selected
 - Canonical redacted evidence:
   [`validation/opencode/chat-v1.md`](../../validation/opencode/chat-v1.md).
 
-The packaged `astrumweaver-opencode-chat-accept` command first validates the
+The packaged `tsumgi-opencode-chat-accept` command first validates the
 live gateway's namespaced model metadata against the expected profile revision,
 deployment revision, serving-contract revision and limits. It then performs both
 real client smokes with an isolated temporary OpenCode config/workdir and writes

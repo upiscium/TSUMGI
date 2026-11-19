@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.runtime import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -14,7 +14,7 @@ from astrumweaver.runtime import (
     managed_runtime_from_deployment,
     provider_from_deployment,
 )
-from astrumweaver.runtime.providers import (
+from tsumgi.runtime.providers import (
     OllamaProvider,
     OllamaProviderConfig,
 )

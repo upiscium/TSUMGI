@@ -9,10 +9,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.execution import JobExecutionError, JobRequest
-from astrumweaver.gateway.chat import CHAT_JOB_SCHEMA, FREETOKEN_CHAT_ADAPTER, STRATA_CHAT_ADAPTER
-from astrumweaver.runtime import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.execution import JobExecutionError, JobRequest
+from tsumgi.gateway.chat import CHAT_JOB_SCHEMA, FREETOKEN_CHAT_ADAPTER, STRATA_CHAT_ADAPTER
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -22,8 +22,8 @@ from astrumweaver.runtime import (
     RuntimeHealthState,
     RuntimeHostFacts,
 )
-from astrumweaver.runtime.deployment import _PROVIDER_TYPES
-from astrumweaver.runtime.providers.strata import (
+from tsumgi.runtime.deployment import _PROVIDER_TYPES
+from tsumgi.runtime.providers.strata import (
     HttpStrataApi,
     StrataExecutor,
     StrataHttpError,
@@ -33,8 +33,8 @@ from astrumweaver.runtime.providers.strata import (
     StrataRunConfig,
     StrataSubprocessController,
 )
-from astrumweaver.serving import ServingContract
-from astrumweaver.worker.runtime import require_executor_serving_features
+from tsumgi.serving import ServingContract
+from tsumgi.worker.runtime import require_executor_serving_features
 
 MODEL = "/models/qwen36/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
 NAME = "qwen3.6-35b-a3b-ud-q4_k_xl"
@@ -729,13 +729,13 @@ async def test_stream_restores_complete_arguments_and_keeps_fragments() -> None:
 
 @pytest.mark.parametrize("fragment", ['"True"}', "true", '"True"', '{"avoid_'])
 def test_non_object_fragments_pass_through(fragment) -> None:
-    from astrumweaver.runtime.providers.strata import _fix_boolean_arguments
+    from tsumgi.runtime.providers.strata import _fix_boolean_arguments
 
     assert _fix_boolean_arguments(fragment, frozenset({"avoid_tolls"})) == fragment
 
 
 def test_boolean_parameters_follow_type_lists() -> None:
-    from astrumweaver.runtime.providers.strata import _boolean_parameters
+    from tsumgi.runtime.providers.strata import _boolean_parameters
 
     tools = [{"type": "function", "function": {"name": "t", "parameters": {"properties": {
         "a": {"type": ["boolean", "null"]}, "b": {"type": ["string", "boolean"]}, "c": {"type": "boolean"}}}}}]

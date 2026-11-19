@@ -8,15 +8,15 @@ from dataclasses import replace
 
 import pytest
 
-from astrumweaver.gateway.audio import VoiceAlias
-from astrumweaver.runtime.providers.voicevox_discovery import (
+from tsumgi.gateway.audio import VoiceAlias
+from tsumgi.runtime.providers.voicevox_discovery import (
     VoicevoxDiscoveryConfig,
     VoicevoxDiscoveryResult,
     VoicevoxDiscoveryStatus,
     VoicevoxObservedStyle,
     _catalog,
 )
-from astrumweaver.runtime.providers.voicevox_external_catalog import (
+from tsumgi.runtime.providers.voicevox_external_catalog import (
     VoicevoxExternalCatalogError,
     review_external_voicevox_catalog,
 )

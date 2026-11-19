@@ -7,8 +7,8 @@ import tomllib
 
 import pytest
 
-from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
-from astrumweaver.runtime import (
+from tsumgi import AcceleratorDevice, ResourceShape, WorkerSpec
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -22,7 +22,7 @@ from astrumweaver.runtime import (
     RuntimeSelectionMode,
     resolve_runtime,
 )
-from astrumweaver.runtime.providers import (
+from tsumgi.runtime.providers import (
     ExLlamaV3Provider,
     FreeTokenProvider,
     LlamaCppProvider,
@@ -30,7 +30,7 @@ from astrumweaver.runtime.providers import (
     VllmProvider,
     VllmProviderConfig,
 )
-from astrumweaver.setup import (
+from tsumgi.setup import (
     DeploymentPath,
     PrivilegeMode,
     SetupHostSnapshot,
@@ -550,7 +550,7 @@ def test_control_plane_contains_no_first_class_provider_branches() -> None:
         "exllamav3",
         "runtime.providers",
     )
-    for path in (ROOT / "src/astrumweaver/control").rglob("*.py"):
+    for path in (ROOT / "src/tsumgi/control").rglob("*.py"):
         source = path.read_text(encoding="utf-8").lower()
         for token in provider_tokens:
             assert token not in source, (path, token)

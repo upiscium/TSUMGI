@@ -1,0 +1,30 @@
+[Unit]
+Description=TSUMGI GPU Worker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+SupplementaryGroups=tsumgi-config
+EnvironmentFile=-/etc/tsumgi/worker.env
+ExecStartPre=+/usr/local/libexec/tsumgi/gpu-preflight /etc/tsumgi/gpu-uuids
+ExecStart=@EXECUTABLE@ --config /etc/tsumgi/worker.toml@RUNTIME_ARG@
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=tsumgi-worker
+RuntimeDirectoryMode=0750
+StateDirectory=tsumgi
+StateDirectoryMode=0750
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

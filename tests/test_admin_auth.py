@@ -8,9 +8,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from astrumweaver.control import InMemoryControlRepository
-from astrumweaver.control.admin import create_admin_router
-from astrumweaver.control.admin_auth import (
+from tsumgi.control import InMemoryControlRepository
+from tsumgi.control.admin import create_admin_router
+from tsumgi.control.admin_auth import (
     FAILURE_WINDOW_SECONDS,
     MAX_FAILURES,
     BasicAuth,
@@ -18,7 +18,7 @@ from astrumweaver.control.admin_auth import (
     hash_password,
     parse_hash,
 )
-from astrumweaver.control.daemon import build_app
+from tsumgi.control.daemon import build_app
 
 from test_admin_console_daemon import write_config
 from test_chat_gateway_daemon import base_environment
@@ -182,7 +182,7 @@ async def test_visits_without_credentials_leave_no_state_behind():
 
 
 def test_tracking_is_bounded_and_keeps_locked_out_clients():
-    import astrumweaver.control.admin_auth as mod
+    import tsumgi.control.admin_auth as mod
 
     clock = Clock()
     auth = BasicAuth(StaticCredentials("ops", HASH), clock=clock)
@@ -197,7 +197,7 @@ def test_tracking_is_bounded_and_keeps_locked_out_clients():
 
 @pytest.mark.asyncio
 async def test_busy_verifier_refuses_quickly_instead_of_queueing():
-    import astrumweaver.control.admin_auth as mod
+    import tsumgi.control.admin_auth as mod
 
     app = FastAPI()
     auth = BasicAuth(StaticCredentials("ops", HASH))
@@ -268,7 +268,7 @@ def test_daemon_validates_trusted_proxies(tmp_path, monkeypatch, extra):
 
 
 def test_password_prompt_rejects_short_and_mismatched_passwords(monkeypatch, capsys):
-    from astrumweaver.control import admin_auth
+    from tsumgi.control import admin_auth
 
     answers = iter(["short", "x"])
     monkeypatch.setattr(admin_auth.getpass, "getpass", lambda _p: next(answers))
@@ -281,7 +281,7 @@ def test_password_prompt_rejects_short_and_mismatched_passwords(monkeypatch, cap
 
 # ---- first-run setup ----------------------------------------------------------
 
-from astrumweaver.control.admin_auth import CredentialsFile  # noqa: E402
+from tsumgi.control.admin_auth import CredentialsFile  # noqa: E402
 
 SETUP = {"username": "ops", "password": "a long enough password"}
 
@@ -478,7 +478,7 @@ def test_untrusted_code_files_are_ignored(tmp_path):
 
 @pytest.mark.asyncio
 async def test_setup_without_hard_links_and_a_failing_cleanup_still_succeed(tmp_path, monkeypatch):
-    import astrumweaver.control.admin_auth as mod
+    import tsumgi.control.admin_auth as mod
 
     client, store, _ = make_setup(tmp_path)
     real_link, real_unlink = os.link, Path.unlink

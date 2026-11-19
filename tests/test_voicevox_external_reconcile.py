@@ -13,19 +13,19 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from astrumweaver.gateway.audio import VoiceAlias
-from astrumweaver.runtime.providers.voicevox_discovery import (
+from tsumgi.gateway.audio import VoiceAlias
+from tsumgi.runtime.providers.voicevox_discovery import (
     VoicevoxDiscoveryConfig,
     VoicevoxDiscoveryResult,
     VoicevoxDiscoveryStatus,
     _catalog,
 )
-from astrumweaver.runtime.providers.voicevox_external_plan import (
+from tsumgi.runtime.providers.voicevox_external_plan import (
     ObservationPhase,
     OperatorPolicyStatus,
     PlanRequest,
 )
-from astrumweaver.runtime.providers.voicevox_external_reconcile import (
+from tsumgi.runtime.providers.voicevox_external_reconcile import (
     ExternalVoicevoxReconcileConfig,
     ExternalVoicevoxReconcileError,
     ExternalVoicevoxReconcileState,
@@ -653,7 +653,7 @@ def test_planning_sequence_overflow_fails_closed():
 
 
 def test_private_complete_observation_envelope_has_no_public_raw_repr():
-    from astrumweaver.runtime.providers.voicevox_external_reconcile import (
+    from tsumgi.runtime.providers.voicevox_external_reconcile import (
         _VoicevoxR1ObservationEnvelope,
     )
 

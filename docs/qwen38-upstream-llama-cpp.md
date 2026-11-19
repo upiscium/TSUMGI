@@ -21,13 +21,13 @@ The Qwen3.8-specific Nix wrapper enforces reasoning=off and flash-attn=on after 
 On a generic-systemd host, using the *reviewed candidate Installer*:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-runtime-profile ensure qwen38-llama-cpp
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-runtime-profile verify package qwen38-llama-cpp
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-runtime-profile ensure qwen38-llama-cpp
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-runtime-profile verify package qwen38-llama-cpp
 ```
 
-The new executable is `/nix/var/nix/profiles/astrumweaver-runtime-qwen38/bin/llama-server`. Its Nix profile is managed separately from default `/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp` and refuses unknown/mixed elements on ensure, upgrade and rollback. `rollback qwen38-llama-cpp` recovers a previous *Qwen38 profile generation*; it does not automatically restore the old Qwen3.6 deployment. Preserve backups of the original `worker.toml`, RuntimeDeployment/ServingDeployment manifests, systemd unit/drop-ins and Control Chat catalog for full service rollback.
+The new executable is `/nix/var/nix/profiles/tsumgi-runtime-qwen38/bin/llama-server`. Its Nix profile is managed separately from default `/nix/var/nix/profiles/tsumgi-runtime-llama-cpp` and refuses unknown/mixed elements on ensure, upgrade and rollback. `rollback qwen38-llama-cpp` recovers a previous *Qwen38 profile generation*; it does not automatically restore the old Qwen3.6 deployment. Preserve backups of the original `worker.toml`, RuntimeDeployment/ServingDeployment manifests, systemd unit/drop-ins and Control Chat catalog for full service rollback.
 
-Use a matching Provider config pair: executable=/nix/var/nix/profiles/astrumweaver-runtime-qwen38/bin/llama-server and package_reference=qwen38-llama-cpp when invoking the packaged installer. A pre-installed operator-managed site may retain package_reference=/nix/var/nix/profiles/astrumweaver-runtime-qwen38 with that same executable; the candidate profile manager now accepts that exact managed path as an alias (and still rejects unmanaged/mixed elements). Do not mix either Qwen3.8 selector with the default llama-cpp executable/package. Existing generic upstream selections remain unchanged.
+Use a matching Provider config pair: executable=/nix/var/nix/profiles/tsumgi-runtime-qwen38/bin/llama-server and package_reference=qwen38-llama-cpp when invoking the packaged installer. A pre-installed operator-managed site may retain package_reference=/nix/var/nix/profiles/tsumgi-runtime-qwen38 with that same executable; the candidate profile manager now accepts that exact managed path as an alias (and still rejects unmanaged/mixed elements). Do not mix either Qwen3.8 selector with the default llama-cpp executable/package. Existing generic upstream selections remain unchanged.
 
 **Staging before promotion:** verify the complete Qwen3.8 file bytes against the SHA-256 above, then exercise `--model <verified-gguf> --n-gpu-layers 99 --split-mode layer --tensor-split 1,1 --ctx-size 8192 --flash-attn on --reasoning off --jinja` with `127.0.0.1` binding, explicit dual GPU UUIDs and `--fit off`. Require actual Chat/Tool Call and OpenCode file edits, correct token budgets, consistent GPU residency, bounded shutdown and recovery.
 

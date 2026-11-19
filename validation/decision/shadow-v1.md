@@ -1,4 +1,4 @@
-# AstrumWeaver System-One Shadow Acceptance Evidence
+# TSUMGI System-One Shadow Acceptance Evidence
 
 This file is intentionally redacted. It contains no gateway URL, credential, fixture state/question/choice text, fixture case IDs, local path, hostname, Worker/GPU identity, or model artifact path. Scores are choice-set probabilities and are explicitly uncalibrated; this evidence grants no execution, permission, review, or release authority.
 

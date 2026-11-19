@@ -27,11 +27,11 @@ CUDA unfree packages are enabled explicitly in the opt-in Nix scope.
 Each runtime contains:
 
 - `bin/llama-server` — Nix-built CUDA binary with pinned libraries and ELF loader;
-- `bin/astrumweaver-llama-server` — the preferred managed launcher. It
+- `bin/tsumgi-llama-server` — the preferred managed launcher. It
   discovers host `libcuda.so.1`, creates a private *driver-only* loader
   directory, forwards termination to its owned child and removes the
   directory on exit. Host glibc/libstdc++ are never inserted;
-- `share/astrumweaver/{llama-cpp-revision,cuda-sm,cuda-toolkit}` — immutable
+- `share/tsumgi/{llama-cpp-revision,cuda-sm,cuda-toolkit}` — immutable
   source, SM architecture and toolkit provenance verified by the CLI.
 
 No package bundles or downloads a model, starts services, registers
@@ -45,7 +45,7 @@ Inspect exact GPU identity, memory and service health:
 
 ~~~sh
 nvidia-smi --query-gpu=uuid,compute_cap,memory.total,memory.used --format=csv,noheader
-systemctl is-active astrumweaver-worker.service
+systemctl is-active tsumgi-worker.service
 ~~~
 
 Use an operator-selected **free** loopback port. The probe refuses port
@@ -57,7 +57,7 @@ reviewed **test**, not GPU reassignment or production resource sharing.
 The NVIDIA host driver and GPU passthrough must already be working.
 The test host must provide `nvidia-smi`, `ldconfig`, and Linux
 `ss` (from `iproute2`) for fail-closed GPU and loopback-process-ownership
-checks. AstrumWeaver does not install drivers, virtual machines or hypervisors.
+checks. TSUMGI does not install drivers, virtual machines or hypervisors.
 
 ## Pin the existing model separately
 
@@ -82,7 +82,7 @@ to the Nix store.
 
 ## Build and run a disposable native test
 
-From the reviewed AstrumWeaver source checkout carrying this package:
+From the reviewed TSUMGI source checkout carrying this package:
 
 ~~~sh
 # On a single SM61 GPU test host:
@@ -94,20 +94,20 @@ RUNTIME=$(nix build --no-link --print-out-paths \
   .#decision-llama-cuda-sm86)
 
 test -x "$RUNTIME/bin/llama-server"
-test -x "$RUNTIME/bin/astrumweaver-llama-server"
-"$RUNTIME/bin/astrumweaver-llama-server" --version
+test -x "$RUNTIME/bin/tsumgi-llama-server"
+"$RUNTIME/bin/tsumgi-llama-server" --version
 ~~~
 
 This builds only the package; **no model or Worker is started**.
-The probe is available from the packaged AstrumWeaver CLI
-`astrumweaver-d1-gpu-smoke`, or via the checkout's Python module
-`astrumweaver.validation.d1_gpu_smoke`.
+The probe is available from the packaged TSUMGI CLI
+`tsumgi-d1-gpu-smoke`, or via the checkout's Python module
+`tsumgi.validation.d1_gpu_smoke`.
 
 ~~~sh
 export EVIDENCE_DIR=/private/isolated-evidence
 install -d -m 700 "$EVIDENCE_DIR"
 
-astrumweaver-d1-gpu-smoke \
+tsumgi-d1-gpu-smoke \
   --package "$RUNTIME" \
   --model "$MODEL_FILE" \
   --gpu-count 1 \
@@ -164,19 +164,19 @@ GPUs. For a NixOS Worker, include the exact package under
 
 ~~~nix
 let
-  d1Runtime = inputs.astrumweaver.packages.${pkgs.system}.decision-llama-cuda-sm61;
+  d1Runtime = inputs.tsumgi.packages.${pkgs.system}.decision-llama-cuda-sm61;
 in
 {
-  # Fragment within the reviewed services.astrumweaver.worker.runtime:
+  # Fragment within the reviewed services.tsumgi.worker.runtime:
   packages = [ d1Runtime ];
   providerConfig.executable =
-    "${d1Runtime}/bin/astrumweaver-llama-server";
+    "${d1Runtime}/bin/tsumgi-llama-server";
 }
 ~~~
 
 For generic systemd, put the same pinned Nix package in the approved
 runtime closure and use the wrapper path in a **new** reviewed
-`RuntimeDeploymentSpec`. Use the existing `astrumweaver-setup-tui` /
+`RuntimeDeploymentSpec`. Use the existing `tsumgi-setup-tui` /
 `SetupPlan` approval path for any host mutations. The launcher respects
 the Worker-scoped `CUDA_VISIBLE_DEVICES` and never grants GPU ownership.
 
@@ -189,7 +189,7 @@ the GPU visibility, driver search path, and necessary basic OS variables,
 The driver shim prefers the standard NixOS
 `/run/opengl-driver/lib/libcuda.so.1` and then well-known generic Linux
 driver paths. For a different verified host, set
-`ASTRUMWEAVER_LIBCUDA_SO=/approved/driver/libcuda.so.1` in the runtime
+`TSUMGI_LIBCUDA_SO=/approved/driver/libcuda.so.1` in the runtime
 environment; never use CUDA toolkit `stubs/`. That is a host driver
 **runtime input**, not a build-time patch or permission escalation.
 

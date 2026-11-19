@@ -10,11 +10,11 @@ import errno
 import httpx
 import pytest
 
-from astrumweaver.audio import ArtifactSpool, AudioOutputChannel
-from astrumweaver.audio.input_channel import AudioInputChannel
-from astrumweaver.control import JobStatus, JobSubmission, PostgresControlRepository
-from astrumweaver.control.api import create_app
-from astrumweaver.control.repository import NotFoundError
+from tsumgi.audio import ArtifactSpool, AudioOutputChannel
+from tsumgi.audio.input_channel import AudioInputChannel
+from tsumgi.control import JobStatus, JobSubmission, PostgresControlRepository
+from tsumgi.control.api import create_app
+from tsumgi.control.repository import NotFoundError
 from test_audio_artifact_authority import EPOCH, setup_claim
 from test_audio_artifact_authority_postgres import isolated_database
 
@@ -79,7 +79,7 @@ async def test_truncated_http_input_is_not_staged_or_admitted(
 async def test_disk_full_during_output_staging_does_not_publish_or_consume_quota(
     tmp_path, isolated_database, monkeypatch,
 ):
-    import astrumweaver.audio.artifact_spool as spool_module
+    import tsumgi.audio.artifact_spool as spool_module
 
     repo = PostgresControlRepository(isolated_database, lease_seconds=60)
     claim = setup_claim(repo, datetime.now(UTC))
@@ -187,7 +187,7 @@ def test_hard_exited_spool_process_leaves_recoverable_private_orphan(tmp_path):
     environment["PYTHONPATH"] = str(source_root) + os.pathsep + environment.get("PYTHONPATH", "")
     script = (
         "import os,sys\n"
-        "from astrumweaver.audio.artifact_spool import ArtifactSpool\n"
+        "from tsumgi.audio.artifact_spool import ArtifactSpool\n"
         "spool=ArtifactSpool(sys.argv[1],max_bytes=256,ttl_seconds=300,"
         "max_total_bytes=512,max_artifacts=2)\n"
         "spool.stage(b'RIFF' + (16).to_bytes(4,'little') + b'WAVEabcd',scope='crash')\n"

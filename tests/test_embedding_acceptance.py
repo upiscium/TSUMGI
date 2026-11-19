@@ -4,12 +4,12 @@ import json
 
 import httpx
 
-from astrumweaver.gateway.embedding import (
+from tsumgi.gateway.embedding import (
     LLAMA_CPP_EMBEDDING_ADAPTER,
     EmbeddingSpaceIdentity,
     text_policy_digest,
 )
-from astrumweaver.validation.embedding import (
+from tsumgi.validation.embedding import (
     EmbeddingAcceptanceError,
     EmbeddingAcceptanceRunner,
     render_embedding_acceptance_markdown,

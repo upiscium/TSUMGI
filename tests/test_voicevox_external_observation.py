@@ -9,25 +9,25 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from astrumweaver.gateway.audio import VoiceAlias
-from astrumweaver.runtime.providers.voicevox_discovery import (
+from tsumgi.gateway.audio import VoiceAlias
+from tsumgi.runtime.providers.voicevox_discovery import (
     VoicevoxDiscoveryConfig,
     VoicevoxDiscoveryResult,
     VoicevoxDiscoveryStatus,
     _catalog,
 )
-from astrumweaver.runtime.providers.voicevox_external_observation import (
+from tsumgi.runtime.providers.voicevox_external_observation import (
     ExternalVoicevoxObservationCoordinator,
     ExternalVoicevoxObservationError,
 )
-from astrumweaver.runtime.providers.voicevox_external_plan import (
+from tsumgi.runtime.providers.voicevox_external_plan import (
     ObservationPhase,
     OperatorPolicyStatus,
 )
-from astrumweaver.runtime.providers.voicevox_external_polling import (
+from tsumgi.runtime.providers.voicevox_external_polling import (
     VoicevoxExternalPollingConfig,
 )
-from astrumweaver.runtime.providers.voicevox_external_reconcile import (
+from tsumgi.runtime.providers.voicevox_external_reconcile import (
     ExternalVoicevoxReconcileConfig,
 )
 

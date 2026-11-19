@@ -15,17 +15,17 @@ from pathlib import Path
 import pytest
 from test_voicevox_managed_runtime import FakeEngine, make_spec
 
-from astrumweaver.runtime.contracts import RuntimeHealthState
-from astrumweaver.runtime.providers.voicevox_linux_process import (
+from tsumgi.runtime.contracts import RuntimeHealthState
+from tsumgi.runtime.providers.voicevox_linux_process import (
     LinuxVoicevoxOwnedProcessControl,
     VoicevoxLinuxLaunchSpec,
     VoicevoxOwnedProcessError,
 )
-from astrumweaver.runtime.providers.voicevox_managed import (
+from tsumgi.runtime.providers.voicevox_managed import (
     VoicevoxOwnedManagedRuntime,
     VoicevoxRuntimeFailure,
 )
-from astrumweaver.serving import ServingDeploymentDeclaration
+from tsumgi.serving import ServingDeploymentDeclaration
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux procfs only")
 
@@ -122,7 +122,7 @@ async def ready(controller: LinuxVoicevoxOwnedProcessControl, *, seconds=3.0):
 async def test_unstarted_stop_rejects_unproven_nonce_without_side_effects(
     tmp_path, monkeypatch, nonce
 ):
-    import astrumweaver.runtime.providers.voicevox_linux_process as module
+    import tsumgi.runtime.providers.voicevox_linux_process as module
 
     _cfg, _pin, _runner, controller = setup(tmp_path)
     assert controller._proc is None
@@ -602,7 +602,7 @@ def test_same_port_foreign_interface_listener_is_not_ignored(monkeypatch):
 
     Use synthetic procfs only: never open a real non-loopback test port.
     """
-    from astrumweaver.runtime.providers.voicevox_linux_process import (
+    from tsumgi.runtime.providers.voicevox_linux_process import (
         _listener_sockets,
     )
 
@@ -729,8 +729,8 @@ async def test_different_elf_exec_preserving_original_listen_fd_denies_ready_and
     """
     import shutil
 
-    import astrumweaver.runtime.providers.voicevox_linux_process as process_module
-    from astrumweaver.runtime.providers.voicevox_linux_process import (
+    import tsumgi.runtime.providers.voicevox_linux_process as process_module
+    from tsumgi.runtime.providers.voicevox_linux_process import (
         _listener_sockets,
         _owned_group_generation,
         _process_socket_inodes,
@@ -816,7 +816,7 @@ os.execv({replacement!r}, [{replacement!r}, "30"])
 async def test_post_reap_verification_is_bounded_tracked_and_reconciled(
     tmp_path, monkeypatch, interrupt
 ):
-    import astrumweaver.runtime.providers.voicevox_linux_process as module
+    import tsumgi.runtime.providers.voicevox_linux_process as module
 
     cfg, pin, _runner, _ctl = setup(tmp_path)
     cfg = replace(cfg, stop_timeout_seconds=0.2)
@@ -882,7 +882,7 @@ async def test_post_reap_verification_is_bounded_tracked_and_reconciled(
 async def test_direct_controller_deadline_includes_post_reap_scan(
     tmp_path, monkeypatch
 ):
-    import astrumweaver.runtime.providers.voicevox_linux_process as module
+    import tsumgi.runtime.providers.voicevox_linux_process as module
 
     cfg, pin, _runner, _ctl = setup(tmp_path)
     ctl = LinuxVoicevoxOwnedProcessControl(
@@ -918,7 +918,7 @@ async def test_direct_controller_deadline_includes_post_reap_scan(
 async def test_child_exit_during_generation_check_still_reaps_and_proves_port(
     tmp_path, monkeypatch
 ):
-    import astrumweaver.runtime.providers.voicevox_linux_process as module
+    import tsumgi.runtime.providers.voicevox_linux_process as module
 
     cfg, _pin, _runner, ctl = setup(tmp_path)
     nonce = "01234567-89ab-4cde-8123-0123456789ab"
@@ -951,7 +951,7 @@ async def test_child_exit_during_generation_check_still_reaps_and_proves_port(
 async def test_cancel_during_term_grace_retains_live_owned_child_for_explicit_reap(
     tmp_path, monkeypatch
 ):
-    import astrumweaver.runtime.providers.voicevox_linux_process as module
+    import tsumgi.runtime.providers.voicevox_linux_process as module
 
     runner = RUNNER.replace(
         "while True:",
@@ -1005,7 +1005,7 @@ async def test_cancel_during_term_grace_retains_live_owned_child_for_explicit_re
 async def test_post_exit_foreign_rebind_retains_handle_without_foreign_signals(
     tmp_path, monkeypatch
 ):
-    import astrumweaver.runtime.providers.voicevox_linux_process as module
+    import tsumgi.runtime.providers.voicevox_linux_process as module
 
     cfg, _pin, _runner, ctl = setup(tmp_path)
     nonce = "01234567-89ab-4cde-8123-0123456789ab"
@@ -1046,7 +1046,7 @@ async def test_failed_late_spawn_reap_retries_owned_handle_after_listener_clears
     tmp_path, monkeypatch
 ):
     """One failed terminal late-reap must not poison same-nonce reconciliation."""
-    import astrumweaver.runtime.providers.voicevox_linux_process as module
+    import tsumgi.runtime.providers.voicevox_linux_process as module
 
     cfg, pin, _runner, _controller = setup(tmp_path)
     nonce = "01234567-89ab-4cde-8123-0123456789ab"

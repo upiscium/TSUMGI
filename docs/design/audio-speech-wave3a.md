@@ -1,6 +1,6 @@
 # #175 Wave3A: opt-in providerless speech Job bridge
 
-Scope: `src/astrumweaver/gateway/audio_speech_api.py`,
+Scope: `src/tsumgi/gateway/audio_speech_api.py`,
 `tests/test_audio_speech_api.py`, and this note only. The pre-existing uncommitted
 API implementation was continued in place. No separate W3A approval packet was
 found in this worktree; this note describes the implementation against the

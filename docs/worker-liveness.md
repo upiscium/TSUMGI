@@ -84,14 +84,14 @@ response bodies. Do not publish raw journals or private health payloads.
 For an OFFLINE or remotely DRAINING Worker whose cause has been resolved,
 explicitly return the existing identity ONLINE through Control's Worker state
 endpoint (see [protocol-v1.md](protocol-v1.md)). For example, using locally set
-`ASTRUMWEAVER_CONTROL_URL`, `WORKER_ID` and protected Worker credentials:
+`TSUMGI_CONTROL_URL`, `WORKER_ID` and protected Worker credentials:
 
 ```sh
 curl -fsS -X POST \
-  -H "Authorization: Bearer $ASTRUMWEAVER_WORKER_TOKEN" \
+  -H "Authorization: Bearer $TSUMGI_WORKER_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"protocol_version":"v1","state":"online"}' \
-  "$ASTRUMWEAVER_CONTROL_URL/v1/workers/$WORKER_ID/state"
+  "$TSUMGI_CONTROL_URL/v1/workers/$WORKER_ID/state"
 ```
 
 This endpoint requires the **Worker** token even when Client job endpoints use

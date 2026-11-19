@@ -3,15 +3,15 @@
 let
   inherit (pkgs) lib;
   controlModule = ../modules/control.nix;
-  inputRoot = "/var/lib/astrumweaver/audio/input";
-  outputRoot = "/var/lib/astrumweaver/audio/output";
+  inputRoot = "/var/lib/tsumgi/audio/input";
+  outputRoot = "/var/lib/tsumgi/audio/output";
   # This is a module/storage test, not a provider, database, or daemon smoke.
   # No secret fixture is generated in the store.
   base = {
     imports = [ controlModule ];
     nixpkgs.pkgs = pkgs;
     system.stateVersion = "26.05";
-    services.astrumweaver.control = {
+    services.tsumgi.control = {
       enable = lib.mkDefault true;
       package = pkgs.coreutils;
       command = "${pkgs.coreutils}/bin/true";
@@ -21,7 +21,7 @@ let
   # must not open it or invent provider/runtime configuration.
   policy = {
     enabled = true;
-    catalog = "/etc/astrumweaver/reviewed-audio.json";
+    catalog = "/etc/tsumgi/reviewed-audio.json";
     ingress = {
       request_bytes = 2097152;
       input_bytes = 16384;
@@ -55,7 +55,7 @@ let
     output_spool = policy.input_spool // { root = outputRoot; };
   };
   audioOptions = {
-    environmentFile = "/run/secrets/astrumweaver-control.env";
+    environmentFile = "/run/secrets/tsumgi-control.env";
     settings.audio_gateway = policy;
   };
   evaluate = options: extra: (nixpkgs.lib.nixosSystem {
@@ -63,7 +63,7 @@ let
     modules = [ base {
       boot.isContainer = true;
       fileSystems."/" = { device = "none"; fsType = "tmpfs"; };
-      services.astrumweaver.control = options;
+      services.tsumgi.control = options;
     } extra ];
   }).config;
   enabled = evaluate audioOptions { };
@@ -81,7 +81,7 @@ let
       output_spool.root = "/not-present/output";
     };
   } { };
-  serviceOf = cfg: cfg.systemd.services.astrumweaver-control;
+  serviceOf = cfg: cfg.systemd.services.tsumgi-control;
   unchanged = cfg:
     # ExecStart's generated TOML path necessarily differs; all other service
     # configuration and dependencies, and all tmpfiles rules, must be identical.
@@ -99,7 +99,7 @@ let
   badRoots = [
     { input_spool.root = "/tmp/input"; }
     { input_spool.root = "relative/input"; }
-    { input_spool.root = "/var/lib/astrumweaver/audio/../audio/input"; }
+    { input_spool.root = "/var/lib/tsumgi/audio/../audio/input"; }
     { output_spool.root = inputRoot; }
     { output_spool.root = "${inputRoot}/nested"; }
     { input_spool.root = outputRoot; output_spool.root = inputRoot; }
@@ -112,8 +112,8 @@ let
     # A runtime-looking string must not carry a store dependency/context either.
     "/run/secrets/${pkgs.coreutils.name}-${pkgs.coreutils}.env"
   ];
-  rules = map (path: "d ${path} 0700 astrumweaver astrumweaver - -") [
-    "/var/lib/astrumweaver/audio" inputRoot outputRoot
+  rules = map (path: "d ${path} 0700 tsumgi tsumgi - -") [
+    "/var/lib/tsumgi/audio" inputRoot outputRoot
   ];
 in
 # These assertions inspect genuinely evaluated NixOS configurations, not module
@@ -125,11 +125,11 @@ assert accepts (change { settings.control.client_auth = "bearer"; });
 assert accepts (change { clientAuth = "bearer"; settings.control.client_auth = "none"; });
 assert unchanged disabled && unchanged retained;
 assert builtins.all (cfg: !(builtins.any
-  (rule: lib.hasInfix "/var/lib/astrumweaver/audio" rule)
+  (rule: lib.hasInfix "/var/lib/tsumgi/audio" rule)
   cfg.systemd.tmpfiles.rules)) [ baseline disabled retained ];
-assert !((evaluate (audioOptions // { enable = false; }) { }).systemd.services ? astrumweaver-control);
+assert !((evaluate (audioOptions // { enable = false; }) { }).systemd.services ? tsumgi-control);
 assert baseline.systemd.tmpfiles.rules == anonymousBaseline.systemd.tmpfiles.rules;
-assert (serviceOf enabled).serviceConfig.StateDirectory == "astrumweaver";
+assert (serviceOf enabled).serviceConfig.StateDirectory == "tsumgi";
 assert (serviceOf enabled).serviceConfig.StateDirectoryMode == "0750";
 assert builtins.all (rule: builtins.elem rule enabled.systemd.tmpfiles.rules) rules;
 assert builtins.attrNames enabled.systemd.services == builtins.attrNames baseline.systemd.services;
@@ -139,7 +139,7 @@ assert !(builtins.tryEval badAuth.system.build.toplevel.drvPath).success;
 assert builtins.all (path: rejects "Control audio requires a protected"
   (change { environmentFile = path; })) badEnvironmentPaths;
 assert rejects "Control audio requires a protected" (evaluate audioOptions {
-  systemd.services.astrumweaver-control.serviceConfig.EnvironmentFile = lib.mkForce "/run/other.env";
+  systemd.services.tsumgi-control.serviceConfig.EnvironmentFile = lib.mkForce "/run/other.env";
 });
 assert builtins.all (roots: rejects "Control audio supports only"
   (change { settings.audio_gateway = roots; })) badRoots;
@@ -148,23 +148,23 @@ assert rejects "Control audio supports only" (evaluate {
   settings.audio_gateway.enabled = true;
 } { });
 assert rejects "Control audio requires the existing" (evaluate audioOptions {
-  systemd.services.astrumweaver-control.serviceConfig.StateDirectory = lib.mkForce "elsewhere";
+  systemd.services.tsumgi-control.serviceConfig.StateDirectory = lib.mkForce "elsewhere";
 });
 assert rejects "Control audio requires the existing" (evaluate audioOptions {
-  systemd.services.astrumweaver-control.serviceConfig.User = lib.mkForce "nobody";
+  systemd.services.tsumgi-control.serviceConfig.User = lib.mkForce "nobody";
 });
 assert rejects "Control audio requires the existing" (evaluate audioOptions {
-  systemd.services.astrumweaver-control.serviceConfig.Group = lib.mkForce "nogroup";
+  systemd.services.tsumgi-control.serviceConfig.Group = lib.mkForce "nogroup";
 });
 assert rejects "Control audio requires the existing" (evaluate audioOptions {
-  systemd.services.astrumweaver-control.serviceConfig.DynamicUser = true;
+  systemd.services.tsumgi-control.serviceConfig.DynamicUser = true;
 });
 assert rejects "Control audio requires empty extraArgs" (change { extraArgs = [ "--config" "/other.toml" ]; });
 # Every assertion above forces actual NixOS module evaluation. Keep the
 # default CI check evaluation-only: it must not require KVM, instantiate a
 # VM, or exercise host systemd. A later isolated host/VM qualification is
 # separately reviewed and gated.
-pkgs.runCommand "astrumweaver-audio-control-module-evaluation" { } ''
+pkgs.runCommand "tsumgi-audio-control-module-evaluation" { } ''
   mkdir -p "$out"
   printf '%s\n' 'NixOS audio Control source-module assertions passed at evaluation' > "$out/evidence"
 ''

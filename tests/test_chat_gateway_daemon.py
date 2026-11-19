@@ -6,13 +6,13 @@ import json
 import httpx
 import pytest
 
-from astrumweaver.control.daemon import build_app
-from astrumweaver.gateway.chat import (
+from tsumgi.control.daemon import build_app
+from tsumgi.gateway.chat import (
     CHAT_CATALOG_SCHEMA,
     CHAT_OPERATION_SCHEMA,
     LLAMA_CPP_CHAT_ADAPTER,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,
@@ -86,11 +86,11 @@ def route_paths(app) -> set[str]:
 
 def base_environment(monkeypatch) -> None:
     monkeypatch.setenv(
-        "ASTRUMWEAVER_DATABASE_URL",
-        "postgresql://example.invalid/astrumweaver",
+        "TSUMGI_DATABASE_URL",
+        "postgresql://example.invalid/tsumgi",
     )
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker-secret")
-    monkeypatch.delenv("ASTRUMWEAVER_CLIENT_TOKEN", raising=False)
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "worker-secret")
+    monkeypatch.delenv("TSUMGI_CLIENT_TOKEN", raising=False)
 
 
 def test_control_daemon_mounts_chat_gateway_only_when_enabled(tmp_path, monkeypatch):
@@ -163,8 +163,8 @@ def test_control_daemon_requires_valid_catalog_when_chat_gateway_enabled(
 async def test_control_daemon_applies_chat_admission_budget_from_toml(
     tmp_path, monkeypatch
 ):
-    from astrumweaver.control import daemon
-    from astrumweaver.control import JobStatus
+    from tsumgi.control import daemon
+    from tsumgi.control import JobStatus
     from test_chat_gateway_admission_budget import (
         CountingBlockedAdmissionRepository,
         _BODY,
@@ -225,7 +225,7 @@ async def test_control_daemon_applies_chat_admission_budget_from_toml(
 
 
 def test_control_daemon_threads_job_event_buffer_limits(tmp_path, monkeypatch):
-    from astrumweaver.control import daemon
+    from tsumgi.control import daemon
 
     base_environment(monkeypatch)
     captured = {}

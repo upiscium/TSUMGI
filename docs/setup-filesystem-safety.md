@@ -5,14 +5,14 @@ Worker data. This is the F4 fix tracked by #81 / release review #79.
 
 ## Locations and authority
 
-- `/var/lib/astrumweaver-setup` is root-owned, mode `0700`. Per-action receipts
+- `/var/lib/tsumgi-setup` is root-owned, mode `0700`. Per-action receipts
   are root-owned regular files, mode `0600`, below this directory.
-- `/var/lib/astrumweaver` remains the Worker's writable home/state. Runtime
+- `/var/lib/tsumgi` remains the Worker's writable home/state. Runtime
   state/cache directories remain service-owned with mode `0750`.
-- `/etc/astrumweaver/runtime` contains root-managed runtime configuration and
+- `/etc/tsumgi/runtime` contains root-managed runtime configuration and
   the NVIDIA driver bridge. Configuration files retain Worker-group read access.
 - The default TabbyAPI configuration is now
-  `/etc/astrumweaver/runtime/exllamav3/config.yml`, not Worker-writable state.
+  `/etc/tsumgi/runtime/exllamav3/config.yml`, not Worker-writable state.
   An explicitly configured alternative must also have safe root-owned ancestry.
 
 Legacy `packages/*.installed` and `model-preparation/*` markers below Worker
@@ -33,7 +33,7 @@ can establish the prerequisite. Configure a provider-keyed argv map alongside
 the existing installer/downloader/converter maps:
 
 ```sh
-export ASTRUMWEAVER_RUNTIME_VERIFIERS_JSON='{"exllamav3":["/usr/local/sbin/verify-reviewed-exllamav3"]}'
+export TSUMGI_RUNTIME_VERIFIERS_JSON='{"exllamav3":["/usr/local/sbin/verify-reviewed-exllamav3"]}'
 ```
 
 The driver appends `package <package_reference>` or `model <model_ref>` to this

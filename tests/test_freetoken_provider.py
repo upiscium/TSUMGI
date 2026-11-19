@@ -9,9 +9,9 @@ from dataclasses import replace
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.execution import JobRequest
-from astrumweaver.runtime import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.execution import JobRequest
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -26,10 +26,10 @@ from astrumweaver.runtime import (
     RuntimeSelectionMode,
     resolve_runtime,
 )
-from astrumweaver.execution import JobExecutionError
-from astrumweaver.gateway.chat import CHAT_JOB_SCHEMA, FREETOKEN_CHAT_ADAPTER
-from astrumweaver.runtime.providers import freetoken as freetoken_module
-from astrumweaver.runtime.providers.freetoken import (
+from tsumgi.execution import JobExecutionError
+from tsumgi.gateway.chat import CHAT_JOB_SCHEMA, FREETOKEN_CHAT_ADAPTER
+from tsumgi.runtime.providers import freetoken as freetoken_module
+from tsumgi.runtime.providers.freetoken import (
     FreeTokenExecutor,
     FreeTokenLaunchPolicy,
     FreeTokenManagedRuntime,
@@ -39,7 +39,7 @@ from astrumweaver.runtime.providers.freetoken import (
     FreeTokenSubprocessController,
     HttpFreeTokenApi,
 )
-from astrumweaver.setup import (
+from tsumgi.setup import (
     DeploymentPath,
     PrivilegeMode,
     SetupActionKind,
@@ -177,7 +177,7 @@ def test_moe_single_gpu_hybrid_is_compatible() -> None:
     }
 
 
-def test_dense_is_rejected_as_astrumweaver_scope_not_upstream_limit() -> None:
+def test_dense_is_rejected_as_tsumgi_scope_not_upstream_limit() -> None:
     report = FreeTokenProvider().compatibility(
         context(
             execution=demand(model_topology=ModelTopology.DENSE)
@@ -190,7 +190,7 @@ def test_dense_is_rejected_as_astrumweaver_scope_not_upstream_limit() -> None:
         for reason in report.reasons
         if reason.code == "model-topology-outside-provider-scope"
     )
-    assert "AstrumWeaver v0.x" in reason.message
+    assert "TSUMGI v0.x" in reason.message
     assert "upstream FreeToken" in reason.message
 
 
@@ -198,7 +198,7 @@ def test_local_gguf_is_compatible() -> None:
     report = FreeTokenProvider().compatibility(
         context(
             execution=demand(
-                model_ref="/var/lib/astrumweaver/models/qwen.gguf",
+                model_ref="/var/lib/tsumgi/models/qwen.gguf",
                 model_format="gguf",
             )
         )
@@ -417,7 +417,7 @@ def test_single_gpu_command_uses_exact_worker_uuid_and_free_token_flags() -> Non
         executable="ft",
         base_url="http://127.0.0.1:1919",
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=FreeTokenLaunchPolicy(
             gpu_uuid="GPU-exact-uuid",
             moe_strategy=FreeTokenMoeStrategy.HYBRID,
@@ -471,7 +471,7 @@ async def test_subprocess_does_not_rewrite_gpu_identity(monkeypatch) -> None:
         executable="ft",
         base_url="http://127.0.0.1:1919",
         model_ref="/models/qwen",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=FreeTokenLaunchPolicy(
             gpu_uuid="GPU-exact-uuid",
             moe_strategy=FreeTokenMoeStrategy.AUTO,
@@ -514,7 +514,7 @@ async def test_http_api_uses_current_freetoken_control_and_openai_endpoints() ->
                 200,
                 json={
                     "object": "list",
-                    "data": [{"id": "astrumweaver", "object": "model"}],
+                    "data": [{"id": "tsumgi", "object": "model"}],
                 },
             )
         if request.url.path == "/v1/chat/completions":
@@ -548,7 +548,7 @@ async def test_http_api_uses_current_freetoken_control_and_openai_endpoints() ->
             return httpx.Response(
                 200,
                 json={
-                    "model": {"id": "astrumweaver", "moe": True},
+                    "model": {"id": "tsumgi", "moe": True},
                     "vram_bytes": 123456,
                 },
             )
@@ -560,17 +560,17 @@ async def test_http_api_uses_current_freetoken_control_and_openai_endpoints() ->
     )
     try:
         assert await api.health()
-        assert await api.models() == ("astrumweaver",)
+        assert await api.models() == ("tsumgi",)
         await api.chat(
             {
-                "model": "astrumweaver",
+                "model": "tsumgi",
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": False,
             }
         )
         await api.completion(
             {
-                "model": "astrumweaver",
+                "model": "tsumgi",
                 "prompt": "hi",
                 "stream": False,
             }
@@ -593,7 +593,7 @@ async def test_http_health_requires_ready_status_not_loading() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"status": "loading", "model": "astrumweaver"},
+            json={"status": "loading", "model": "tsumgi"},
         )
 
     api = HttpFreeTokenApi(
@@ -611,7 +611,7 @@ class FakeApi:
         self,
         *,
         reachable: bool = True,
-        models: tuple[str, ...] = ("astrumweaver",),
+        models: tuple[str, ...] = ("tsumgi",),
         stats: Mapping[str, object] | None = None,
     ) -> None:
         self.reachable = reachable
@@ -719,7 +719,7 @@ async def test_executor_chat_completion_metrics_and_model_binding() -> None:
     executor = FreeTokenExecutor(
         api=api,
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         residency_metadata={},
     )
 
@@ -734,7 +734,7 @@ async def test_executor_chat_completion_metrics_and_model_binding() -> None:
     )
     assert chat.text == "hello"
     assert chat.metrics["total_tokens"] == 5
-    assert api.chat_payloads[0]["model"] == "astrumweaver"
+    assert api.chat_payloads[0]["model"] == "tsumgi"
     assert api.chat_payloads[0]["stream"] is False
 
     completion = await executor.execute(
@@ -764,7 +764,7 @@ async def test_executor_cancellation_aborts_inflight_request() -> None:
     executor = FreeTokenExecutor(
         api=api,
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         residency_metadata={},
     )
 
@@ -788,9 +788,9 @@ async def test_executor_cancellation_aborts_inflight_request() -> None:
 @pytest.mark.asyncio
 async def test_residency_does_not_invent_memory_bytes() -> None:
     executor = FreeTokenExecutor(
-        api=FakeApi(stats={"model": {"id": "astrumweaver", "moe": True}}),
+        api=FakeApi(stats={"model": {"id": "tsumgi", "moe": True}}),
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         residency_metadata={
             "moe_strategy": "auto",
             "host_ram_mb": 131072,
@@ -810,7 +810,7 @@ async def test_residency_treats_zero_vram_as_unobserved() -> None:
     executor = FreeTokenExecutor(
         api=FakeApi(stats={"vram_bytes": 0}),
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         residency_metadata={},
     )
 
@@ -824,12 +824,12 @@ async def test_residency_uses_measured_vram_when_stats_reports_it() -> None:
     executor = FreeTokenExecutor(
         api=FakeApi(
             stats={
-                "model": {"id": "astrumweaver", "moe": True},
+                "model": {"id": "tsumgi", "moe": True},
                 "vram_bytes": 123456,
             }
         ),
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         residency_metadata={},
     )
 
@@ -847,7 +847,7 @@ async def test_managed_runtime_starts_checks_alias_and_stops() -> None:
         process=process,
         context=context(),
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=launch_policy(),
     )
@@ -869,7 +869,7 @@ async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readin
         process=process,
         context=context(),
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         startup_timeout_seconds=60.0,
         launch_policy=launch_policy(),
     )
@@ -890,7 +890,7 @@ async def test_managed_runtime_rejects_external_server() -> None:
         process=process,
         context=context(),
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=launch_policy(),
     )
@@ -911,7 +911,7 @@ async def test_managed_runtime_cleans_up_failed_start() -> None:
         process=process,
         context=context(),
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=launch_policy(),
     )
@@ -932,7 +932,7 @@ async def test_managed_runtime_release_closes_api_once() -> None:
         process=process,
         context=context(),
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=launch_policy(),
     )
@@ -968,7 +968,7 @@ def test_command_adds_attention_backend_and_context_override() -> None:
         executable="ft",
         base_url="http://127.0.0.1:1919",
         model_ref="/models/qwen.gguf",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=replace(
             launch_policy(), attention_backend="triton", max_seq_len=8192
         ),
@@ -986,7 +986,7 @@ def test_environment_adds_toolkit_paths_without_touching_gpu_selection() -> None
         executable="/opt/freetoken/venv/bin/ft",
         base_url="http://127.0.0.1:1919",
         model_ref="/models/qwen.gguf",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=launch_policy(),
         cuda_home="/usr/local/cuda-12.6",
         library_paths=("/opt/freetoken/lib",),
@@ -1032,7 +1032,7 @@ async def test_stop_waits_for_lingering_children_in_the_process_group(
         executable="/opt/freetoken/venv/bin/ft",
         base_url="http://127.0.0.1:1919",
         model_ref="/models/qwen.gguf",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=launch_policy(),
         cuda_home="/usr/local/cuda-12.6",
     )
@@ -1243,7 +1243,7 @@ def test_command_adds_prefill_chunk_size() -> None:
         executable="ft",
         base_url="http://127.0.0.1:1919",
         model_ref="/models/qwen.gguf",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=replace(launch_policy(), max_prefill_tokens=2048),
     )
 
@@ -1269,7 +1269,7 @@ async def test_stop_after_exit_only_probes_a_gone_group(monkeypatch) -> None:
         executable="ft",
         base_url="http://127.0.0.1:1919",
         model_ref="/models/qwen.gguf",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=launch_policy(),
     )
     controller._process = ExitedProcess()
@@ -1293,7 +1293,7 @@ async def test_stop_treats_foreign_group_as_not_ours(monkeypatch) -> None:
         executable="ft",
         base_url="http://127.0.0.1:1919",
         model_ref="/models/qwen.gguf",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=launch_policy(),
     )
     controller._process = ExitedProcess()
@@ -1328,7 +1328,7 @@ async def test_restart_reaps_the_previous_group_first(monkeypatch) -> None:
         executable="ft",
         base_url="http://127.0.0.1:1919",
         model_ref="/models/qwen.gguf",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=launch_policy(),
     )
     controller._process = ExitedProcess()
@@ -1369,12 +1369,12 @@ async def test_tools_are_rejected_when_the_deployment_disables_them(extra) -> No
 
 @pytest.mark.parametrize("tools_enabled", [True, False])
 def test_executor_declares_tools_serving_feature(tools_enabled: bool) -> None:
-    from astrumweaver.serving import (
+    from tsumgi.serving import (
         DeploymentIdentity,
         ServingContract,
         ServingDeploymentDeclaration,
     )
-    from astrumweaver.worker.runtime import require_executor_serving_features
+    from tsumgi.worker.runtime import require_executor_serving_features
 
     digest = "sha256:" + "a" * 64
     deployment = DeploymentIdentity(
@@ -1457,7 +1457,7 @@ class ToolCallApi(GatewayApi):
 
 @pytest.mark.asyncio
 async def test_gateway_tool_call_response_passes_gateway_normalization() -> None:
-    from astrumweaver.gateway.chat import normalize_chat_completion
+    from tsumgi.gateway.chat import normalize_chat_completion
 
     result = await gateway_executor(ToolCallApi()).execute(gateway_job())
 
@@ -1502,7 +1502,7 @@ def test_prefill_chunk_must_fit_the_sequence_length() -> None:
 
 
 def test_chat_contract_must_fit_max_seq_len() -> None:
-    from astrumweaver.serving import ServingContract
+    from tsumgi.serving import ServingContract
 
     def contract(total_tokens: int) -> ServingContract:
         return ServingContract(

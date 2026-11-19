@@ -1,21 +1,21 @@
-{ lib, buildEnv, stdenvNoCC, callPackage, astrumweaver, integration }:
+{ lib, buildEnv, stdenvNoCC, callPackage, tsumgi, integration }:
 
 let
-  controlCli = callPackage ./control-cli-env.nix { inherit astrumweaver; };
+  controlCli = callPackage ./control-cli-env.nix { inherit tsumgi; };
 
   migrations = stdenvNoCC.mkDerivation {
-    pname = "astrumweaver-control-assets";
+    pname = "tsumgi-control-assets";
     version = "0.2.1";
     src = ../.;
     dontBuild = true;
     installPhase = ''
-      mkdir -p "$out/share/astrumweaver/migrations"
-      cp migrations/*.sql "$out/share/astrumweaver/migrations/"
+      mkdir -p "$out/share/tsumgi/migrations"
+      cp migrations/*.sql "$out/share/tsumgi/migrations/"
     '';
   };
 in
 buildEnv {
-  name = "astrumweaver-control-support-0.2.1";
+  name = "tsumgi-control-support-0.2.1";
   paths = [
     controlCli
     migrations

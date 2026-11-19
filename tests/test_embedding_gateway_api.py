@@ -6,13 +6,13 @@ import math
 import httpx
 import pytest
 
-from astrumweaver import JobResult, ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import JobResult, ResourceShape, WorkerSpec
+from tsumgi.control import (
     InMemoryControlRepository,
     WorkerRegistration,
 )
-from astrumweaver.control.api import create_app
-from astrumweaver.gateway.embedding import (
+from tsumgi.control.api import create_app
+from tsumgi.gateway.embedding import (
     EMBEDDING_OPERATION_SCHEMA,
     LLAMA_CPP_EMBEDDING_ADAPTER,
     EmbeddingGatewayProfile,
@@ -20,8 +20,8 @@ from astrumweaver.gateway.embedding import (
     EmbeddingSpaceIdentity,
     text_policy_digest,
 )
-from astrumweaver.gateway.embedding_api import create_embedding_router
-from astrumweaver.serving import (
+from tsumgi.gateway.embedding_api import create_embedding_router
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     RuntimeInstance,
@@ -192,7 +192,7 @@ def provider_result(count: int = 2, dimensions: int = 3):
             }
             for index in range(count)
         ],
-        "model": "astrumweaver",
+        "model": "tsumgi",
         "usage": {"prompt_tokens": 6, "total_tokens": 6},
     }
 

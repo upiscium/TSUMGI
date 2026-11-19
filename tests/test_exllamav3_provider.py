@@ -8,9 +8,9 @@ from dataclasses import replace
 import httpx
 import pytest
 
-from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
-from astrumweaver.execution import JobRequest
-from astrumweaver.runtime import (
+from tsumgi import AcceleratorDevice, ResourceShape, WorkerSpec
+from tsumgi.execution import JobRequest
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -24,7 +24,7 @@ from astrumweaver.runtime import (
     RuntimeSelectionMode,
     resolve_runtime,
 )
-from astrumweaver.runtime.providers.exllamav3 import (
+from tsumgi.runtime.providers.exllamav3 import (
     ExLlamaMultiGpuMode,
     ExLlamaV3Executor,
     ExLlamaV3LaunchPolicy,
@@ -34,7 +34,7 @@ from astrumweaver.runtime.providers.exllamav3 import (
     ExLlamaV3SubprocessController,
     HttpExLlamaV3Api,
 )
-from astrumweaver.setup import (
+from tsumgi.setup import (
     DeploymentPath,
     PrivilegeMode,
     SetupActionKind,
@@ -405,14 +405,14 @@ def test_subprocess_command_uses_reviewed_config_path() -> None:
     controller = ExLlamaV3SubprocessController(
         executable="python",
         entrypoint="/opt/tabbyAPI/main.py",
-        config_path="/run/astrumweaver/exl3.yml",
+        config_path="/run/tsumgi/exl3.yml",
         gpu_uuids=("GPU-a", "GPU-b"),
     )
     assert controller.command() == (
         "python",
         "/opt/tabbyAPI/main.py",
         "--config",
-        "/run/astrumweaver/exl3.yml",
+        "/run/tsumgi/exl3.yml",
     )
 
 
@@ -446,7 +446,7 @@ async def test_subprocess_environment_pins_exact_worker_gpu_set(monkeypatch) -> 
     controller = ExLlamaV3SubprocessController(
         executable="python",
         entrypoint="/opt/tabbyAPI/main.py",
-        config_path="/run/astrumweaver/exl3.yml",
+        config_path="/run/tsumgi/exl3.yml",
         gpu_uuids=("GPU-a", "GPU-b"),
     )
     await controller.start()

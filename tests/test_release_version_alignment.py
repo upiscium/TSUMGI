@@ -20,15 +20,15 @@ EXPECTED_NIX_PRODUCT_ATTRIBUTES = {
     "nix/integration-package.nix": [("version", CURRENT_NIX_VERSION)],
     "nix/control-support.nix": [
         ("version", CURRENT_NIX_VERSION),
-        ("name", f"astrumweaver-control-support-{CURRENT_NIX_VERSION}"),
+        ("name", f"tsumgi-control-support-{CURRENT_NIX_VERSION}"),
     ],
     "nix/worker-support.nix": [
-        ("name", f"astrumweaver-worker-support-{CURRENT_NIX_VERSION}"),
+        ("name", f"tsumgi-worker-support-{CURRENT_NIX_VERSION}"),
     ],
     "nix/installer-support.nix": [
         ("version", CURRENT_NIX_VERSION),
-        ("name", f"astrumweaver-installer-support-base-{CURRENT_NIX_VERSION}"),
-        ("name", f"astrumweaver-installer-support-{CURRENT_NIX_VERSION}"),
+        ("name", f"tsumgi-installer-support-base-{CURRENT_NIX_VERSION}"),
+        ("name", f"tsumgi-installer-support-{CURRENT_NIX_VERSION}"),
     ],
 }
 
@@ -107,13 +107,13 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
 
 def test_rc_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    assert project["name"] == "astrumweaver"
+    assert project["name"] == "tsumgi"
     assert project["version"] == "0.2.1"
     assert project["version"] == PROJECT_VERSION
     assert re.fullmatch(r"0\.2\.1", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
         _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
-    assert (ROOT / "src/astrumweaver").is_dir()
+    assert (ROOT / "src/tsumgi").is_dir()
     assert 'version = "0.6.0-dev-' in (ROOT / "nix/decision-llama-cuda.nix").read_text()
 
 

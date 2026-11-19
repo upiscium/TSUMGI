@@ -134,7 +134,7 @@ secure upgrade/default behavior.
 Configured with:
 
 ```text
-ASTRUMWEAVER_CLIENT_TOKEN
+TSUMGI_CLIENT_TOKEN
 ```
 
 Client authority may:
@@ -156,7 +156,7 @@ GET  /v1/jobs/{job_id}
 POST /v1/jobs/{job_id}/cancel
 ```
 
-`ASTRUMWEAVER_CLIENT_TOKEN` is not required or consulted in this mode. The
+`TSUMGI_CLIENT_TOKEN` is not required or consulted in this mode. The
 operator is explicitly delegating Client API access control to the deployment
 boundary, for example a trusted network, VPN, reverse proxy, or upstream
 identity layer.
@@ -171,7 +171,7 @@ authority; those endpoints are simply open according to the selected
 Configured on Control and Worker with:
 
 ```text
-ASTRUMWEAVER_WORKER_TOKEN
+TSUMGI_WORKER_TOKEN
 ```
 
 Worker authority is always mandatory and may:
@@ -361,12 +361,12 @@ access_log = false
 Secrets/authority are environment variables:
 
 ```text
-ASTRUMWEAVER_DATABASE_URL
-ASTRUMWEAVER_WORKER_TOKEN
-ASTRUMWEAVER_CLIENT_TOKEN   # required only for client_auth = "bearer"
+TSUMGI_DATABASE_URL
+TSUMGI_WORKER_TOKEN
+TSUMGI_CLIENT_TOKEN   # required only for client_auth = "bearer"
 ```
 
-`ASTRUMWEAVER_WORKER_TOKEN` remains mandatory in both Client auth modes.
+`TSUMGI_WORKER_TOKEN` remains mandatory in both Client auth modes.
 
 Production Control never falls back to an in-memory repository.
 
@@ -378,7 +378,7 @@ Control process:
 ```toml
 [chat_gateway]
 enabled = true
-catalog = "/etc/astrumweaver/chat-catalog.json"
+catalog = "/etc/tsumgi/chat-catalog.json"
 poll_interval_seconds = 0.05
 max_pending_admissions = 8
 ```
@@ -453,7 +453,7 @@ gateway:
 ```toml
 [embedding_gateway]
 enabled = true
-catalog = "/etc/astrumweaver/embedding-catalog.json"
+catalog = "/etc/tsumgi/embedding-catalog.json"
 poll_interval_seconds = 0.05
 ```
 
@@ -464,7 +464,7 @@ GET  /v1/embedding-spaces
 POST /v1/embeddings
 ```
 
-`GET /v1/embedding-spaces` is an AstrumWeaver namespaced discovery surface.
+`GET /v1/embedding-spaces` is an TSUMGI namespaced discovery surface.
 It exposes configured logical profile IDs, immutable `embedding_space_id`
 values, resolved deployment/contract/profile revisions, dimensions,
 pooling/normalization policy, supported input roles, and effective limits. It
@@ -499,7 +499,7 @@ of chat and embedding:
 ```toml
 [decision_gateway]
 enabled = true
-catalog = "/etc/astrumweaver/decision-catalog.json"
+catalog = "/etc/tsumgi/decision-catalog.json"
 poll_interval_seconds = 0.05
 ```
 
@@ -537,13 +537,13 @@ grants no execution, permission, review or release authority.
 Apply packaged migrations explicitly:
 
 ```sh
-ASTRUMWEAVER_DATABASE_URL='postgresql://...' astrumweaver-migrate
+TSUMGI_DATABASE_URL='postgresql://...' tsumgi-migrate
 ```
 
 The NixOS module can optionally perform this before Control startup:
 
 ```nix
-services.astrumweaver.control.migrateOnStart = true;
+services.tsumgi.control.migrateOnStart = true;
 ```
 
 It defaults to `false` because database schema mutation is an explicit deployment authority.
@@ -569,7 +569,7 @@ health_host = "127.0.0.1"
 health_port = 9100
 
 [executor]
-factory = "astrumweaver.executors.structured_echo:create_executor"
+factory = "tsumgi.executors.structured_echo:create_executor"
 
 [executor.settings]
 ```
@@ -579,11 +579,11 @@ declaration:
 
 ```toml
 [serving]
-manifest = "/etc/astrumweaver/serving.json"
+manifest = "/etc/tsumgi/serving.json"
 ```
 
 The same path may be supplied explicitly with
-`astrumweaver-worker --serving-manifest ...`, which overrides the TOML value.
+`tsumgi-worker --serving-manifest ...`, which overrides the TOML value.
 The declaration contains the immutable `DeploymentIdentity` and the exact
 `ServingContract` set to advertise. It is configuration provenance inside the
 existing trusted operator/Worker boundary, not cryptographic attestation of the
@@ -629,7 +629,7 @@ Deployment selects one explicit preflight mode:
 Worker authority is provided only through:
 
 ```text
-ASTRUMWEAVER_WORKER_TOKEN
+TSUMGI_WORKER_TOKEN
 ```
 
 ## Executor plugin contract

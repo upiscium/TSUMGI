@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from astrumweaver.gateway.decision import (
+from tsumgi.gateway.decision import (
     DECISION_CATALOG_SCHEMA,
     DECISION_OPERATION_SCHEMA,
     DECISION_SCORE_KIND,
@@ -18,7 +18,7 @@ from astrumweaver.gateway.decision import (
     normalize_decision_response,
     validate_decision_provider_response,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,
@@ -134,7 +134,7 @@ def provider_response(
     choice="0000",
 ):
     return {
-        "model": "astrumweaver",
+        "model": "tsumgi",
         "answers": {
             "decision": {
                 "type": "choice",

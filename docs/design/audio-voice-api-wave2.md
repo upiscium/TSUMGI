@@ -96,7 +96,7 @@ be collected by the coordinator; none were executed/computed here. Preserve
 uncommitted additions at exactly these paths:
 
 ```text
-src/astrumweaver/gateway/audio_voice_api.py
+src/tsumgi/gateway/audio_voice_api.py
 tests/test_audio_voice_api.py
 docs/design/audio-voice-api-wave2.md
 ```

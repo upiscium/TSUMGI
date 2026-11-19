@@ -5,11 +5,11 @@ IFS=$'\n\t'
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
 # common.sh sets umask 027, but the Worker runs `ft` as the unprivileged
-# astrumweaver user, so the virtualenv must be world-readable (never writable).
+# tsumgi user, so the virtualenv must be world-readable (never writable).
 umask 022
 
 PIN_DIR="$SCRIPT_DIR/freetoken-sm61"
-PREFIX='/opt/astrumweaver/freetoken-sm61'
+PREFIX='/opt/tsumgi/freetoken-sm61'
 FORK_REPO='upiscium/FreeToken'
 FORK_COMMIT='abfbe04e59c35788953c88507e736bc391d3f389'
 CUDA_HOME_DIR='/usr/local/cuda-12.6'
@@ -36,7 +36,7 @@ The TSUMGI fork files (upiscium/FreeToken, tsumgi/sm61-v0.2.2) are copied over t
 only after their SHA-256 matches setup/freetoken-sm61/overlay.sha256.
 
 Options:
-  --prefix DIR     Install root (default: /opt/astrumweaver/freetoken-sm61).
+  --prefix DIR     Install root (default: /opt/tsumgi/freetoken-sm61).
   --skip-apt       Do not install the CUDA 12.6 toolkit/Python headers with apt.
   -h, --help       Show this help.
 

@@ -10,7 +10,7 @@ from uuid import UUID
 
 import pytest
 
-from astrumweaver.runtime.providers.voicevox_discovery import (
+from tsumgi.runtime.providers.voicevox_discovery import (
     VoicevoxDiscoveryConfig,
     VoicevoxDiscoveryProbe,
     VoicevoxDiscoveryStatus,

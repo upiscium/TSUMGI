@@ -1,4 +1,4 @@
-# AstrumWeaver Embedding Serving Acceptance Evidence
+# TSUMGI Embedding Serving Acceptance Evidence
 
 This file is intentionally redacted. It contains no gateway URL, credential, fixture text, document/query identifier, local path, hostname, Worker identity, GPU identity, or model artifact path.
 

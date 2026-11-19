@@ -80,7 +80,7 @@ isolated subset, pass one reviewed `--gpu-device` mapping per selected UUID.
 Example:
 
 ```sh
-sudo astrumweaver-setup-gpu-worker \
+sudo tsumgi-setup-gpu-worker \
   --config ./worker.toml \
   --environment-file ./worker.env \
   --runtime-manifest ./runtime-deployment.json \
@@ -94,7 +94,7 @@ The selected UUID remains only in the local `worker.toml` Worker contract and mu
 The Worker module provides an explicit declarative mapping:
 
 ```nix
-services.astrumweaver.worker = {
+services.tsumgi.worker = {
   gpuUuids = [ "GPU-REDACTED-A" ];
 
   gpuIsolation = {
@@ -132,7 +132,7 @@ Run this only after a subset deployment has been materialized and while the
 Worker is inactive:
 
 ```sh
-sudo astrumweaver-runtime-deployment-accept \
+sudo tsumgi-runtime-deployment-accept \
   --gpu-uuid GPU-REDACTED-A \
   --revision <reviewed-git-sha> \
   --deployment-path systemd
@@ -158,7 +158,7 @@ config describing only the proposed subset and keep the authoritative Worker
 service inactive:
 
 ```sh
-sudo astrumweaver-runtime-deployment-accept \
+sudo tsumgi-runtime-deployment-accept \
   --gpu-uuid GPU-REDACTED-A \
   --revision <reviewed-git-sha> \
   --deployment-path systemd \
@@ -188,7 +188,7 @@ Worker GPU contract.
 For a NixOS deployment use `--deployment-path nixos`.
 
 The acceptance command resolves reviewed packaged
-`astrumweaver-gpu-device-map` and `astrumweaver-gpu-isolation-probe`
+`tsumgi-gpu-device-map` and `tsumgi-gpu-isolation-probe`
 helpers without trusting ambient PATH. Explicit helper overrides must be
 absolute executable paths.
 

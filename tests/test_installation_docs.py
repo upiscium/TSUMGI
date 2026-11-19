@@ -50,18 +50,18 @@ def test_installation_guide_tracks_supported_package_surface() -> None:
     assert "github:upiscium/TSUMGI#control" in text
     assert "github:upiscium/TSUMGI#worker" in text
     assert "github:upiscium/TSUMGI#installer" in text
-    assert "astrumweaver-setup-tui" in text
+    assert "tsumgi-setup-tui" in text
     assert "The default TUI mode is `first-run`" in text
-    assert "astrumweaver-setup-control-plane" in text
-    assert "astrumweaver-setup-gpu-worker" in text
+    assert "tsumgi-setup-control-plane" in text
+    assert "tsumgi-setup-gpu-worker" in text
     assert "pip-only" in text
     assert "complete supported host deployment" in text
     assert "PostgreSQL 17.x" in text
     assert "validated and recommended major version" in text
-    assert "/etc/astrumweaver/control.toml" in text
-    assert "/etc/astrumweaver/control.env" in text
-    assert "/etc/astrumweaver/worker.toml" in text
-    assert "/etc/astrumweaver/worker.env" in text
+    assert "/etc/tsumgi/control.toml" in text
+    assert "/etc/tsumgi/control.env" in text
+    assert "/etc/tsumgi/worker.toml" in text
+    assert "/etc/tsumgi/worker.env" in text
 
 
 def test_getting_started_proves_real_control_worker_round_trip() -> None:
@@ -71,7 +71,7 @@ def test_getting_started_proves_real_control_worker_round_trip() -> None:
         "/v1/ready",
         "127.0.0.1:9100/health",
         "debug.echo",
-        "astrumweaver.executors.structured_echo:create_executor",
+        "tsumgi.executors.structured_echo:create_executor",
         "/v1/jobs",
         "succeeded",
     ):

@@ -9,13 +9,13 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from astrumweaver.audio import ArtifactSpool, AudioOutputChannel
-from astrumweaver.control import InMemoryControlRepository, JobStatus, JobSubmission
-from astrumweaver.control.api import create_app
-from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
+from tsumgi.audio import ArtifactSpool, AudioOutputChannel
+from tsumgi.control import InMemoryControlRepository, JobStatus, JobSubmission
+from tsumgi.control.api import create_app
+from tsumgi.transport import PROTOCOL_VERSION, SERVING_EXTENSION
 from test_audio_artifact_authority import EPOCH, setup_claim
 from test_audio_artifact_authority_postgres import isolated_database
-from astrumweaver.control import PostgresControlRepository
+from tsumgi.control import PostgresControlRepository
 
 
 WAV = b"RIFF" + (28).to_bytes(4, "little") + b"WAVE" + b"fmt " + b"test-output"
@@ -290,7 +290,7 @@ async def test_expired_output_releases_quota_and_allows_reuse(tmp_path):
 async def test_incomplete_content_length_fails_before_artifact_staging():
     from fastapi import HTTPException
     from starlette.requests import Request
-    from astrumweaver.control.api import _bounded_audio_body
+    from tsumgi.control.api import _bounded_audio_body
 
     scope = {
         "type": "http", "method": "POST", "path": "/audio",
@@ -307,7 +307,7 @@ async def test_incomplete_content_length_fails_before_artifact_staging():
 
 
 def test_audio_output_requires_authentication_even_with_opt_in(tmp_path):
-    from astrumweaver.control.auth import ClientAuthMode
+    from tsumgi.control.auth import ClientAuthMode
     env = new_env(tmp_path)
     with pytest.raises(ValueError, match="client bearer authentication"):
         create_app(
@@ -480,7 +480,7 @@ def test_abandoned_cleanup_retains_receipt_after_failed_disk_delete(tmp_path, mo
 
 
 def test_abandoned_cleanup_does_not_delete_on_repository_outage(tmp_path, monkeypatch):
-    from astrumweaver.control import StorageUnavailable
+    from tsumgi.control import StorageUnavailable
     env = new_env(tmp_path, max_artifacts=1)
     ref = env.channel.stage(
         env.claim.job_id, worker_id="owner", attempt=env.claim.attempts,
@@ -527,7 +527,7 @@ def test_postgres_uncommitted_heartbeat_does_not_reap_live_output(
 ):
     """A stale nonlocking SELECT must not destroy a heartbeat-renewed WAV."""
     import psycopg
-    from astrumweaver.execution import JobResult
+    from tsumgi.execution import JobResult
 
     repo = PostgresControlRepository(isolated_database, lease_seconds=60)
     env = new_env(tmp_path, repository=repo, max_artifacts=1)

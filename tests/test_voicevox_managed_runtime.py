@@ -9,21 +9,21 @@ import pytest
 from test_voicevox_provider import FakeMedia, FakeVoicevox, job
 from test_voicevox_provider import config as basic_config
 
-from astrumweaver.execution import JobExecutionError
-from astrumweaver.runtime.contracts import RuntimeHealthState
-from astrumweaver.runtime.lifecycle import RuntimeLifecycleManager
-from astrumweaver.runtime.providers.voicevox_managed import (
+from tsumgi.execution import JobExecutionError
+from tsumgi.runtime.contracts import RuntimeHealthState
+from tsumgi.runtime.lifecycle import RuntimeLifecycleManager
+from tsumgi.runtime.providers.voicevox_managed import (
     VoicevoxOwnedManagedRuntime,
     VoicevoxOwnedRuntimeSpec,
     VoicevoxProcessObservation,
     VoicevoxRuntimeFailure,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     ServingContract,
     ServingDeploymentDeclaration,
 )
-from astrumweaver.worker.supervision import RuntimeHealthSupervisor
+from tsumgi.worker.supervision import RuntimeHealthSupervisor
 
 
 def hash_bytes(value):
@@ -167,7 +167,7 @@ async def test_owned_pinned_fake_process_is_ready_only_after_observed_voice_and_
     assert process.launch_calls == 1
     ex = runtime.executor()
     assert ex.serving_features == {"audio.synthesize": frozenset({"ja", "wav"})}
-    from astrumweaver.worker.runtime import require_executor_serving_features
+    from tsumgi.worker.runtime import require_executor_serving_features
 
     require_executor_serving_features(ex, cfg.serving)
     result = await ex.execute_audio(job(), FakeMedia())

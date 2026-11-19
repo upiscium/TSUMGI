@@ -2,7 +2,7 @@
 
 Issue: #122 under #91. This is a separate, opt-in, post-v0.1 feature.
 The historical single-model runtimes and embedding/decision serving profiles
-are unchanged. Keep the stable `astrumweaver` runtime identifiers while the
+are unchanged. Keep the stable `tsumgi` runtime identifiers while the
 independent TSUMGI migration #120 remains pending.
 
 ## Provider boundary
@@ -25,7 +25,7 @@ HTTPX over `AsyncHTTPTransport(uds=...)`, and the native pinned llama.cpp
 server listens with `--host /private/child.sock`. Another Unix UID cannot
 pre-bind or connect to the socket through its protected parent directory.
 Both children retain pinned GGUF SHA-256, the exact Nix-store
-`astrumweaver-llama-server` wrapper, full GPU offload (`fit=off`), offline
+`tsumgi-llama-server` wrapper, full GPU offload (`fit=off`), offline
 mode and no web UI.
 
 **Local transport alone is not authorization.** Each native child has its own

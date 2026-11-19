@@ -9,7 +9,7 @@ development
     ↕
 draining
     ↕
-astrumweaver
+tsumgi
 ```
 
 This is an **exclusive ownership handoff**, not concurrent GPU sharing.
@@ -85,29 +85,29 @@ Persistence/driver management state is not treated as a development workload mer
 The packaged command is:
 
 ```text
-astrumweaver-worker-mode
+tsumgi-worker-mode
 ```
 
 Example:
 
 ```sh
-sudo astrumweaver-worker-mode development \
+sudo tsumgi-worker-mode development \
   --gpu-uuid GPU-example-a \
-  --service astrumweaver-worker.service
+  --service tsumgi-worker.service
 ```
 
 Return the GPU to TSUMGI:
 
 ```sh
-sudo astrumweaver-worker-mode astrumweaver \
+sudo tsumgi-worker-mode tsumgi \
   --gpu-uuid GPU-example-a \
-  --service astrumweaver-worker.service
+  --service tsumgi-worker.service
 ```
 
 Inspect local mode:
 
 ```sh
-sudo astrumweaver-worker-mode status \
+sudo tsumgi-worker-mode status \
   --gpu-uuid GPU-example-a
 ```
 
@@ -126,7 +126,7 @@ The generic CLI intentionally requires explicit GPU UUIDs so it remains independ
 For a development node:
 
 ```nix
-services.astrumweaver.worker = {
+services.tsumgi.worker = {
   enable = true;
 
   workerId = "worker-example";
@@ -147,14 +147,14 @@ services.astrumweaver.worker = {
   borrowable.drainTimeoutSeconds = 0;
   borrowable.startTimeoutSeconds = 60;
 
-  environmentFile = "/run/secrets/astrumweaver-worker.env";
+  environmentFile = "/run/secrets/tsumgi-worker.env";
 };
 ```
 
 The module adds:
 
 ```text
-astrumweaver-gpu-mode
+tsumgi-gpu-mode
 ```
 
 with the configured service name, GPU UUIDs, NVIDIA tooling, and local health endpoint already bound into the wrapper.
@@ -162,9 +162,9 @@ with the configured service name, GPU UUIDs, NVIDIA tooling, and local health en
 Usage becomes:
 
 ```sh
-sudo astrumweaver-gpu-mode development
-sudo astrumweaver-gpu-mode astrumweaver
-sudo astrumweaver-gpu-mode status
+sudo tsumgi-gpu-mode development
+sudo tsumgi-gpu-mode tsumgi
+sudo tsumgi-gpu-mode status
 ```
 
 Borrowable mode requires the Worker health endpoint to remain local (`127.0.0.1` or `localhost`).
@@ -173,14 +173,14 @@ Borrowable mode requires the Worker health endpoint to remain local (`127.0.0.1`
 
 After a successful transition to `development`:
 
-- `astrumweaver-worker.service` is inactive
+- `tsumgi-worker.service` is inactive
 - no TSUMGI job can be claimed on that Worker
 - exact GPU identity was observed
 - no GPU process context was present at the handoff boundary
 
 After the command returns, the development environment may start using the GPU.
 
-TSUMGI cannot prevent an unrelated local process from racing the handoff after verification. Operators should therefore treat `astrumweaver-gpu-mode` as the ownership boundary and avoid launching development GPU processes concurrently with a transition.
+TSUMGI cannot prevent an unrelated local process from racing the handoff after verification. Operators should therefore treat `tsumgi-gpu-mode` as the ownership boundary and avoid launching development GPU processes concurrently with a transition.
 
 ## Non-goals
 

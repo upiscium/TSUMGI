@@ -6,7 +6,7 @@
 
 - `[audio_gateway]` is **disabled by default**. With no audio table, or `enabled = false`, Control neither loads an audio catalog nor creates spools, mounts audio API routes, changes the existing non-audio routes, or advertises a new Worker capability. A disabled table containing a retained policy validates only its shape and never opens the named paths.
 - Enabling requires a **strict** complete TOML table with the keys `enabled`, `catalog`, `ingress`, `speech`, `transcriptions`, `pcm`, `input_spool`, `output_spool`; all nested keys are explicit. Unknown/invalid fields and malformed/corrupt/oversized JSON fail closed on startup. Catalog must contain reviewed pinned profiles for both speech and transcription; it is *not* runtime discovery or evidence that a Worker is ready. JSON is UTF-8, at most 1 MiB, with duplicate keys and nonstandard constants rejected.
-- **Current safe auth gate:** Enabling audio requires `control.client_auth = "bearer"` and a valid `ASTRUMWEAVER_CLIENT_TOKEN`, plus an *independent* `ASTRUMWEAVER_AUDIO_CLIENT_TOKEN`. The audio token must be distinct from the Control client and Worker tokens. Audio Speech, Transcriptions, and Voice require the dedicated token; existing Control client artifact endpoints continue to require the Control token, while Worker input/output routes require the Worker token and lease/attempt/epoch authorization. `control.client_auth = "none"` with audio enabled is **rejected at startup**, not silently downgraded. Supporting separate audio-only authentication while retaining globally anonymous generic Job operations would require a distinct, reviewed per-job authorization redesign, and is **not** in this phase.
+- **Current safe auth gate:** Enabling audio requires `control.client_auth = "bearer"` and a valid `TSUMGI_CLIENT_TOKEN`, plus an *independent* `TSUMGI_AUDIO_CLIENT_TOKEN`. The audio token must be distinct from the Control client and Worker tokens. Audio Speech, Transcriptions, and Voice require the dedicated token; existing Control client artifact endpoints continue to require the Control token, while Worker input/output routes require the Worker token and lease/attempt/epoch authorization. `control.client_auth = "none"` with audio enabled is **rejected at startup**, not silently downgraded. Supporting separate audio-only authentication while retaining globally anonymous generic Job operations would require a distinct, reviewed per-job authorization redesign, and is **not** in this phase.
 - `AudioInputChannel` and `AudioOutputChannel` share exactly the durable Control repository with their corresponding route services and the base Control app. Both channels are passed to `create_app`, ensuring existing `/v1/audio/inputs`, staged Job binding, Worker claim-fenced input/output transfer, published output and maintenance reaping use the *same receipt owners*; mounting only the three public routers would be insufficient.
 - Input and output have **different existing private directory roots**, owned by the Control effective UID with mode `0700` and trusted ancestors. The source must not create roots, provision hosts, or change running services. The ArtifactSpool constructor revalidates each root using descriptor-relative checks. Both roots have finite per-artifact and aggregate quotas, artifact count and TTL; input TTL exceeds transcription deadline and output TTL exceeds speech deadline. Same-effective-UID processes are trusted, so the roots are not a hostile same-UID isolation boundary.
 - **Synchronous startup rollback**: if creating the second spool or any route fails, or if subsequent non-audio daemon composition fails, the startup owner attempts to remove only the freshly created **empty** per-instance directories. It validates the original root/directory inode identities and does not recursively delete files, reuse names or reclaim unknown directories. If safe removal fails, startup fails with an explicit operator-inspection error rather than deleting an ambiguous occupant. Crash/process-loss cleanup remains a separate #174 operational gap.
@@ -23,7 +23,7 @@ client_auth = "bearer"
 
 [audio_gateway]
 enabled = true
-catalog = "/var/lib/astrumweaver/audio/reviewed-catalog.json"
+catalog = "/var/lib/tsumgi/audio/reviewed-catalog.json"
 
 [audio_gateway.ingress]
 request_bytes = 2097152
@@ -53,19 +53,19 @@ max_decoded_bytes = 1048532
 max_duration_seconds = 30
 
 [audio_gateway.input_spool]
-root = "/var/lib/astrumweaver/audio/input"
+root = "/var/lib/tsumgi/audio/input"
 ttl_seconds = 180.0
 max_total_bytes = 8388608
 max_artifacts = 16
 
 [audio_gateway.output_spool]
-root = "/var/lib/astrumweaver/audio/output"
+root = "/var/lib/tsumgi/audio/output"
 ttl_seconds = 180.0
 max_total_bytes = 8388608
 max_artifacts = 16
 ```
 
-Control reads tokens only from the process environment (`ASTRUMWEAVER_CLIENT_TOKEN`, `ASTRUMWEAVER_AUDIO_CLIENT_TOKEN`, `ASTRUMWEAVER_WORKER_TOKEN`), never TOML. Do not reuse tokens or put them in the catalog.
+Control reads tokens only from the process environment (`TSUMGI_CLIENT_TOKEN`, `TSUMGI_AUDIO_CLIENT_TOKEN`, `TSUMGI_WORKER_TOKEN`), never TOML. Do not reuse tokens or put them in the catalog.
 
 ## Verification and explicit limitations
 

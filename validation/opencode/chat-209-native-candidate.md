@@ -11,7 +11,7 @@
 ## Execution boundary
 
 This run is distinct from the earlier [temporary ingress-bridge experiment](chat-209-candidate-ingress.md).
-The candidate was the **actual packaged `astrumweaver-control`** binary from
+The candidate was the **actual packaged `tsumgi-control`** binary from
 the pinned PR commit, running the native `build_app`/FastAPI
 `/v1/models` and `/v1/chat/completions` routes. There was **no
 payload-rewriting shim** between OpenCode and candidate Control.

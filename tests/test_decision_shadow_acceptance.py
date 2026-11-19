@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from astrumweaver.validation.decision_shadow import (
+from tsumgi.validation.decision_shadow import (
     DecisionAcceptanceError,
     DecisionShadowAcceptanceRunner,
     render_decision_shadow_markdown,

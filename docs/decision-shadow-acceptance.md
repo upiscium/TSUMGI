@@ -70,16 +70,16 @@ recorded in evidence.
 Provide the live gateway URL and Client credential only through the environment:
 
 ```sh
-export ASTRUMWEAVER_DECISION_BASE_URL='https://gateway.example.invalid/v1'
-export ASTRUMWEAVER_CLIENT_TOKEN='REDACTED'
+export TSUMGI_DECISION_BASE_URL='https://gateway.example.invalid/v1'
+export TSUMGI_CLIENT_TOKEN='REDACTED'
 
-astrumweaver-decision-shadow-accept \
+tsumgi-decision-shadow-accept \
   --profile-id decision-local-v1 \
   --profile-revision sha256:PROFILE_REVISION \
   --deployment-revision sha256:DEPLOYMENT_REVISION \
   --serving-contract-revision sha256:CONTRACT_REVISION \
   --decision-semantics-id sha256:SEMANTICS_REVISION \
-  --revision ASTRUMWEAVER_GIT_REVISION \
+  --revision TSUMGI_GIT_REVISION \
   --fixture /private/decision-shadow.json \
   --evidence validation/decision/shadow-v1.md
 ```

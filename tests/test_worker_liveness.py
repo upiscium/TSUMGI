@@ -10,14 +10,14 @@ import time
 import httpx
 import pytest
 
-from astrumweaver import JobRequirements, JobResult, ResidencyReport, ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import JobRequirements, JobResult, ResidencyReport, ResourceShape, WorkerSpec
+from tsumgi.control import (
     ConflictError, JobStatus, JobSubmission, WorkerRegistration, WorkerState, utc_now,
 )
-from astrumweaver.control.api import create_app
-from astrumweaver.control.repository import InMemoryControlRepository
-from astrumweaver.worker import ControlClient, ControlTransportError, WorkerRuntime
-from astrumweaver.worker.health import create_health_app
+from tsumgi.control.api import create_app
+from tsumgi.control.repository import InMemoryControlRepository
+from tsumgi.worker import ControlClient, ControlTransportError, WorkerRuntime
+from tsumgi.worker.health import create_health_app
 
 
 SPEC = WorkerSpec(
@@ -516,7 +516,7 @@ async def test_cancel_run_loop_cancels_active_executor_and_withdraws_registratio
             assert executor.cancelled == [job.job_id]
             assert not runtime.ready and not runtime.registered
             assert repo.get_worker(SPEC.worker_id).state is WorkerState.OFFLINE
-            assert not any(t.get_name() == "astrumweaver-job-execution" for t in asyncio.all_tasks())
+            assert not any(t.get_name() == "tsumgi-job-execution" for t in asyncio.all_tasks())
         finally:
             if not task.done():
                 task.cancel()
@@ -525,7 +525,7 @@ async def test_cancel_run_loop_cancels_active_executor_and_withdraws_registratio
 
 @pytest.mark.asyncio
 async def test_daemon_failure_cleans_up_sibling_health_and_signal_tasks(monkeypatch):
-    from astrumweaver.worker import daemon
+    from tsumgi.worker import daemon
 
     stopped = asyncio.Event()
     health_started = asyncio.Event()
@@ -562,7 +562,7 @@ async def test_daemon_failure_cleans_up_sibling_health_and_signal_tasks(monkeypa
             finally:
                 health_stopped.set()
 
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker-test-token")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "worker-test-token")
     monkeypatch.setattr(daemon, "_load_toml", lambda _: config)
     monkeypatch.setattr(daemon, "load_executor", lambda *_: Executor())
     monkeypatch.setattr(daemon, "WorkerRuntime", FailingWorker)
@@ -573,12 +573,12 @@ async def test_daemon_failure_cleans_up_sibling_health_and_signal_tasks(monkeypa
     with pytest.raises(RuntimeError, match="test worker failure"):
         await asyncio.wait_for(daemon.run_worker("unused"), 1)
     assert stopped.is_set() and health_stopped.is_set()
-    assert not any(t.get_name().startswith("astrumweaver-worker") for t in asyncio.all_tasks())
+    assert not any(t.get_name().startswith("tsumgi-worker") for t in asyncio.all_tasks())
 
 
 @pytest.mark.asyncio
 async def test_daemon_forced_shutdown_invokes_executor_cancel_exactly_once(monkeypatch):
-    from astrumweaver.worker import daemon
+    from tsumgi.worker import daemon
 
     repo = InMemoryControlRepository()
     job = submit(repo)[0]
@@ -603,7 +603,7 @@ async def test_daemon_forced_shutdown_invokes_executor_cancel_exactly_once(monke
             while not self.should_exit:
                 await asyncio.sleep(0.005)
 
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker-test-token")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "worker-test-token")
     monkeypatch.setattr(daemon, "_load_toml", lambda _: config)
     monkeypatch.setattr(daemon, "ControlClient", lambda *_args, **_kwargs: ObservedClient(repo))
     monkeypatch.setattr(daemon, "load_executor", lambda *_: executor)

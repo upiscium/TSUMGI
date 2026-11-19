@@ -2,7 +2,7 @@
 
 TSUMGI is a deployment-agnostic compute fabric for scheduling capability-based workloads across heterogeneous compute nodes.
 
-> **Name transition:** TSUMGI is the project name. Existing `astrumweaver` runtime identifiers are unchanged in this phase. See [Naming and compatibility](docs/naming.md).
+> **Name transition:** TSUMGI is the project name. Existing `tsumgi` runtime identifiers are unchanged in this phase. See [Naming and compatibility](docs/naming.md).
 
 It is GPU-first, but its control-plane contracts are intentionally not tied to LLMs, a particular accelerator generation, Proxmox, or a one-GPU-per-worker topology.
 

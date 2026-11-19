@@ -15,22 +15,22 @@ import pytest
 from fastapi import FastAPI
 from starlette.requests import Request
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.audio import ArtifactSpool
-from astrumweaver.audio.input_channel import AudioInputChannel
-from astrumweaver.control import InMemoryControlRepository, JobStatus, WorkerRegistration
-from astrumweaver.control.models import utc_now
-from astrumweaver.control.repository import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.audio import ArtifactSpool
+from tsumgi.audio.input_channel import AudioInputChannel
+from tsumgi.control import InMemoryControlRepository, JobStatus, WorkerRegistration
+from tsumgi.control.models import utc_now
+from tsumgi.control.repository import (
     ConflictError, NoCompatibleDeployment, NotFoundError, OverloadedError, StorageUnavailable,
 )
-from astrumweaver.execution import ArtifactRef, JobResult
-from astrumweaver.gateway.audio import AudioGatewayError, AudioProfileCatalog
-from astrumweaver.gateway.audio_ingress import AudioIngressLimits
-from astrumweaver.gateway.audio_transcriptions_api import (
+from tsumgi.execution import ArtifactRef, JobResult
+from tsumgi.gateway.audio import AudioGatewayError, AudioProfileCatalog
+from tsumgi.gateway.audio_ingress import AudioIngressLimits
+from tsumgi.gateway.audio_transcriptions_api import (
     AudioTranscriptionsLimits, AudioTranscriptionsService, create_audio_transcriptions_router,
 )
-from astrumweaver.serving import RuntimeInstance, WorkerServingAdvertisement
-from astrumweaver.transport import job_record_to_dict
+from tsumgi.serving import RuntimeInstance, WorkerServingAdvertisement
+from tsumgi.transport import job_record_to_dict
 from test_audio_voice_api import AUTH, TOKEN, make_profile
 
 

@@ -6,11 +6,11 @@ import stat
 import httpx
 import pytest
 
-from astrumweaver import JobResult, ResidencyReport, ResourceShape, WorkerSpec
-from astrumweaver.control import InMemoryControlRepository
-from astrumweaver.control.api import create_app
-from astrumweaver.worker import ControlClient, WorkerRuntime
-from astrumweaver.worker.telemetry import (
+from tsumgi import JobResult, ResidencyReport, ResourceShape, WorkerSpec
+from tsumgi.control import InMemoryControlRepository
+from tsumgi.control.api import create_app
+from tsumgi.worker import ControlClient, WorkerRuntime
+from tsumgi.worker.telemetry import (
     TELEMETRY_METADATA_KEY,
     TELEMETRY_SCHEMA,
     WorkerTelemetry,
@@ -200,4 +200,4 @@ async def test_heartbeat_carries_latest_telemetry_to_control():
         await client.aclose()
     stored = repo.get_worker("w1").metadata
     assert stored[TELEMETRY_METADATA_KEY] == {"schema": TELEMETRY_SCHEMA, "host": {"cpu_count": 8}}
-    assert stored["runtime"] == "astrumweaver-worker"
+    assert stored["runtime"] == "tsumgi-worker"

@@ -6,9 +6,9 @@ import threading
 import pytest
 from starlette.requests import Request
 
-from astrumweaver.control import InMemoryControlRepository, JobStatus, StorageUnavailable
-from astrumweaver.gateway.api import ChatGatewayService
-from astrumweaver.gateway.chat import ChatGatewayError, ChatProfileCatalog
+from tsumgi.control import InMemoryControlRepository, JobStatus, StorageUnavailable
+from tsumgi.gateway.api import ChatGatewayService
+from tsumgi.gateway.chat import ChatGatewayError, ChatProfileCatalog
 from test_chat_gateway_admission_cancellation import _wait_for
 from test_chat_gateway_api import _ConnectedRequest, register_worker, serving_values
 

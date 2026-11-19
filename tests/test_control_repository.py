@@ -4,8 +4,8 @@ from datetime import timedelta
 
 import pytest
 
-from astrumweaver import JobRequirements, JobResult, ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import JobRequirements, JobResult, ResourceShape, WorkerSpec
+from tsumgi.control import (
     ConflictError,
     InMemoryControlRepository,
     JobStatus,
@@ -334,11 +334,11 @@ def test_active_worker_cannot_change_resource_topology_on_reregistration() -> No
 def test_stale_offline_registration_recovers_only_with_matching_identity():
     from dataclasses import replace
     from datetime import timedelta
-    from astrumweaver.control.repository import (
+    from tsumgi.control.repository import (
         InMemoryControlRepository, ConflictError, OFFLINE_REASON_KEY,
     )
-    from astrumweaver.control.models import WorkerState, WorkerRegistration, utc_now
-    from astrumweaver import ResourceShape, WorkerSpec
+    from tsumgi.control.models import WorkerState, WorkerRegistration, utc_now
+    from tsumgi import ResourceShape, WorkerSpec
     repo = InMemoryControlRepository(worker_ttl_seconds=1)
     spec = WorkerSpec(
         worker_id="ttl-recover", worker_class="gpu",
@@ -364,9 +364,9 @@ def test_stale_offline_registration_recovers_only_with_matching_identity():
 
 
 def test_control_reserved_offline_metadata_cannot_be_forged_via_heartbeat():
-    from astrumweaver.control.repository import InMemoryControlRepository, ConflictError, OFFLINE_REASON_KEY
-    from astrumweaver.control.models import WorkerHeartbeat, WorkerRegistration
-    from astrumweaver import ResourceShape, WorkerSpec
+    from tsumgi.control.repository import InMemoryControlRepository, ConflictError, OFFLINE_REASON_KEY
+    from tsumgi.control.models import WorkerHeartbeat, WorkerRegistration
+    from tsumgi import ResourceShape, WorkerSpec
     repo = InMemoryControlRepository()
     spec = WorkerSpec(worker_id="reserved-metadata", worker_class="gpu",
         resources=ResourceShape(gpu_count=1, total_vram_mb=100, max_single_gpu_vram_mb=100),
@@ -382,11 +382,11 @@ def test_control_reserved_offline_metadata_cannot_be_forged_via_heartbeat():
 
 def test_draining_ttl_expiry_does_not_recover_or_revoke_operator_drain():
     from datetime import timedelta
-    from astrumweaver.control.repository import (
+    from tsumgi.control.repository import (
         InMemoryControlRepository, ConflictError, OFFLINE_REASON_KEY,
     )
-    from astrumweaver.control.models import WorkerState, WorkerRegistration, utc_now
-    from astrumweaver import WorkerSpec, ResourceShape
+    from tsumgi.control.models import WorkerState, WorkerRegistration, utc_now
+    from tsumgi import WorkerSpec, ResourceShape
     repo = InMemoryControlRepository(worker_ttl_seconds=1)
     spec = WorkerSpec(worker_id="draining-expiry",worker_class="gpu",
         resources=ResourceShape(gpu_count=1,total_vram_mb=100,max_single_gpu_vram_mb=100),
@@ -404,9 +404,9 @@ def test_draining_ttl_expiry_does_not_recover_or_revoke_operator_drain():
 
 def test_lazy_claim_expiry_marks_only_online_as_recoverable():
     from datetime import timedelta
-    from astrumweaver.control.repository import InMemoryControlRepository, OFFLINE_REASON_KEY
-    from astrumweaver.control.models import WorkerState, WorkerRegistration, utc_now
-    from astrumweaver import WorkerSpec, ResourceShape
+    from tsumgi.control.repository import InMemoryControlRepository, OFFLINE_REASON_KEY
+    from tsumgi.control.models import WorkerState, WorkerRegistration, utc_now
+    from tsumgi import WorkerSpec, ResourceShape
     repo=InMemoryControlRepository(worker_ttl_seconds=1)
     spec=WorkerSpec(worker_id="claim-lazy-expiry", worker_class="gpu",
         resources=ResourceShape(gpu_count=1,total_vram_mb=100,max_single_gpu_vram_mb=100),

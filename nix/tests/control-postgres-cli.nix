@@ -4,12 +4,12 @@
 # python.withPackages interpreter) must be able to import psycopg.
 # Supply intentionally invalid libpq conninfo, so no database/network
 # access is required during sandboxed derivation execution.
-pkgs.runCommand "astrumweaver-postgres-cli-closure" { } ''
+pkgs.runCommand "tsumgi-postgres-cli-closure" { } ''
   set -eu
   for migrate in \
-    ${control}/bin/astrumweaver-migrate \
-    ${installer}/bin/astrumweaver-migrate; do
-    if ASTRUMWEAVER_DATABASE_URL=not-a-valid-dsn "$migrate" \
+    ${control}/bin/tsumgi-migrate \
+    ${installer}/bin/tsumgi-migrate; do
+    if TSUMGI_DATABASE_URL=not-a-valid-dsn "$migrate" \
         > "$TMPDIR/migrate.out" 2>&1; then
       echo "invalid conninfo unexpectedly succeeded" >&2
       exit 1

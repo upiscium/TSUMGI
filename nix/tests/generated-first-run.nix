@@ -9,7 +9,7 @@ let
     inherit system;
     config.allowUnfree = true; # Evaluate the real host NVIDIA package only.
     overlays = [ (_final: prev: {
-      astrumweaverTestPackages.runtime = prev.ollama;
+      tsumgiTestPackages.runtime = prev.ollama;
     }) ];
   };
   # systemd command options permit a string or a list of command strings.
@@ -31,10 +31,10 @@ let
         ];
       };
       c = host.config;
-      control = c.services.astrumweaver.control;
-      worker = c.services.astrumweaver.worker;
-      cs = c.systemd.services.astrumweaver-control.serviceConfig;
-      ws = c.systemd.services.astrumweaver-worker.serviceConfig;
+      control = c.services.tsumgi.control;
+      worker = c.services.tsumgi.worker;
+      cs = c.systemd.services.tsumgi-control.serviceConfig;
+      ws = c.systemd.services.tsumgi-worker.serviceConfig;
       runtime = worker.runtime;
       packages = map toString runtime.packages;
       actual = {
@@ -62,12 +62,12 @@ let
         # unevaluated packages thunk cannot hide the original unbound pkgs.
         serviceContracts =
           (!control.enable || (
-            lib.hasInfix "astrumweaver-control" (commandText cs.ExecStart)
+            lib.hasInfix "tsumgi-control" (commandText cs.ExecStart)
             && lib.hasInfix "--config" (commandText cs.ExecStart)
-            && lib.hasInfix "astrumweaver-migrate" (commandText cs.ExecStartPre)
+            && lib.hasInfix "tsumgi-migrate" (commandText cs.ExecStartPre)
           ))
           && (!worker.enable || (
-            lib.hasInfix "astrumweaver-worker" (commandText ws.ExecStart)
+            lib.hasInfix "tsumgi-worker" (commandText ws.ExecStart)
             && lib.hasInfix "--config" (commandText ws.ExecStart)
             && (worker.gpuUuids == [ ] || lib.hasInfix "gpu-preflight" (commandText ws.ExecStartPre))
           ));
@@ -75,7 +75,7 @@ let
           (if runtime.enable then
             packages == [ (toString (lib.getAttrFromPath case.packagePath pkgs)) ]
             && builtins.all (package:
-              builtins.elem package (map toString c.systemd.services.astrumweaver-worker.path)
+              builtins.elem package (map toString c.systemd.services.tsumgi-worker.path)
             ) packages
           else packages == [ ])
           && (toString worker.nvidiaSmiPackage) == (toString c.hardware.nvidia.package)

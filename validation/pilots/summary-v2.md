@@ -1,4 +1,4 @@
-# AstrumWeaver bounded consumer pilot roll-up (v2)
+# TSUMGI bounded consumer pilot roll-up (v2)
 
 Tracking: #91 / #97. Updated 2026-10-09 (JST).
 

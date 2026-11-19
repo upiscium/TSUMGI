@@ -12,7 +12,7 @@ independent.
 
 ## Boundary
 
-`astrumweaver.serving` remains the pure identity/contract/profile layer. It
+`tsumgi.serving` remains the pure identity/contract/profile layer. It
 does not own GPUs, start runtimes or interpret workload payloads. Control and
 Worker integration consume those values through the existing Worker/Job
 authorities rather than introducing a second Slot or resource owner.

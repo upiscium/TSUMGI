@@ -6,12 +6,12 @@ import json
 import httpx
 import pytest
 
-from astrumweaver.audio.artifact_spool import ArtifactSpool
-from astrumweaver.audio.input_channel import AudioInputChannel
-from astrumweaver.audio.output_channel import AudioOutputChannel
-from astrumweaver.control import JobStatus, PostgresControlRepository
-from astrumweaver.control.api import create_app
-from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
+from tsumgi.audio.artifact_spool import ArtifactSpool
+from tsumgi.audio.input_channel import AudioInputChannel
+from tsumgi.audio.output_channel import AudioOutputChannel
+from tsumgi.control import JobStatus, PostgresControlRepository
+from tsumgi.control.api import create_app
+from tsumgi.transport import PROTOCOL_VERSION, SERVING_EXTENSION
 from test_audio_artifact_authority import EPOCH, setup_claim
 from test_audio_artifact_authority_postgres import isolated_database
 

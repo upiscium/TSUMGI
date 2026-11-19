@@ -13,31 +13,31 @@ from test_audio_provider_binding import values
 from test_style_bert_vits2_managed_runtime import make_spec
 from test_style_bert_vits2_provider import FakeMedia, job
 
-from astrumweaver.contracts import ResourceShape
-from astrumweaver.gateway.audio import (
+from tsumgi.contracts import ResourceShape
+from tsumgi.gateway.audio import (
     AudioGatewayProfile,
     AudioProfileCatalog,
     VoiceAlias,
     audio_semantic_revision,
 )
-from astrumweaver.runtime.contracts import RuntimeHealthState, RuntimeHostFacts
-from astrumweaver.runtime.deployment import _PROVIDER_TYPES
-from astrumweaver.runtime.providers.style_bert_vits2_managed import (
+from tsumgi.runtime.contracts import RuntimeHealthState, RuntimeHostFacts
+from tsumgi.runtime.deployment import _PROVIDER_TYPES
+from tsumgi.runtime.providers.style_bert_vits2_managed import (
     StyleBertRuntimeFailure,
 )
-from astrumweaver.runtime.providers.style_bert_vits2_source_assembly import (
+from tsumgi.runtime.providers.style_bert_vits2_source_assembly import (
     StyleBertSourceAssemblyError,
     StyleBertSourceAssemblyIntent,
     StyleBertSourceAssemblyReview,
     review_stylebert_source_assembly,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     LogicalServingProfile,
     ServingDeploymentDeclaration,
     resolve_profile,
 )
-from astrumweaver.setup import SetupPlan
-from astrumweaver.setup.contracts import DeploymentPath, SetupHostSnapshot
+from tsumgi.setup import SetupPlan
+from tsumgi.setup.contracts import DeploymentPath, SetupHostSnapshot
 
 
 def static_intent(*, gpu=False) -> StyleBertSourceAssemblyIntent:

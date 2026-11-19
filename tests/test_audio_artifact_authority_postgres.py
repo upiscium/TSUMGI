@@ -1,7 +1,7 @@
 """Real PostgreSQL acceptance: skips are NOT_VERIFIED, never PostgreSQL PASS.
 
 Each test gets a disposable database, not TRUNCATE of a shared host database.
-Requires ASTRUMWEAVER_TEST_DATABASE_URL and CREATEDB on that test-only server.
+Requires TSUMGI_TEST_DATABASE_URL and CREATEDB on that test-only server.
 No mocked connections, locks, transactions, or authorization outcomes.
 """
 from __future__ import annotations
@@ -13,8 +13,8 @@ from uuid import uuid4
 
 import pytest
 
-from astrumweaver.control import PostgresControlRepository
-from astrumweaver.control.migrate import apply_migrations
+from tsumgi.control import PostgresControlRepository
+from tsumgi.control.migrate import apply_migrations
 from test_audio_artifact_authority import (
     AuthorityCases, EPOCH, NEXT_EPOCH, authorize, clock, rejected,
     setup_claim,
@@ -24,9 +24,9 @@ from test_audio_artifact_authority import (
 @pytest.fixture
 def isolated_database():
     psycopg = pytest.importorskip("psycopg", reason="NOT_VERIFIED: real PostgreSQL driver unavailable")
-    source = os.environ.get("ASTRUMWEAVER_TEST_DATABASE_URL")
+    source = os.environ.get("TSUMGI_TEST_DATABASE_URL")
     if not source:
-        pytest.skip("NOT_VERIFIED: ASTRUMWEAVER_TEST_DATABASE_URL absent")
+        pytest.skip("NOT_VERIFIED: TSUMGI_TEST_DATABASE_URL absent")
     from psycopg import sql
     from psycopg.conninfo import make_conninfo
 
@@ -112,7 +112,7 @@ def test_authority_waits_for_committed_job_transition(authority_repo, isolated_d
             future = pool.submit(authorize, repo, claim)
             wait_for_blocker(observer, transaction.info.backend_pid, future)
             transaction.commit()
-            from astrumweaver.control import ConflictError
+            from tsumgi.control import ConflictError
             from test_audio_artifact_authority import REJECTION
             with pytest.raises(ConflictError, match="^" + REJECTION + "$"):
                 future.result(timeout=10)
@@ -141,7 +141,7 @@ def test_worker_lock_and_epoch_recheck(authority_repo, isolated_database, clock)
                 observer.execute("SELECT id FROM jobs WHERE id::text = %s FOR UPDATE NOWAIT", (claim.job_id,))
             transaction.execute("UPDATE workers SET serving = jsonb_set(serving, '{runtime_instance,epoch}', to_jsonb(%s::text)) WHERE id = 'owner'", (NEXT_EPOCH,))
             transaction.commit()
-            from astrumweaver.control import ConflictError
+            from tsumgi.control import ConflictError
             from test_audio_artifact_authority import REJECTION
             with pytest.raises(ConflictError, match="^" + REJECTION + "$"):
                 future.result(timeout=10)
@@ -152,7 +152,7 @@ def test_worker_lock_and_epoch_recheck(authority_repo, isolated_database, clock)
 
 def test_malformed_durable_binding_is_redacted_without_mutation(authority_repo, isolated_database, clock):
     import psycopg
-    from astrumweaver.control import ConflictError
+    from tsumgi.control import ConflictError
     from test_audio_artifact_authority import REJECTION
 
     claim = setup_claim(authority_repo, clock.now)

@@ -6,10 +6,10 @@ For the recommended generic-systemd installation using the dedicated installer
 profile, run it with the profile path directly:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-tui
 ```
 
-A bare `astrumweaver-setup-tui` command is also valid when the installer
+A bare `tsumgi-setup-tui` command is also valid when the installer
 profile's `bin` directory is already on `PATH`. The first-run implementation
 does not require you to modify `PATH` when using the absolute profile path.
 
@@ -61,12 +61,12 @@ Runtime SetupPlan, progress output, or public evidence.
 Runtime-only setup remains available:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-tui \
   --mode runtime
 ```
 
 On generic systemd, runtime-only mode is an **existing Worker migration**.
-The TUI reads the installed non-secret `/etc/astrumweaver/worker.toml` and
+The TUI reads the installed non-secret `/etc/tsumgi/worker.toml` and
 canonical Worker unit, verifies their execution authority, and uses that
 installed contract as the immutable source for Worker identity, Control URL,
 GPU ownership/order, resource shape, accelerator facts, labels, concurrency,
@@ -105,7 +105,7 @@ dry-run / exact plan confirmation / apply
 ```
 
 On NixOS, runtime mode remains a planning workflow over explicitly selected
-Worker/GPU facts; declarative `services.astrumweaver.worker.runtime` remains
+Worker/GPU facts; declarative `services.tsumgi.worker.runtime` remains
 the normal mutation boundary.
 
 ## Runtime authority
@@ -250,7 +250,7 @@ The TUI remains usable without deployment authority. When the installer
 profile's `bin` directory is already on `PATH`, running without a driver:
 
 ```sh
-astrumweaver-setup-tui --mode runtime
+tsumgi-setup-tui --mode runtime
 ```
 
 loads and validates the installed Worker contract, completes demand/runtime
@@ -261,9 +261,9 @@ On an already-integrated generic systemd Worker host, the first-party driver
 can be connected with:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-tui \
   --mode runtime \
-  --driver astrumweaver.setup.systemd:create_systemd_driver
+  --driver tsumgi.setup.systemd:create_systemd_driver
 ```
 
 The Worker service account, Worker TOML, protected token EnvironmentFile, and
@@ -275,7 +275,7 @@ preserved by reference and never read; Control credentials, network identity,
 Worker identity and GPU ownership are not invented or reconstructed.
 
 For generic systemd, `llama-cpp` has a first-party package path. The driver
-uses the `astrumweaver-runtime-profile` helper packaged with `#installer` to
+uses the `tsumgi-runtime-profile` helper packaged with `#installer` to
 reconcile the dedicated Nix profile documented in
 [Installation — RuntimeBackend Nix profile](installation.md#runtimebackend-nix-profile).
 The deployment manifest uses that profile's absolute `llama-server` path, so
@@ -292,8 +292,8 @@ Explicit argv maps remain an escape hatch for providers without a first-party
 managed RuntimeBackend or for deliberate custom deployments:
 
 ```sh
-export ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON='{"vllm":["/usr/local/sbin/install-reviewed-vllm"]}'
-export ASTRUMWEAVER_RUNTIME_DOWNLOADERS_JSON='{"vllm":["/usr/local/sbin/fetch-reviewed-vllm-model"]}'
+export TSUMGI_RUNTIME_INSTALLERS_JSON='{"vllm":["/usr/local/sbin/install-reviewed-vllm"]}'
+export TSUMGI_RUNTIME_DOWNLOADERS_JSON='{"vllm":["/usr/local/sbin/fetch-reviewed-vllm-model"]}'
 ```
 
 For a provider with a first-party managed package path, a deliberate custom
@@ -306,7 +306,7 @@ The driver appends the reviewed package/model reference as the final argument.
 It does not invoke a shell or guess `apt`, `pip`, `curl`, or another
 distribution installer.
 
-NixOS normally uses `services.astrumweaver.worker.runtime` instead. The
+NixOS normally uses `services.tsumgi.worker.runtime` instead. The
 runtime provider and demand are persisted as an immutable Nix-store deployment
 manifest and the runtime package is explicitly supplied in the service closure.
 

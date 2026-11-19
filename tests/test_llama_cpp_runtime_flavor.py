@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.runtime import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -15,13 +15,13 @@ from astrumweaver.runtime import (
     RuntimeCompatibilityContext,
     RuntimeHostFacts,
 )
-from astrumweaver.runtime.providers.llama_cpp import (
+from tsumgi.runtime.providers.llama_cpp import (
     LLAMA_CPP_STANDARD_RUNTIME,
     LlamaCppProvider,
     LlamaCppProviderConfig,
 )
-from astrumweaver.setup.contracts import DeploymentPath
-from astrumweaver.setup.tui import _PROVIDER_OPTIONS, default_runtime_catalog
+from tsumgi.setup.contracts import DeploymentPath
+from tsumgi.setup.tui import _PROVIDER_OPTIONS, default_runtime_catalog
 
 
 def _ctx(model_ref: str = "/models/upstream-Q4_K_M.gguf") -> RuntimeCompatibilityContext:
@@ -72,12 +72,12 @@ def test_systemd_driver_maps_the_provider_to_managed_nix_profile_manager(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from astrumweaver.setup.systemd import create_systemd_driver
+    from tsumgi.setup.systemd import create_systemd_driver
     manager = tmp_path / "runtime-manager"
     manager.write_text("#!/bin/sh\\nexit 0\\n")
     manager.chmod(0o755)
-    monkeypatch.setenv("ASTRUMWEAVER_RUNTIME_PROFILE_MANAGER", str(manager))
-    monkeypatch.setenv("ASTRUMWEAVER_SETUP_ROOT", str(tmp_path / "root"))
+    monkeypatch.setenv("TSUMGI_RUNTIME_PROFILE_MANAGER", str(manager))
+    monkeypatch.setenv("TSUMGI_SETUP_ROOT", str(tmp_path / "root"))
     driver = create_systemd_driver()
     assert driver.installers["llama-cpp"] == (str(manager), "ensure")
     assert driver.verifiers["llama-cpp"] == (str(manager), "verify")

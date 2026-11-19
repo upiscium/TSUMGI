@@ -10,7 +10,7 @@ from typing import Callable
 
 import pytest
 
-from astrumweaver.validation.gpu_mapping import (
+from tsumgi.validation.gpu_mapping import (
     GpuMappingError,
     _load_reviewed_map,
     _select_mapping,
@@ -28,7 +28,7 @@ LEGACY_GPU_MAPPING_V54 = ROOT / "tests/fixtures/gpu-mapping-v54.py"
 
 def reviewed_gpu_mapping_v59_bytes() -> bytes:
     current = (
-        ROOT / "src/astrumweaver/gpu_mapping.py"
+        ROOT / "src/tsumgi/gpu_mapping.py"
     ).read_text(encoding="utf-8")
 
     alias = '''def _load_reviewed_map(path: Path) -> tuple[tuple[str, str], ...]:
@@ -66,6 +66,9 @@ def reviewed_gpu_mapping_v59_bytes() -> bytes:
 '''
     assert legacy.count(access_gate) == 1
     legacy = legacy.replace(access_gate, legacy_gate, 1)
+
+    # The reviewed v59 file predates the rename: restore its names so the pin holds.
+    legacy = legacy.replace("TSUMGI_", "ASTRUMWEAVER_").replace("tsumgi", "astrumweaver").replace("TSUMGI", "AstrumWeaver")
 
     payload = legacy.encode("utf-8")
     assert hashlib.sha256(payload).hexdigest() == (
@@ -117,7 +120,7 @@ def test_control_setup_stages_existing_node_idempotently(tmp_path: Path) -> None
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-control",
+        "/usr/local/bin/tsumgi-control",
         "--root",
         str(staged),
     ]
@@ -128,14 +131,14 @@ def test_control_setup_stages_existing_node_idempotently(tmp_path: Path) -> None
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
     assert (
-        staged / "etc/astrumweaver/control.toml"
+        staged / "etc/tsumgi/control.toml"
     ).read_text(encoding="utf-8") == config.read_text(encoding="utf-8")
-    unit = (staged / "etc/systemd/system/astrumweaver-control.service").read_text(
+    unit = (staged / "etc/systemd/system/tsumgi-control.service").read_text(
         encoding="utf-8"
     )
     assert exec_start_line(unit) == (
-        "ExecStart=/usr/local/bin/astrumweaver-control "
-        "--config /etc/astrumweaver/control.toml"
+        "ExecStart=/usr/local/bin/tsumgi-control "
+        "--config /etc/tsumgi/control.toml"
     )
     assert_no_trailing_whitespace(unit)
 
@@ -150,7 +153,7 @@ def test_control_setup_refuses_unreviewed_config_overwrite(tmp_path: Path) -> No
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-control",
+        "/usr/local/bin/tsumgi-control",
         "--root",
         str(staged),
     ]
@@ -168,17 +171,17 @@ def test_control_setup_refuses_unreviewed_config_overwrite(tmp_path: Path) -> No
     (
         (
             "setup-control-plane.sh",
-            "astrumweaver-control",
+            "tsumgi-control",
             "control.toml",
             '[control]\nlisten = "127.0.0.1:9000"\n',
-            "astrumweaver-control.service",
+            "tsumgi-control.service",
         ),
         (
             "setup-gpu-worker.sh",
-            "astrumweaver-worker",
+            "tsumgi-worker",
             "worker.toml",
             '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
-            "astrumweaver-worker.service",
+            "tsumgi-worker.service",
         ),
     ),
 )
@@ -193,7 +196,7 @@ def test_setup_rejects_legacy_store_pinned_unit_without_mutation(
     config = tmp_path / config_name
     config.write_text(config_text, encoding="utf-8")
     staged = tmp_path / "root"
-    legacy_executable = f"/nix/store/legacy-astrumweaver/bin/{daemon}"
+    legacy_executable = f"/nix/store/legacy-tsumgi/bin/{daemon}"
     stable_executable = str(tmp_path / "profile" / "bin" / daemon)
 
     first = run(
@@ -210,7 +213,7 @@ def test_setup_rejects_legacy_store_pinned_unit_without_mutation(
 
     unit = staged / "etc/systemd/system" / unit_name
     unit_before = unit.read_bytes()
-    config_dest = staged / "etc/astrumweaver" / config_name
+    config_dest = staged / "etc/tsumgi" / config_name
     config_before = config_dest.read_bytes()
 
     changed = run(
@@ -245,7 +248,7 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     ]
@@ -255,19 +258,19 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
-    assert (staged / "etc/astrumweaver/gpu-uuids").read_text(
+    assert (staged / "etc/tsumgi/gpu-uuids").read_text(
         encoding="utf-8"
     ) == "GPU-example-a\nGPU-example-b\n"
-    assert (staged / "usr/local/libexec/astrumweaver/gpu-preflight").exists()
-    assert (staged / "usr/local/libexec/astrumweaver/gpu-isolation-probe").exists()
-    assert (staged / "usr/local/libexec/astrumweaver/gpu_mapping.py").exists()
-    unit = (staged / "etc/systemd/system/astrumweaver-worker.service").read_text(
+    assert (staged / "usr/local/libexec/tsumgi/gpu-preflight").exists()
+    assert (staged / "usr/local/libexec/tsumgi/gpu-isolation-probe").exists()
+    assert (staged / "usr/local/libexec/tsumgi/gpu_mapping.py").exists()
+    unit = (staged / "etc/systemd/system/tsumgi-worker.service").read_text(
         encoding="utf-8"
     )
-    assert "gpu-preflight /etc/astrumweaver/gpu-uuids" in unit
+    assert "gpu-preflight /etc/tsumgi/gpu-uuids" in unit
     assert exec_start_line(unit) == (
-        "ExecStart=/usr/local/bin/astrumweaver-worker "
-        "--config /etc/astrumweaver/worker.toml"
+        "ExecStart=/usr/local/bin/tsumgi-worker "
+        "--config /etc/tsumgi/worker.toml"
     )
     assert "Environment=LD_LIBRARY_PATH=" not in unit
     assert_no_trailing_whitespace(unit)
@@ -282,7 +285,7 @@ def test_worker_setup_upgrades_reviewed_v48_gpu_mapper_to_canonical_helper(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu-device-map"
+    helper = staged / "usr/local/libexec/tsumgi/gpu-device-map"
     helper.parent.mkdir(parents=True)
     helper.write_bytes(LEGACY_GPU_DEVICE_MAP.read_bytes())
 
@@ -292,7 +295,7 @@ def test_worker_setup_upgrades_reviewed_v48_gpu_mapper_to_canonical_helper(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
@@ -300,7 +303,7 @@ def test_worker_setup_upgrades_reviewed_v48_gpu_mapper_to_canonical_helper(
     assert result.returncode == 0, result.stderr
     assert helper.read_bytes() == (ROOT / "libexec/gpu-device-map").read_bytes()
     assert b"/nix/store/" not in helper.read_bytes()
-    assert (staged / "usr/local/libexec/astrumweaver/gpu-preflight").exists()
+    assert (staged / "usr/local/libexec/tsumgi/gpu-preflight").exists()
 
     discover, _, _, _, _ = fake_gpu_mapping_host(
         tmp_path,
@@ -326,7 +329,7 @@ def test_worker_setup_upgrades_reviewed_v54_gpu_mapping_python(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    helper = staged / "usr/local/libexec/tsumgi/gpu_mapping.py"
     helper.parent.mkdir(parents=True)
     helper.write_bytes(LEGACY_GPU_MAPPING_V54.read_bytes())
 
@@ -340,14 +343,14 @@ def test_worker_setup_upgrades_reviewed_v54_gpu_mapping_python(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
 
     assert result.returncode == 0, result.stderr
     assert helper.read_bytes() == (
-        ROOT / "src/astrumweaver/gpu_mapping.py"
+        ROOT / "src/tsumgi/gpu_mapping.py"
     ).read_bytes()
 
 
@@ -360,7 +363,7 @@ def test_worker_setup_rejects_modified_v54_gpu_mapping_python(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    helper = staged / "usr/local/libexec/tsumgi/gpu_mapping.py"
     helper.parent.mkdir(parents=True)
     helper.write_bytes(
         LEGACY_GPU_MAPPING_V54.read_bytes() + b"# operator change\n"
@@ -373,7 +376,7 @@ def test_worker_setup_rejects_modified_v54_gpu_mapping_python(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
@@ -392,7 +395,7 @@ def test_worker_setup_upgrades_reviewed_v59_gpu_mapping_python(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    helper = staged / "usr/local/libexec/tsumgi/gpu_mapping.py"
     helper.parent.mkdir(parents=True)
     helper.write_bytes(reviewed_gpu_mapping_v59_bytes())
 
@@ -402,14 +405,14 @@ def test_worker_setup_upgrades_reviewed_v59_gpu_mapping_python(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
 
     assert result.returncode == 0, result.stderr
     assert helper.read_bytes() == (
-        ROOT / "src/astrumweaver/gpu_mapping.py"
+        ROOT / "src/tsumgi/gpu_mapping.py"
     ).read_bytes()
 
 
@@ -422,7 +425,7 @@ def test_worker_setup_rejects_modified_v59_gpu_mapping_python(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    helper = staged / "usr/local/libexec/tsumgi/gpu_mapping.py"
     helper.parent.mkdir(parents=True)
     helper.write_bytes(
         reviewed_gpu_mapping_v59_bytes() + b"# operator change\n"
@@ -435,7 +438,7 @@ def test_worker_setup_rejects_modified_v59_gpu_mapping_python(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
@@ -454,7 +457,7 @@ def test_worker_setup_upgrades_reviewed_v59_gpu_preflight_to_current(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu-preflight"
+    helper = staged / "usr/local/libexec/tsumgi/gpu-preflight"
     helper.parent.mkdir(parents=True)
     helper.write_bytes(LEGACY_GPU_PREFLIGHT.read_bytes())
 
@@ -464,7 +467,7 @@ def test_worker_setup_upgrades_reviewed_v59_gpu_preflight_to_current(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
@@ -475,62 +478,6 @@ def test_worker_setup_upgrades_reviewed_v59_gpu_preflight_to_current(
 
 
 
-def test_worker_setup_upgrades_reviewed_v59_gpu_mapper_to_current(
-    tmp_path: Path,
-) -> None:
-    config = tmp_path / "worker.toml"
-    config.write_text(
-        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
-        encoding="utf-8",
-    )
-    staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu-device-map"
-    helper.parent.mkdir(parents=True)
-    helper.write_bytes(LEGACY_GPU_DEVICE_MAP_V59.read_bytes())
-
-    result = run(
-        "bash",
-        str(SETUP / "setup-gpu-worker.sh"),
-        "--config",
-        str(config),
-        "--executable",
-        "/usr/local/bin/astrumweaver-worker",
-        "--root",
-        str(staged),
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert helper.read_bytes() == (ROOT / "libexec/gpu-device-map").read_bytes()
-
-
-def test_worker_setup_upgrades_nix_patched_reviewed_v59_gpu_mapper(
-    tmp_path: Path,
-) -> None:
-    config = tmp_path / "worker.toml"
-    config.write_text(
-        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
-        encoding="utf-8",
-    )
-    staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu-device-map"
-    helper.parent.mkdir(parents=True)
-    helper.write_bytes(
-        nix_patched_bash_script(LEGACY_GPU_DEVICE_MAP_V59)
-    )
-
-    result = run(
-        "bash",
-        str(SETUP / "setup-gpu-worker.sh"),
-        "--config",
-        str(config),
-        "--executable",
-        "/usr/local/bin/astrumweaver-worker",
-        "--root",
-        str(staged),
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert helper.read_bytes() == (ROOT / "libexec/gpu-device-map").read_bytes()
 
 
 def test_worker_setup_rejects_modified_v59_gpu_mapper(
@@ -542,7 +489,7 @@ def test_worker_setup_rejects_modified_v59_gpu_mapper(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu-device-map"
+    helper = staged / "usr/local/libexec/tsumgi/gpu-device-map"
     helper.parent.mkdir(parents=True)
     helper.write_bytes(
         LEGACY_GPU_DEVICE_MAP_V59.read_bytes() + b"# operator change\n"
@@ -555,7 +502,7 @@ def test_worker_setup_rejects_modified_v59_gpu_mapper(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
@@ -583,7 +530,7 @@ def test_worker_setup_upgrades_nix_patched_reviewed_gpu_helper(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver" / helper_name
+    helper = staged / "usr/local/libexec/tsumgi" / helper_name
     helper.parent.mkdir(parents=True)
     helper.write_bytes(nix_patched_bash_script(reviewed_source))
 
@@ -593,7 +540,7 @@ def test_worker_setup_upgrades_nix_patched_reviewed_gpu_helper(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
@@ -617,7 +564,7 @@ def test_worker_setup_rejects_operator_modified_nix_patched_gpu_helper(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver" / helper_name
+    helper = staged / "usr/local/libexec/tsumgi" / helper_name
     helper.parent.mkdir(parents=True)
     reviewed_source = (
         LEGACY_GPU_PREFLIGHT
@@ -635,7 +582,7 @@ def test_worker_setup_rejects_operator_modified_nix_patched_gpu_helper(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
@@ -662,7 +609,7 @@ def test_worker_setup_rejects_unreviewed_gpu_helper_interpreter(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu-preflight"
+    helper = staged / "usr/local/libexec/tsumgi/gpu-preflight"
     helper.parent.mkdir(parents=True)
     lines = PREFLIGHT.read_bytes().splitlines(keepends=True)
     lines[0] = shebang
@@ -675,7 +622,7 @@ def test_worker_setup_rejects_unreviewed_gpu_helper_interpreter(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
@@ -692,7 +639,7 @@ def test_worker_setup_rejects_modified_legacy_gpu_mapper(tmp_path: Path) -> None
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    helper = staged / "usr/local/libexec/astrumweaver/gpu-device-map"
+    helper = staged / "usr/local/libexec/tsumgi/gpu-device-map"
     helper.parent.mkdir(parents=True)
     helper.write_bytes(LEGACY_GPU_DEVICE_MAP.read_bytes() + b"# operator change\n")
     before = helper.read_bytes()
@@ -703,7 +650,7 @@ def test_worker_setup_rejects_modified_legacy_gpu_mapper(tmp_path: Path) -> None
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
@@ -737,30 +684,30 @@ def test_worker_setup_stages_runtime_manifest_and_wires_service(
         "--runtime-manifest",
         str(runtime_manifest),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     )
 
     assert result.returncode == 0, result.stderr
     deployed = (
-        staged / "etc/astrumweaver/runtime-deployment.json"
+        staged / "etc/tsumgi/runtime-deployment.json"
     )
     assert deployed.read_text(encoding="utf-8") == runtime_manifest.read_text(
         encoding="utf-8"
     )
     unit = (
         staged
-        / "etc/systemd/system/astrumweaver-worker.service"
+        / "etc/systemd/system/tsumgi-worker.service"
     ).read_text(encoding="utf-8")
     assert exec_start_line(unit) == (
-        "ExecStart=/usr/local/bin/astrumweaver-worker "
-        "--config /etc/astrumweaver/worker.toml "
-        "--runtime-manifest /etc/astrumweaver/runtime-deployment.json"
+        "ExecStart=/usr/local/bin/tsumgi-worker "
+        "--config /etc/tsumgi/worker.toml "
+        "--runtime-manifest /etc/tsumgi/runtime-deployment.json"
     )
     assert (
         "Environment=LD_LIBRARY_PATH="
-        "/etc/astrumweaver/runtime/nvidia-driver"
+        "/etc/tsumgi/runtime/nvidia-driver"
     ) in unit
     assert_no_trailing_whitespace(unit)
 
@@ -781,8 +728,8 @@ def test_worker_setup_converges_after_manual_store_to_profile_migration(
         encoding="utf-8",
     )
     staged = tmp_path / "root"
-    legacy = "/nix/store/legacy-astrumweaver/bin/astrumweaver-worker"
-    stable = "/nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-worker"
+    legacy = "/nix/store/legacy-tsumgi/bin/tsumgi-worker"
+    stable = "/nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-worker"
 
     command = [
         "bash",
@@ -796,7 +743,7 @@ def test_worker_setup_converges_after_manual_store_to_profile_migration(
 
     first = run(*command)
     assert first.returncode == 0, first.stderr
-    unit_path = staged / "etc/systemd/system/astrumweaver-worker.service"
+    unit_path = staged / "etc/systemd/system/tsumgi-worker.service"
     legacy_unit = unit_path.read_text(encoding="utf-8")
     assert_no_trailing_whitespace(legacy_unit)
 
@@ -834,7 +781,7 @@ def test_worker_setup_stages_gpu_device_cgroup_isolation(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--gpu-isolation",
         "on",
         "--gpu-device",
@@ -845,43 +792,43 @@ def test_worker_setup_stages_gpu_device_cgroup_isolation(
 
     assert result.returncode == 0, result.stderr
     assert (
-        staged / "etc/astrumweaver/gpu-device-map"
+        staged / "etc/tsumgi/gpu-device-map"
     ).read_text(encoding="utf-8") == "GPU-example-a=/dev/nvidia3\n"
 
     dropin = (
         staged
-        / "etc/systemd/system/astrumweaver-worker.service.d/10-gpu-isolation.conf"
+        / "etc/systemd/system/tsumgi-worker.service.d/10-gpu-isolation.conf"
     ).read_text(encoding="utf-8")
     assert_no_trailing_whitespace(
         (
-            staged / "etc/systemd/system/astrumweaver-worker.service"
+            staged / "etc/systemd/system/tsumgi-worker.service"
         ).read_text(encoding="utf-8")
     )
     assert_no_trailing_whitespace(dropin)
     assert "DevicePolicy=closed" in dropin
     assert "DeviceAllow=/dev/nvidia3 rw" in dropin
     assert "Environment=CUDA_VISIBLE_DEVICES=GPU-example-a" in dropin
-    assert "Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access" in dropin
+    assert "Environment=TSUMGI_GPU_PREFLIGHT_MODE=isolated-access" in dropin
     assert (
-        "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP="
-        "/etc/astrumweaver/gpu-device-map"
+        "Environment=TSUMGI_GPU_DEVICE_MAP="
+        "/etc/tsumgi/gpu-device-map"
     ) in dropin
     assert (
-        "Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG="
-        "/etc/astrumweaver/worker.toml"
+        "Environment=TSUMGI_GPU_WORKER_CONFIG="
+        "/etc/tsumgi/worker.toml"
     ) in dropin
     assert (
-        "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="
-        "/usr/local/libexec/astrumweaver/gpu-device-map"
+        "Environment=TSUMGI_GPU_DEVICE_MAP_COMMAND="
+        "/usr/local/libexec/tsumgi/gpu-device-map"
     ) in dropin
     assert (
-        "Requires=astrumweaver-worker-gpu-isolation-preflight.service"
+        "Requires=tsumgi-worker-gpu-isolation-preflight.service"
         in dropin
     )
 
     verifier_unit = (
         staged
-        / "etc/systemd/system/astrumweaver-worker-gpu-isolation-preflight.service"
+        / "etc/systemd/system/tsumgi-worker-gpu-isolation-preflight.service"
     ).read_text(encoding="utf-8")
     assert "gpu-device-map verify" in verifier_unit
     assert_no_trailing_whitespace(verifier_unit)
@@ -902,7 +849,7 @@ def test_staged_gpu_isolation_requires_explicit_uuid_device_mapping(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--gpu-isolation",
         "on",
         "--root",
@@ -929,7 +876,7 @@ def test_gpu_isolation_off_rejects_explicit_mapping_for_staged_installs(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--gpu-isolation",
         "off",
         "--gpu-device",
@@ -958,7 +905,7 @@ def test_staged_gpu_isolation_off_rejects_existing_isolation_state(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(staged),
     ]
@@ -971,14 +918,14 @@ def test_staged_gpu_isolation_off_rejects_existing_isolation_state(
     )
     assert installed.returncode == 0, installed.stderr
 
-    map_file = staged / "etc/astrumweaver/gpu-device-map"
+    map_file = staged / "etc/tsumgi/gpu-device-map"
     isolation_unit = (
         staged
-        / "etc/systemd/system/astrumweaver-worker-gpu-isolation-preflight.service"
+        / "etc/systemd/system/tsumgi-worker-gpu-isolation-preflight.service"
     )
     isolation_dropin = (
         staged
-        / "etc/systemd/system/astrumweaver-worker.service.d/10-gpu-isolation.conf"
+        / "etc/systemd/system/tsumgi-worker.service.d/10-gpu-isolation.conf"
     )
     before = tuple(
         path.read_bytes() for path in (map_file, isolation_unit, isolation_dropin)
@@ -1006,7 +953,7 @@ def test_worker_setup_rejects_duplicate_gpu_identity(tmp_path: Path) -> None:
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--root",
         str(tmp_path / "root"),
     )
@@ -1028,7 +975,7 @@ def test_worker_setup_rejects_legacy_gpu_uuid_cli_authority(tmp_path: Path) -> N
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--gpu-uuid",
         "GPU-other",
         "--root",

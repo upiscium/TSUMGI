@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrumweaver.worker import daemon
+from tsumgi.worker import daemon
 
 
 @pytest.mark.asyncio
@@ -50,7 +50,7 @@ async def test_dual_daemon_rejects_unsafe_setup_before_runtime_creation(
     def unexpected_runtime(*_args: object, **_kwargs: object) -> None:
         pytest.fail("dual model runtime must not be created for invalid startup")
 
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "synthetic-test-token")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "synthetic-test-token")
     monkeypatch.setattr(daemon, "_load_toml", lambda _path: config)
     monkeypatch.setattr(daemon, "ControlClient", FakeControlClient)
     monkeypatch.setattr(

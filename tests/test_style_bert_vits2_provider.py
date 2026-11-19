@@ -7,8 +7,8 @@ import math
 
 import pytest
 
-from astrumweaver.execution import ArtifactRef, JobExecutionError, JobRequest, JobResult, ResidencyReport
-from astrumweaver.runtime.providers.style_bert_vits2 import (
+from tsumgi.execution import ArtifactRef, JobExecutionError, JobRequest, JobResult, ResidencyReport
+from tsumgi.runtime.providers.style_bert_vits2 import (
     STYLE_BERT_VITS2_PROVIDER_ID,
     StyleBertVits2ModelPin, StyleBertVits2Voice, StyleBertVits2ProviderConfig,
     StyleBertVits2AsyncModelApi, StyleBertVits2Executor,
@@ -356,10 +356,10 @@ async def test_executor_can_reuse_after_a_timed_out_mock_operation():
 
 
 def test_unqualified_source_executor_cannot_advertise_ja_wav():
-    from astrumweaver.serving import (
+    from tsumgi.serving import (
         DeploymentIdentity, ServingContract, ServingDeploymentDeclaration,
     )
-    from astrumweaver.worker.runtime import require_executor_serving_features
+    from tsumgi.worker.runtime import require_executor_serving_features
 
     def digest(letter):
         return "sha256:" + letter * 64

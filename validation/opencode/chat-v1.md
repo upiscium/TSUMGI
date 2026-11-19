@@ -1,4 +1,4 @@
-# AstrumWeaver OpenCode Chat Acceptance Evidence
+# TSUMGI OpenCode Chat Acceptance Evidence
 
 This file is intentionally redacted. It contains no gateway URL, credential, prompt, tool arguments/result, local path, source payload, hostname, Worker ID, GPU UUID, or model artifact path.
 

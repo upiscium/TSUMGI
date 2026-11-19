@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "astrumweaver"
+name = "tsumgi"
 version = "0.2.1"
 description = "TSUMGI deployment-agnostic compute fabric for heterogeneous compute nodes"
 readme = "README.md"
@@ -27,24 +27,24 @@ test = [
 ]
 
 [project.scripts]
-astrumweaver-control = "astrumweaver.control.daemon:main"
-astrumweaver-worker = "astrumweaver.worker.daemon:main"
-astrumweaver-worker-mode = "astrumweaver.worker.mode:main"
-astrumweaver-migrate = "astrumweaver.control.migrate:main"
-astrumweaver-hardware-accept = "astrumweaver.validation.hardware:main"
-astrumweaver-runtime-deployment-accept = "astrumweaver.validation.runtime_deployment:main"
-astrumweaver-opencode-chat-accept = "astrumweaver.validation.opencode_chat:main"
-astrumweaver-decision-shadow-accept = "astrumweaver.validation.decision_shadow:main"
-astrumweaver-d1-gpu-smoke = "astrumweaver.validation.d1_gpu_smoke:main"
-astrumweaver-embedding-accept = "astrumweaver.validation.embedding:main"
-astrumweaver-coding-pilot = "astrumweaver.validation.coding_pilot:main"
-astrumweaver-setup-tui = "astrumweaver.setup.tui:main"
+tsumgi-control = "tsumgi.control.daemon:main"
+tsumgi-worker = "tsumgi.worker.daemon:main"
+tsumgi-worker-mode = "tsumgi.worker.mode:main"
+tsumgi-migrate = "tsumgi.control.migrate:main"
+tsumgi-hardware-accept = "tsumgi.validation.hardware:main"
+tsumgi-runtime-deployment-accept = "tsumgi.validation.runtime_deployment:main"
+tsumgi-opencode-chat-accept = "tsumgi.validation.opencode_chat:main"
+tsumgi-decision-shadow-accept = "tsumgi.validation.decision_shadow:main"
+tsumgi-d1-gpu-smoke = "tsumgi.validation.d1_gpu_smoke:main"
+tsumgi-embedding-accept = "tsumgi.validation.embedding:main"
+tsumgi-coding-pilot = "tsumgi.validation.coding_pilot:main"
+tsumgi-setup-tui = "tsumgi.setup.tui:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/astrumweaver"]
+packages = ["src/tsumgi"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"migrations" = "astrumweaver/migrations"
+"migrations" = "tsumgi/migrations"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -2,7 +2,7 @@
 
 Tracking: #91 / #97. Coding adapter prerequisite: accepted #94.
 
-This procedure measures whether one pinned AstrumWeaver chat deployment is useful
+This procedure measures whether one pinned TSUMGI chat deployment is useful
 to a coding client. It is deliberately narrower than a coding benchmark and does
 not infer remote-provider savings from local token counts.
 
@@ -18,7 +18,7 @@ The first pilot uses:
 - three task classes: read-only discovery, scoped test addition, scoped fix.
 
 Client repository access, tool execution, worktrees, review and final acceptance
-remain outside AstrumWeaver.
+remain outside TSUMGI.
 
 ## Private/public boundary
 
@@ -81,7 +81,7 @@ reported separately but must not be silently mixed into task latency.
 provider/client path being compared.
 
 `delegated_local` means the equivalent task is delegated through the pinned
-AstrumWeaver local serving profile.
+TSUMGI local serving profile.
 
 Both lanes use the same task baseline and acceptance checker. A different
 baseline/checker is a different experiment.
@@ -175,7 +175,7 @@ preserved unchanged; see [the later genuine direct-remote observation](../valida
 Prepare a private JSON input following `coding-pilot-v1` and run:
 
 ```sh
-astrumweaver-coding-pilot \
+tsumgi-coding-pilot \
   --input /private/pilot.json \
   --evidence validation/coding-pilot/coding-v1.md
 ```
