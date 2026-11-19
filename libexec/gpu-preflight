@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 die() {
-  printf '[astrumweaver-gpu-preflight] ERROR: %s\n' "$*" >&2
+  printf '[tsumgi-gpu-preflight] ERROR: %s\n' "$*" >&2
   exit 1
 }
 
@@ -11,12 +11,12 @@ die() {
 EXPECTED_FILE="$1"
 [[ -f "$EXPECTED_FILE" ]] || die "expected GPU UUID file is missing"
 
-MODE="${ASTRUMWEAVER_GPU_PREFLIGHT_MODE:-exact-visible}"
+MODE="${TSUMGI_GPU_PREFLIGHT_MODE:-exact-visible}"
 
 if [[ "$MODE" == "isolated-access" ]]; then
-  REVIEWED_MAP="${ASTRUMWEAVER_GPU_DEVICE_MAP:-}"
-  WORKER_CONFIG="${ASTRUMWEAVER_GPU_WORKER_CONFIG:-}"
-  GPU_DEVICE_MAP="${ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND:-}"
+  REVIEWED_MAP="${TSUMGI_GPU_DEVICE_MAP:-}"
+  WORKER_CONFIG="${TSUMGI_GPU_WORKER_CONFIG:-}"
+  GPU_DEVICE_MAP="${TSUMGI_GPU_DEVICE_MAP_COMMAND:-}"
 
   [[ "$REVIEWED_MAP" == /* && -f "$REVIEWED_MAP" ]] \
     || die "isolated-access reviewed GPU map is unavailable"
@@ -25,7 +25,7 @@ if [[ "$MODE" == "isolated-access" ]]; then
   [[ "$GPU_DEVICE_MAP" == /* && -x "$GPU_DEVICE_MAP" ]] \
     || die "isolated-access canonical GPU mapper is unavailable"
 
-  NVIDIA_SMI="${ASTRUMWEAVER_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
+  NVIDIA_SMI="${TSUMGI_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
   [[ -n "$NVIDIA_SMI" ]] || die "nvidia-smi is not available"
 
   "$GPU_DEVICE_MAP" \
@@ -36,14 +36,14 @@ if [[ "$MODE" == "isolated-access" ]]; then
     "$WORKER_CONFIG" >/dev/null
 
   count="$(awk 'NF {n++} END {print n+0}' "$EXPECTED_FILE")"
-  printf '[astrumweaver-gpu-preflight] isolated-access ok count=%s\n' "$count"
+  printf '[tsumgi-gpu-preflight] isolated-access ok count=%s\n' "$count"
   exit 0
 fi
 
 [[ "$MODE" == "exact-visible" ]] \
   || die "GPU preflight mode must be exact-visible or isolated-access"
 
-NVIDIA_SMI="${ASTRUMWEAVER_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
+NVIDIA_SMI="${TSUMGI_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
 [[ -n "$NVIDIA_SMI" ]] || die "nvidia-smi is not available"
 
 expected_tmp="$(mktemp)"
@@ -76,4 +76,4 @@ if ! cmp -s "$expected_tmp" "$observed_tmp"; then
 fi
 
 count="$(wc -l <"$expected_tmp" | tr -d ' ')"
-printf '[astrumweaver-gpu-preflight] ok count=%s\n' "$count"
+printf '[tsumgi-gpu-preflight] ok count=%s\n' "$count"

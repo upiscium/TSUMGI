@@ -2,8 +2,8 @@
 
 Status: proposed detailed contract; approved direction, not implemented serving support.
 
-Tracking: [Epic #91](https://github.com/upiscium/AstrumWeaver/issues/91),
-[design PR #92](https://github.com/upiscium/AstrumWeaver/pull/92).
+Tracking: [Epic #91](https://github.com/upiscium/TSUMGI/issues/91),
+[design PR #92](https://github.com/upiscium/TSUMGI/pull/92).
 
 Inspected source baseline: `118baa14e525eb933e12bc0d79751c39ae66fd7f`.
 
@@ -15,7 +15,7 @@ for the inspected baseline.
 
 ## 1. Reuse the existing fabric
 
-AstrumWeaver is already a capability-based compute fabric, not an LLM proxy
+TSUMGI is already a capability-based compute fabric, not an LLM proxy
 that must now be generalized. The implementation work should fill serving gaps,
 not rebuild the ownership model.
 
@@ -227,7 +227,7 @@ The proposed gateway exposes a documented subset, not blanket API compatibility:
 | `GET /v1/models` | Operator-configured versioned serving profile names |
 | `POST /v1/chat/completions` | Structured chat and the features proved for that profile |
 | `POST /v1/embeddings` | Validated text/list input and supported vector encoding |
-| `POST /v1/decisions` | AstrumWeaver-native experimental decision operation |
+| `POST /v1/decisions` | TSUMGI-native experimental decision operation |
 | `/v1/responses` | Deferred; not implemented or implied by chat compatibility |
 
 Existing `/v1/jobs` behavior remains valid. New contracts need explicit extension
@@ -290,7 +290,7 @@ option. Enforce per-input and aggregate batch limits. Initially a batch returns
 all results or an error, not an unnoticed partial vector set.
 
 Indexing, chunking, corpus traversal, storage, search and reindex transactions
-remain outside AstrumWeaver. Test new serving against a disposable fixture, not
+remain outside TSUMGI. Test new serving against a disposable fixture, not
 by replacing an existing production index. Reranking is a later separate adapter.
 
 ### Decision scores and authority
@@ -396,7 +396,7 @@ profiles can extend these contracts after measurements justify them.
 
 ## External interface references
 
-These references describe client/API semantics, not evidence of AstrumWeaver
+These references describe client/API semantics, not evidence of TSUMGI
 implementation or blanket provider compatibility. Pin exact versions during
 adapter acceptance.
 

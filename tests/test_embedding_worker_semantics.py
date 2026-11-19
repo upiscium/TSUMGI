@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.execution import JobRequest
-from astrumweaver.serving import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.execution import JobRequest
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     RuntimeInstance,
@@ -11,8 +11,8 @@ from astrumweaver.serving import (
     WorkerServingAdvertisement,
     resolve_profile,
 )
-from astrumweaver.worker.client import ClaimedJob
-from astrumweaver.worker.runtime import WorkerRuntime
+from tsumgi.worker.client import ClaimedJob
+from tsumgi.worker.runtime import WorkerRuntime
 
 
 EPOCH = "12345678-1234-4234-9234-123456789abc"

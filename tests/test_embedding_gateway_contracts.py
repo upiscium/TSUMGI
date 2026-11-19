@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from astrumweaver.gateway.embedding import (
+from tsumgi.gateway.embedding import (
     EMBEDDING_CATALOG_SCHEMA,
     EMBEDDING_OPERATION_SCHEMA,
     LLAMA_CPP_EMBEDDING_ADAPTER,
@@ -18,7 +18,7 @@ from astrumweaver.gateway.embedding import (
     text_policy_digest,
     validate_embedding_response,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,

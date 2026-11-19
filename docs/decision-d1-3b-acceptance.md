@@ -41,7 +41,7 @@ Text-only, CPU-backed real acceptance was performed using:
 - GGUF artifact SHA-256: `16aff27ea2eefdc32b9897f43854a5d3170c1dc8dccb9c756905af30a4e22402` (verified against upstream LFS identity).
 - llama.cpp source revision: `bd4eeaa047006cb1fe71999fbd11134b5836e167`.
 - compiled CPU llama-server SHA-256: `ee742744ca602d90349c527b2cf638e64007b73e6b31b68cb2a0e748ecdfdcbe`.
-- AstrumWeaver acceptance source: `996678b1fb5820bc619e81df244f32dade21fc3c`.
+- TSUMGI acceptance source: `996678b1fb5820bc619e81df244f32dade21fc3c`.
 - approved logical profile ID: `d1-3b-system-one-v1`.
 - profile revision: `sha256:8a2739ea6d7b504f7e55f7e225959a7b04aed191aa1ea9466daa35bf30d58a4a`.
 - deployment revision: `sha256:d7265af19eef56107bde73f92addb55526eacbd2e7aad6b7df80c4de6bf4062b`.
@@ -54,11 +54,11 @@ The original older llama.cpp build `42b021b` failed at model initialization with
 
 ## Real direct-provider verification
 
-With the pinned model and binary, the real `GET /v1/models` advertised `input_modalities=["text"]` and `output_modalities=["decisions"]`. The real `POST /v1/systemone` returned all three expected positional choice keys with finite normalized probabilities, a maximal selected key, and `usage.output_tokens=0`; a descriptive choice label tokenized to multiple tokens. The response passed the unmodified AstrumWeaver `validate_decision_provider_response` validator.
+With the pinned model and binary, the real `GET /v1/models` advertised `input_modalities=["text"]` and `output_modalities=["decisions"]`. The real `POST /v1/systemone` returned all three expected positional choice keys with finite normalized probabilities, a maximal selected key, and `usage.output_tokens=0`; a descriptive choice label tokenized to multiple tokens. The response passed the unmodified TSUMGI `validate_decision_provider_response` validator.
 
 ## Real shadow acceptance
 
-The existing packaged `astrumweaver-decision-shadow-accept` ran with an isolated private labelled fixture through the full PostgreSQL-backed Control/Worker admission path: 5 cases + 1 reversed-choice ordering probe, **6/6 durable Jobs succeeded**. The exact preflight verified the new, separate profile/deployment/contract/semantics identities.
+The existing packaged `tsumgi-decision-shadow-accept` ran with an isolated private labelled fixture through the full PostgreSQL-backed Control/Worker admission path: 5 cases + 1 reversed-choice ordering probe, **6/6 durable Jobs succeeded**. The exact preflight verified the new, separate profile/deployment/contract/semantics identities.
 
 Observed aggregate (not a general model benchmark):
 

@@ -6,8 +6,8 @@ from datetime import timedelta
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.control import (
     ConflictError,
     DeadlineExceededError,
     InMemoryControlRepository,
@@ -20,9 +20,9 @@ from astrumweaver.control import (
     WorkerState,
     utc_now,
 )
-from astrumweaver.control.api import create_app
-from astrumweaver.execution import JobRequest, JobResult
-from astrumweaver.serving import (
+from tsumgi.control.api import create_app
+from tsumgi.execution import JobRequest, JobResult
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     RuntimeInstance,
@@ -31,9 +31,9 @@ from astrumweaver.serving import (
     WorkerServingAdvertisement,
     resolve_profile,
 )
-from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
-from astrumweaver.worker.client import ClaimedJob, ControlClient, ControlTransportError
-from astrumweaver.worker.runtime import WorkerRuntime
+from tsumgi.transport import PROTOCOL_VERSION, SERVING_EXTENSION
+from tsumgi.worker.client import ClaimedJob, ControlClient, ControlTransportError
+from tsumgi.worker.runtime import WorkerRuntime
 
 
 def digest(character: str) -> str:

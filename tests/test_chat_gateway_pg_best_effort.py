@@ -22,7 +22,7 @@ from uuid import uuid4
 import pytest
 psycopg = pytest.importorskip("psycopg")
 
-from astrumweaver.control import (
+from tsumgi.control import (
     DeadlineExceededError,
     JobStatus,
     JobSubmission,
@@ -30,9 +30,9 @@ from astrumweaver.control import (
     StorageUnavailable,
     utc_now,
 )
-from astrumweaver.control.migrate import apply_migrations
-from astrumweaver.gateway.api import ChatGatewayService
-from astrumweaver.gateway.chat import ChatGatewayError, ChatProfileCatalog
+from tsumgi.control.migrate import apply_migrations
+from tsumgi.gateway.api import ChatGatewayService
+from tsumgi.gateway.chat import ChatGatewayError, ChatProfileCatalog
 from test_chat_gateway_api import _ConnectedRequest, register_worker, serving_values
 
 

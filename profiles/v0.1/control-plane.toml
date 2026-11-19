@@ -2,7 +2,7 @@ profile_version = "v0.1"
 profile_id = "control-plane"
 role = "control"
 enforcement = "documentation-only"
-description = "Durable AstrumWeaver scheduling/API plane; no GPU required."
+description = "Durable TSUMGI scheduling/API plane; no GPU required."
 
 [minimum]
 vcpu = 2

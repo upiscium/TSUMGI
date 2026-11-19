@@ -15,7 +15,7 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
-from astrumweaver.control import (
+from tsumgi.control import (
     DeadlineExceededError,
     JobStatus,
     JobSubmission,
@@ -23,15 +23,15 @@ from astrumweaver.control import (
     StorageUnavailable,
     utc_now,
 )
-from astrumweaver.control.migrate import apply_migrations
-from astrumweaver.control import postgres as postgres_module
-from astrumweaver.gateway.api import ChatGatewayService
-from astrumweaver.gateway.chat import ChatProfileCatalog
+from tsumgi.control.migrate import apply_migrations
+from tsumgi.control import postgres as postgres_module
+from tsumgi.gateway.api import ChatGatewayService
+from tsumgi.gateway.chat import ChatProfileCatalog
 from test_chat_gateway_admission_cancellation import _wait_for
 from test_chat_gateway_api import _ConnectedRequest, register_worker, serving_values
 
 
-DATABASE_URL = os.environ.get("ASTRUMWEAVER_TEST_DATABASE_URL")
+DATABASE_URL = os.environ.get("TSUMGI_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(
     not DATABASE_URL, reason="requires dedicated disposable PostgreSQL database"
 )

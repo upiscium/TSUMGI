@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrumweaver.runtime.contracts import RuntimeHealthState
-from astrumweaver.runtime.providers.dual_llama_cpp import (
+from tsumgi.runtime.contracts import RuntimeHealthState
+from tsumgi.runtime.providers.dual_llama_cpp import (
     _read_selected_gpu_free_vram_mb,
 )
 from test_dual_llama_cpp import managed_pair

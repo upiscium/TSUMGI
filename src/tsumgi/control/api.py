@@ -1,0 +1,563 @@
+"""FastAPI transport for the TSUMGI Control Plane."""
+
+from __future__ import annotations
+
+import asyncio
+import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
+from starlette.requests import ClientDisconnect
+
+from ..audio import AudioOutputChannel
+from ..audio.input_channel import AudioInputChannel
+
+from ..control.auth import ClientAuthMode
+from ..control.models import WorkerState
+from ..control.repository import (
+    ConflictError,
+    ControlRepository,
+    DeadlineExceededError,
+    EventBufferFull,
+    NoCompatibleDeployment,
+    NotFoundError,
+    OverloadedError,
+    RepositoryError,
+    StorageUnavailable,
+)
+from ..control.serde import job_result_from_dict
+from ..transport import (
+    JOB_EVENTS_EXTENSION,
+    PROTOCOL_VERSION,
+    SERVING_EXTENSION,
+    _extensions,
+    _require_job_events_extension,
+    job_event_record_to_dict,
+    job_record_to_dict,
+    job_submission_from_dict,
+    worker_heartbeat_from_dict,
+    worker_record_to_dict,
+    worker_registration_from_dict,
+)
+
+
+def _bearer_token(request: Request) -> str | None:
+    header = request.headers.get("authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token
+
+
+def _require_token(request: Request, expected: str, authority: str) -> None:
+    supplied = _bearer_token(request)
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"{authority} authorization required",
+        )
+
+
+async def _json_v1(request: Request) -> dict[str, Any]:
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON object is required")
+    if body.get("protocol_version") != PROTOCOL_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail=f"unsupported protocol version; expected {PROTOCOL_VERSION}",
+        )
+    return body
+
+
+async def _optional_json_v1(request: Request) -> dict[str, Any]:
+    if not await request.body():
+        return {}
+    return await _json_v1(request)
+
+
+def _serving_epoch(body: dict[str, Any]) -> str | None:
+    extensions = _extensions(body)
+    raw = body.get("runtime_instance_epoch")
+    if raw is None:
+        return None
+    if SERVING_EXTENSION not in extensions:
+        raise ValueError("serving-bindings-v1 extension is required")
+    epoch = str(raw).strip()
+    if not epoch:
+        raise ValueError("runtime_instance_epoch must not be blank")
+    return epoch
+
+
+def _audio_claim_headers(request: Request) -> tuple[int, str, str]:
+    """Request metadata only; raw WAV bytes never enter a JSON envelope."""
+    raw_attempt = request.headers.get("x-audio-attempt", "")
+    lease = request.headers.get("x-audio-lease-token", "")
+    epoch = request.headers.get("x-audio-runtime-epoch", "")
+    if (not raw_attempt or len(raw_attempt) > 10
+            or not raw_attempt.isascii() or not raw_attempt.isdecimal()
+            or not lease.strip() or not epoch.strip()):
+        raise HTTPException(status_code=422, detail="audio claim headers required")
+    return int(raw_attempt), lease, epoch
+
+
+async def _bounded_audio_body(request: Request, max_bytes: int) -> bytes:
+    declared = request.headers.get("content-length")
+    expected = None
+    if declared is not None:
+        if (len(declared) > 20
+                or not declared.isascii() or not declared.isdecimal()):
+            raise HTTPException(status_code=422, detail="invalid audio content length")
+        expected = int(declared)
+        if expected > max_bytes:
+            raise HTTPException(status_code=413, detail="audio output too large")
+    payload = bytearray()
+    try:
+        async for chunk in request.stream():
+            if len(payload) + len(chunk) > max_bytes:
+                raise HTTPException(status_code=413, detail="audio output too large")
+            payload.extend(chunk)
+    except ClientDisconnect as exc:
+        raise HTTPException(status_code=400, detail="incomplete audio output") from exc
+    if expected is not None and len(payload) != expected:
+        raise HTTPException(status_code=400, detail="incomplete audio output")
+    return bytes(payload)
+
+
+def create_app(
+    repository: ControlRepository,
+    *,
+    client_token: str | None,
+    worker_token: str,
+    client_auth: ClientAuthMode | str = ClientAuthMode.BEARER,
+    maintenance_interval_seconds: float = 5.0,
+    audio_output_channel: AudioOutputChannel | None = None,
+    audio_input_channel: AudioInputChannel | None = None,
+) -> FastAPI:
+    mode = ClientAuthMode(client_auth)
+    if audio_output_channel is not None:
+        if (not isinstance(audio_output_channel, AudioOutputChannel)
+                or audio_output_channel.repository is not repository):
+            raise ValueError("audio channel must belong to this Control repository")
+        if mode is not ClientAuthMode.BEARER:
+            raise ValueError("audio output requires client bearer authentication")
+    if audio_input_channel is not None:
+        if (not isinstance(audio_input_channel, AudioInputChannel)
+                or audio_input_channel.repository is not repository
+                or mode is not ClientAuthMode.BEARER):
+            raise ValueError("input channel must use this repository and client bearer")
+    if not worker_token:
+        raise ValueError("worker_token is required")
+    if mode is ClientAuthMode.BEARER:
+        if not client_token:
+            raise ValueError(
+                "client_token is required when client_auth=bearer"
+            )
+        if secrets.compare_digest(client_token, worker_token):
+            raise ValueError("client_token and worker_token must be distinct")
+    if maintenance_interval_seconds <= 0:
+        raise ValueError("maintenance_interval_seconds must be positive")
+
+    async def maintenance_loop() -> None:
+        while True:
+            await asyncio.sleep(maintenance_interval_seconds)
+            try:
+                await asyncio.to_thread(repository.expire_stale_workers)
+                await asyncio.to_thread(repository.expire_deadline_jobs)
+                await asyncio.to_thread(repository.recover_expired_jobs)
+                if audio_output_channel is not None:
+                    await asyncio.to_thread(audio_output_channel.reap_expired)
+                    await asyncio.to_thread(audio_output_channel.reap_abandoned)
+                if audio_input_channel is not None:
+                    await asyncio.to_thread(audio_input_channel.reap_expired)
+            except Exception:
+                # Repository/API calls still expose current storage failures.
+                # Maintenance must not terminate the server process.
+                continue
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        task = asyncio.create_task(maintenance_loop())
+        try:
+            yield
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            # Release pooled database connections (PostgreSQL repository).
+            close = getattr(repository, "close", None)
+            if callable(close):
+                await asyncio.to_thread(close)
+
+    app = FastAPI(
+        title="TSUMGI Control API",
+        version=PROTOCOL_VERSION,
+        lifespan=lifespan,
+    )
+
+    def require_client(request: Request) -> None:
+        if mode is ClientAuthMode.NONE:
+            return
+        assert client_token is not None
+        _require_token(request, client_token, "client")
+
+    def require_worker(request: Request) -> None:
+        _require_token(request, worker_token, "worker")
+
+    @app.exception_handler(NotFoundError)
+    async def not_found_handler(_: Request, exc: NotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(DeadlineExceededError)
+    async def deadline_handler(_: Request, exc: DeadlineExceededError) -> JSONResponse:
+        return JSONResponse(status_code=408, content={"detail": str(exc)})
+
+    @app.exception_handler(NoCompatibleDeployment)
+    async def no_compatible_handler(
+        _: Request, exc: NoCompatibleDeployment
+    ) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(OverloadedError)
+    async def overloaded_handler(_: Request, exc: OverloadedError) -> JSONResponse:
+        return JSONResponse(status_code=429, content={"detail": str(exc)})
+
+    @app.exception_handler(EventBufferFull)
+    async def event_buffer_handler(_: Request, exc: EventBufferFull) -> JSONResponse:
+        return JSONResponse(status_code=429, content={"detail": str(exc)})
+
+    @app.exception_handler(ConflictError)
+    async def conflict_handler(_: Request, exc: ConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(StorageUnavailable)
+    async def storage_handler(_: Request, __: StorageUnavailable) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": "storage unavailable"})
+
+    @app.exception_handler(RepositoryError)
+    async def repository_handler(_: Request, __: RepositoryError) -> JSONResponse:
+        return JSONResponse(status_code=500, content={"detail": "repository error"})
+
+    @app.exception_handler(Exception)
+    async def unexpected_handler(_: Request, __: Exception) -> JSONResponse:
+        return JSONResponse(status_code=500, content={"detail": "internal server error"})
+
+    @app.get("/v1/health")
+    async def health() -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": [SERVING_EXTENSION, JOB_EVENTS_EXTENSION],
+        }
+
+    @app.get("/v1/ready")
+    async def ready() -> dict[str, Any]:
+        await asyncio.to_thread(repository.check_storage)
+        return {
+            "ready": True,
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": [SERVING_EXTENSION, JOB_EVENTS_EXTENSION],
+        }
+
+    if audio_input_channel is not None:
+        @app.post(
+            "/v1/audio/inputs", status_code=201,
+            dependencies=[Depends(require_client)],
+        )
+        async def stage_audio_input(request: Request) -> dict[str, Any]:
+            if request.headers.get("content-type", "").strip().lower() != "audio/wav":
+                raise HTTPException(status_code=415, detail="audio/wav required")
+            content = await _bounded_audio_body(request, audio_input_channel.max_bytes)
+            try:
+                return await asyncio.to_thread(audio_input_channel.stage, content)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        @app.post(
+            "/v1/audio/inputs/jobs", status_code=201,
+            dependencies=[Depends(require_client)],
+        )
+        async def submit_audio_input_job(request: Request) -> dict[str, Any]:
+            try:
+                body = await _json_v1(request)
+                input_uri = body.pop("audio_input_uri")
+                submission = job_submission_from_dict(body)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail="invalid audio input submission") from exc
+            record = await asyncio.to_thread(
+                audio_input_channel.submit, submission, artifact_uri=input_uri,
+            )
+            return job_record_to_dict(record)
+
+        @app.get(
+            "/v1/workers/{worker_id}/jobs/{job_id}/audio/input",
+            dependencies=[Depends(require_worker)],
+        )
+        async def download_audio_input(
+            worker_id: str, job_id: str, request: Request,
+        ) -> Response:
+            attempt, lease, epoch = _audio_claim_headers(request)
+            content = await asyncio.to_thread(
+                audio_input_channel.read_for_worker,
+                job_id, worker_id=worker_id, attempt=attempt,
+                lease_token=lease, runtime_instance_epoch=epoch,
+            )
+            return Response(
+                content=content, media_type="audio/wav",
+                headers={"cache-control": "no-store"},
+            )
+
+    @app.post("/v1/jobs", status_code=201, dependencies=[Depends(require_client)])
+    async def submit_job(request: Request) -> dict[str, Any]:
+        try:
+            submission = job_submission_from_dict(await _json_v1(request))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if audio_input_channel is not None and (
+            submission.capability == "audio.transcribe"
+            or "audio_input" in submission.payload
+        ):
+            # Opted-in audio jobs must pass trusted staged-input admission.
+            # A client-supplied JSON reference cannot establish file ownership.
+            raise HTTPException(
+                status_code=422, detail="use staged audio input admission",
+            )
+        record = await asyncio.to_thread(repository.submit_job, submission)
+        return job_record_to_dict(record)
+
+    @app.get("/v1/jobs/{job_id}", dependencies=[Depends(require_client)])
+    async def get_job(job_id: str) -> dict[str, Any]:
+        record = await asyncio.to_thread(repository.get_job, job_id)
+        return job_record_to_dict(record)
+
+    @app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(require_client)])
+    async def cancel_job(job_id: str) -> dict[str, Any]:
+        record = await asyncio.to_thread(repository.cancel_job, job_id)
+        return job_record_to_dict(record)
+
+    @app.post("/v1/workers/register", status_code=201, dependencies=[Depends(require_worker)])
+    async def register_worker(request: Request) -> dict[str, Any]:
+        try:
+            payload = await _json_v1(request)
+            recovery = payload.get("recovery", False)
+            if type(recovery) is not bool:
+                raise TypeError("recovery must be boolean")
+            registration = worker_registration_from_dict(payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        record = await asyncio.to_thread(
+            repository.register_worker, registration, recovery=recovery
+        )
+        return worker_record_to_dict(record)
+
+    @app.post("/v1/workers/{worker_id}/heartbeat", dependencies=[Depends(require_worker)])
+    async def heartbeat_worker(worker_id: str, request: Request) -> dict[str, Any]:
+        try:
+            heartbeat = worker_heartbeat_from_dict(await _json_v1(request))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        record = await asyncio.to_thread(
+            repository.heartbeat_worker, worker_id, heartbeat
+        )
+        return worker_record_to_dict(record)
+
+    @app.post("/v1/workers/{worker_id}/state", dependencies=[Depends(require_worker)])
+    async def set_worker_state(worker_id: str, request: Request) -> dict[str, Any]:
+        try:
+            body = await _json_v1(request)
+            state_value = body["state"]
+            state = WorkerState(str(state_value))
+            runtime_instance_epoch = _serving_epoch(body)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        record = await asyncio.to_thread(
+            repository.set_worker_state,
+            worker_id,
+            state,
+            runtime_instance_epoch=runtime_instance_epoch,
+        )
+        return worker_record_to_dict(record)
+
+    @app.post("/v1/workers/{worker_id}/jobs/claim", dependencies=[Depends(require_worker)])
+    async def claim_job(worker_id: str, request: Request) -> Response:
+        try:
+            body = await _optional_json_v1(request)
+            runtime_instance_epoch = _serving_epoch(body)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        record = await asyncio.to_thread(
+            repository.claim_next_job,
+            worker_id,
+            runtime_instance_epoch=runtime_instance_epoch,
+        )
+        if record is None:
+            return Response(status_code=204)
+        return JSONResponse(status_code=200, content=job_record_to_dict(record))
+
+    @app.post(
+        "/v1/workers/{worker_id}/jobs/{job_id}/events",
+        dependencies=[Depends(require_worker)],
+    )
+    async def append_job_event(
+        worker_id: str,
+        job_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            body = await _json_v1(request)
+            _require_job_events_extension(body)
+            lease_token = str(body["lease_token"])
+            runtime_instance_epoch = _serving_epoch(body)
+            kind = str(body["kind"]).strip()
+            payload = body.get("payload")
+            if not kind:
+                raise ValueError("event kind must not be blank")
+            if not isinstance(payload, dict):
+                raise TypeError("event payload must be an object")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        record = await asyncio.to_thread(
+            repository.append_job_event,
+            job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            runtime_instance_epoch=runtime_instance_epoch,
+            kind=kind,
+            payload=payload,
+        )
+        return job_event_record_to_dict(record)
+
+    @app.get(
+        "/v1/workers/{worker_id}/jobs/{job_id}",
+        dependencies=[Depends(require_worker)],
+    )
+    async def inspect_worker_job(worker_id: str, job_id: str) -> dict[str, Any]:
+        record = await asyncio.to_thread(repository.get_job, job_id)
+        visible = {
+            "protocol_version": PROTOCOL_VERSION,
+            "job_id": record.job_id,
+            "status": record.status.value,
+            "assigned_worker_id": record.assigned_worker_id,
+            "lease_expires_at": (
+                None if record.lease_expires_at is None else record.lease_expires_at.isoformat()
+            ),
+            "updated_at": record.updated_at.isoformat(),
+        }
+        if record.assigned_worker_id not in (None, worker_id):
+            raise HTTPException(status_code=404, detail="job not visible to this worker")
+        return visible
+
+    @app.post(
+        "/v1/workers/{worker_id}/jobs/{job_id}/complete",
+        dependencies=[Depends(require_worker)],
+    )
+    async def complete_job(worker_id: str, job_id: str, request: Request) -> dict[str, Any]:
+        try:
+            body = await _json_v1(request)
+            lease_token = str(body["lease_token"])
+            runtime_instance_epoch = _serving_epoch(body)
+            result = job_result_from_dict(body["result"])
+            if result is None:
+                raise ValueError("result is required")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Non-audio Jobs must not depend on availability of an optional audio
+        # spool. Capability is immutable; the selected repository completion
+        # still checks Worker/lease/attempt authority atomically at effect time.
+        complete = repository.complete_job
+        if audio_output_channel is not None:
+            existing = await asyncio.to_thread(repository.get_job, job_id)
+            if existing.capability.startswith("audio."):
+                complete = audio_output_channel.complete_job
+        record = await asyncio.to_thread(
+            complete,
+            job_id,
+            result,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            runtime_instance_epoch=runtime_instance_epoch,
+        )
+        return job_record_to_dict(record)
+
+    @app.post(
+        "/v1/workers/{worker_id}/jobs/{job_id}/fail",
+        dependencies=[Depends(require_worker)],
+    )
+    async def fail_job(worker_id: str, job_id: str, request: Request) -> dict[str, Any]:
+        try:
+            body = await _json_v1(request)
+            lease_token = str(body["lease_token"])
+            runtime_instance_epoch = _serving_epoch(body)
+            error = body.get("error", "executor failed")
+            if not isinstance(error, (str, dict)):
+                raise TypeError("error must be a string or object")
+            retryable = bool(body.get("retryable", False))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        record = await asyncio.to_thread(
+            repository.fail_job,
+            job_id,
+            error,
+            retryable=retryable,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            runtime_instance_epoch=runtime_instance_epoch,
+        )
+        return job_record_to_dict(record)
+
+    if audio_output_channel is not None:
+        @app.post(
+            "/v1/workers/{worker_id}/jobs/{job_id}/audio/output",
+            status_code=201,
+            dependencies=[Depends(require_worker)],
+        )
+        async def stage_audio_output(
+            worker_id: str, job_id: str, request: Request,
+        ) -> dict[str, Any]:
+            if request.headers.get("content-type", "").strip().lower() != "audio/wav":
+                raise HTTPException(status_code=415, detail="audio/wav required")
+            attempt, lease, epoch = _audio_claim_headers(request)
+            # Reject invalid attempts before receiving large request bodies.
+            await asyncio.to_thread(
+                audio_output_channel.authorize, job_id, worker_id=worker_id,
+                attempt=attempt, lease_token=lease,
+                runtime_instance_epoch=epoch,
+            )
+            content = await _bounded_audio_body(request, audio_output_channel.max_bytes)
+            try:
+                ref = await asyncio.to_thread(
+                    audio_output_channel.stage,
+                    job_id, worker_id=worker_id, attempt=attempt,
+                    lease_token=lease, runtime_instance_epoch=epoch,
+                    data=content,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return {
+                "uri": ref.uri, "media_type": ref.media_type,
+                "digest": ref.digest, "size_bytes": ref.size_bytes,
+                "name": ref.name, "metadata": dict(ref.metadata),
+            }
+
+        @app.get(
+            "/v1/jobs/{job_id}/audio/output/{artifact_id}",
+            dependencies=[Depends(require_client)],
+        )
+        async def read_audio_output(job_id: str, artifact_id: str) -> Response:
+            content = await asyncio.to_thread(
+                audio_output_channel.read_published, job_id, artifact_id,
+            )
+            return Response(
+                content=content, media_type="audio/wav",
+                headers={"cache-control": "no-store"},
+            )
+
+    return app
+
+
+__all__ = ["create_app"]

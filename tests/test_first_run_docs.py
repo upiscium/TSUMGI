@@ -5,8 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER_TUI = (
-    "/nix/var/nix/profiles/astrumweaver-installer/bin/"
-    "astrumweaver-setup-tui"
+    "/nix/var/nix/profiles/tsumgi-installer/bin/"
+    "tsumgi-setup-tui"
 )
 FIRST_RUN_DOCS = (
     "README.md",
@@ -20,7 +20,7 @@ FIRST_RUN_DOCS = (
 def test_privileged_tui_examples_use_the_installer_profile_path() -> None:
     for relative in FIRST_RUN_DOCS:
         text = (ROOT / relative).read_text(encoding="utf-8")
-        assert "sudo astrumweaver-setup-tui" not in text
+        assert "sudo tsumgi-setup-tui" not in text
 
     for relative in FIRST_RUN_DOCS[1:]:
         text = (ROOT / relative).read_text(encoding="utf-8")
@@ -53,8 +53,8 @@ def test_generic_systemd_llama_runtime_profile_is_documented_as_standard_path() 
     assert "### RuntimeBackend Nix profile" in install
     assert "#runtime-llama-cpp" in install
     assert "llama-cpp-cuda" in install
-    assert "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server" in install
-    assert "astrumweaver-runtime-profile \\" in install
+    assert "/nix/var/nix/profiles/tsumgi-runtime-llama-cpp/bin/llama-server" in install
+    assert "tsumgi-runtime-profile \\" in install
     assert "upgrade llama-cpp" in install
     assert "rollback llama-cpp" in install
     assert "Advanced/custom package and model hooks" in setup_tui

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from astrumweaver import (
+from tsumgi import (
     ArtifactRef,
     JobExecutor,
     JobRequest,
@@ -12,8 +12,8 @@ from astrumweaver import (
     ResidencyItem,
     ResidencyReport,
 )
-from astrumweaver.executors import TextGenerationExecutor
-from astrumweaver.executors.structured_echo import StructuredEchoExecutor
+from tsumgi.executors import TextGenerationExecutor
+from tsumgi.executors.structured_echo import StructuredEchoExecutor
 
 
 def test_non_text_result_supports_structured_output_and_artifact() -> None:
@@ -144,7 +144,7 @@ async def test_structured_echo_acceptance_delay_is_async_and_bounded(
         slept.append(seconds)
 
     monkeypatch.setattr(
-        "astrumweaver.executors.structured_echo.asyncio.sleep",
+        "tsumgi.executors.structured_echo.asyncio.sleep",
         fake_sleep,
     )
 

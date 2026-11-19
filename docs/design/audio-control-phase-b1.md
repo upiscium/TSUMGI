@@ -25,9 +25,9 @@ first. The examples below are review material, not permission to execute them.
    is rejected by the module; generic-systemd's `client_auth = "none"` is rejected
    by the daemon before spool allocation. It is not a supported audio-only-auth
    mixed mode. Anonymous non-audio operation remains available with audio off.
-3. Deliver `ASTRUMWEAVER_DATABASE_URL`, `ASTRUMWEAVER_CLIENT_TOKEN`,
-   `ASTRUMWEAVER_WORKER_TOKEN`, and **a separate protected
-   `ASTRUMWEAVER_AUDIO_CLIENT_TOKEN`** through the protected environment file.
+3. Deliver `TSUMGI_DATABASE_URL`, `TSUMGI_CLIENT_TOKEN`,
+   `TSUMGI_WORKER_TOKEN`, and **a separate protected
+   `TSUMGI_AUDIO_CLIENT_TOKEN`** through the protected environment file.
    All three tokens must be nonempty and pairwise distinct. The audio token must
    match the daemon's bearer-token syntax, cannot be `anon` (case-insensitive),
    and must never fall back to either existing token. Distribute only the audio
@@ -44,7 +44,7 @@ first. The examples below are review material, not permission to execute them.
    repeats descriptor-relative checks. The daemon never provisions these roots.
 5. Root and same-effective-UID processes are trusted. Do not share the Control
    identity/private group or secret access with an untrusted Worker or workload.
-   NixOS retains its existing default `astrumweaver` user/group: B1 does **not**
+   NixOS retains its existing default `tsumgi` user/group: B1 does **not**
    silently migrate identities. For a co-located Worker using that identity,
    require a separately reviewed stopped-service identity/state migration or a
    separate host before enabling audio. The generic helper already defaults to
@@ -68,16 +68,16 @@ The only supported audio root strings are exactly:
 
 | Purpose | Path | Mode / owner |
 | --- | --- | --- |
-| Audio parent | `/var/lib/astrumweaver/audio` | `0700`, configured Control user/group |
-| Input root | `/var/lib/astrumweaver/audio/input` | `0700`, configured Control user/group |
-| Output root | `/var/lib/astrumweaver/audio/output` | `0700`, configured Control user/group |
+| Audio parent | `/var/lib/tsumgi/audio` | `0700`, configured Control user/group |
+| Input root | `/var/lib/tsumgi/audio/input` | `0700`, configured Control user/group |
+| Output root | `/var/lib/tsumgi/audio/output` | `0700`, configured Control user/group |
 
 These are `systemd.tmpfiles.rules` type `d` entries, with no age/cleanup policy,
 recursive chown, shell hook, or new provisioning unit. Control explicitly requires
 and starts after the existing `systemd-tmpfiles-setup.service`. NixOS activation
 can also apply tmpfiles rules: merely starting a previously active tmpfiles unit
 is not a substitute for a reviewed activation. The existing
-`StateDirectory=astrumweaver`, `StateDirectoryMode=0750`, runtime directory,
+`StateDirectory=tsumgi`, `StateDirectoryMode=0750`, runtime directory,
 sandbox and migration defaults are unchanged. The roots are writable inside
 Control's existing StateDirectory sandbox exception; no broader write path is
 added. Do not treat tmpfiles as recovery of unknown existing spool contents.
@@ -93,7 +93,7 @@ under `/etc/` or `/run/`, with only ASCII letters, digits, `_`, `.`, `/`, `-`,
 nonempty components and no `.` or `..` components. Relative/optional (`-`)
 references, whitespace, systemd specifiers, store paths, Nix string contexts and
 service-level EnvironmentFile overrides are rejected. Use, for example,
-`"/run/secrets/astrumweaver-control.env"`, **not** a Nix path literal or an
+`"/run/secrets/tsumgi-control.env"`, **not** a Nix path literal or an
 interpolated secret derivation. The assertion verifies this lexical reference
 and requirement only; the operator must establish live protection and arrange
 secret delivery before Control starts. B1 does not install a secret manager.
@@ -101,13 +101,13 @@ secret delivery before Control starts. B1 does not install a secret manager.
 Complete illustrative non-secret policy (catalog must be supplied separately):
 
 ```nix
-services.astrumweaver.control = {
+services.tsumgi.control = {
   enable = true;
   clientAuth = "bearer";
-  environmentFile = "/run/secrets/astrumweaver-control.env";
+  environmentFile = "/run/secrets/tsumgi-control.env";
   settings.audio_gateway = {
     enabled = true;
-    catalog = "/etc/astrumweaver/reviewed-audio.json";
+    catalog = "/etc/tsumgi/reviewed-audio.json";
     ingress = {
       request_bytes = 2097152;
       input_bytes = 16384;
@@ -133,13 +133,13 @@ services.astrumweaver.control = {
     };
     pcm = { max_decoded_bytes = 1048532; max_duration_seconds = 30; };
     input_spool = {
-      root = "/var/lib/astrumweaver/audio/input";
+      root = "/var/lib/tsumgi/audio/input";
       ttl_seconds = 180.0;
       max_total_bytes = 8388608;
       max_artifacts = 16;
     };
     output_spool = {
-      root = "/var/lib/astrumweaver/audio/output";
+      root = "/var/lib/tsumgi/audio/output";
       ttl_seconds = 180.0;
       max_total_bytes = 8388608;
       max_artifacts = 16;
@@ -162,23 +162,23 @@ deletion require a separate explicit operator decision.
 ## Generic systemd: existing helper, pre-existing secure directories
 
 Use `setup/setup-control-plane.sh` or the packaged
-`astrumweaver-setup-control-plane`. It already accepts a complete `--config FILE`
-and `--environment-file FILE`, copies them to `/etc/astrumweaver/control.toml`
+`tsumgi-setup-control-plane`. It already accepts a complete `--config FILE`
+and `--environment-file FILE`, copies them to `/etc/tsumgi/control.toml`
 and `control.env`, rejects symlink destinations and differing existing contents,
 and on live installs reconciles files to `root:<Control group> 0640`. The config
-directory is `root:astrumweaver-config 0710`; Control gets traverse-only membership
+directory is `root:tsumgi-config 0710`; Control gets traverse-only membership
 and its private group reads its own files. Protect the source files and ancestor
 directories too; this helper is not a general adversarial-path resolver or a
 secret validator. Changed existing content requires a separate reviewed update,
 not an overwrite bypass.
 
-The helper defaults to user/group `astrumweaver-control` and
-`StateDirectory=astrumweaver-control`, mode `0750`. **These differ from NixOS.**
+The helper defaults to user/group `tsumgi-control` and
+`StateDirectory=tsumgi-control`, mode `0750`. **These differ from NixOS.**
 For the unchanged generic unit sandbox, use the complete Phase A TOML policy but
 set these roots:
 
-- `audio_gateway.input_spool.root = "/var/lib/astrumweaver-control/audio/input"`
-- `audio_gateway.output_spool.root = "/var/lib/astrumweaver-control/audio/output"`
+- `audio_gateway.input_spool.root = "/var/lib/tsumgi-control/audio/input"`
+- `audio_gateway.output_spool.root = "/var/lib/tsumgi-control/audio/output"`
 
 An authorized operator must pre-create the audio parent and both roots with
 `0700` and the actual Control user/group, with trusted ancestors, **before daemon
@@ -194,10 +194,10 @@ though the generic unit retains its existing optional EnvironmentFile directive.
 For a separately approved staging exercise, the existing helper interface is:
 
 ```text
-astrumweaver-setup-control-plane \
+tsumgi-setup-control-plane \
   --config /secure/source/control.toml \
   --environment-file /secure/source/control.env \
-  --executable /reviewed/profile/bin/astrumweaver-control \
+  --executable /reviewed/profile/bin/tsumgi-control \
   --root /reviewed/staging
 ```
 

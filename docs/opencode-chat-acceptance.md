@@ -2,7 +2,7 @@
 
 Tracking: #91 / #94.
 
-This is the real-client acceptance layer for the AstrumWeaver chat gateway.
+This is the real-client acceptance layer for the TSUMGI chat gateway.
 Schema/unit tests do not substitute for this run.
 
 ## Pinned client
@@ -45,14 +45,14 @@ The gateway URL and client token are supplied only through environment
 variables:
 
 ```text
-ASTRUMWEAVER_CHAT_BASE_URL
-ASTRUMWEAVER_CLIENT_TOKEN
+TSUMGI_CHAT_BASE_URL
+TSUMGI_CLIENT_TOKEN
 ```
 
-`ASTRUMWEAVER_CHAT_BASE_URL` must be an HTTP(S) URL ending in `/v1` and
+`TSUMGI_CHAT_BASE_URL` must be an HTTP(S) URL ending in `/v1` and
 must not contain embedded credentials, a query string or a fragment. The token
 is never placed in generated config bytes; OpenCode receives the ordinary
-`{env:ASTRUMWEAVER_CLIENT_TOKEN}` reference. With
+`{env:TSUMGI_CLIENT_TOKEN}` reference. With
 `control.client_auth = "none"`, use a non-secret placeholder token because
 the OpenAI-compatible provider still expects an API-key value.
 
@@ -71,7 +71,7 @@ sessions against the selected logical serving profile.
 
 1. Plain chat requires the final text to be exactly
    `ASTRUMWEAVER_CHAT_OK`. The OpenCode transport therefore has to consume the
-   real AstrumWeaver SSE stream to completion.
+   real TSUMGI SSE stream to completion.
 2. Tool round-trip creates one fixed marker file inside the temporary workdir,
    asks OpenCode to read it with a tool, requires at least one completed
    structured `tool_use` event, and then requires the final model response to
@@ -91,10 +91,10 @@ contract revision under test. The OpenCode model limits must equal the selected
 logical profile.
 
 ```sh
-export ASTRUMWEAVER_CHAT_BASE_URL='https://gateway.example.invalid/v1'
-export ASTRUMWEAVER_CLIENT_TOKEN='REDACTED'
+export TSUMGI_CHAT_BASE_URL='https://gateway.example.invalid/v1'
+export TSUMGI_CLIENT_TOKEN='REDACTED'
 
-astrumweaver-opencode-chat-accept \
+tsumgi-opencode-chat-accept \
   --opencode /absolute/path/to/opencode \
   --profile-id local-code-v1 \
   --profile-revision sha256:PROFILE_REVISION \
@@ -118,7 +118,7 @@ A successful command also prints the redacted evidence object as JSON.
 The generated Markdown may contain only:
 
 - evidence schema/date;
-- AstrumWeaver Git revision;
+- TSUMGI Git revision;
 - pinned OpenCode, AI SDK and OpenAI-compatible adapter identities;
 - logical profile identifier and revision;
 - deployment and serving-contract revisions;
@@ -137,7 +137,7 @@ explicit acceptance target, then proves the exact pinned OpenCode client can com
 - one structured tool call -> client tool execution/result -> final model
   response exchange
 
-through the selected AstrumWeaver profile.
+through the selected TSUMGI profile.
 
 It does not certify model coding quality, latency, throughput, general tool
 selection quality, GPU performance, or compatibility with another OpenCode

@@ -1,4 +1,4 @@
-# AstrumWeaver Runtime Deployment GPU Isolation Evidence
+# TSUMGI Runtime Deployment GPU Isolation Evidence
 
 This file is intentionally redacted. It contains no hostname, IP address, Worker ID, GPU UUID, device ordinal, credential, private URL, or GPU model.
 

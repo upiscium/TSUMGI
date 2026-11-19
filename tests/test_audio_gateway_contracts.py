@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from astrumweaver.gateway.audio import (
+from tsumgi.gateway.audio import (
     AUDIO_CATALOG_SCHEMA,
     SPEECH_OPERATION_SCHEMA,
     TRANSCRIPTION_OPERATION_SCHEMA,
@@ -18,7 +18,7 @@ from astrumweaver.gateway.audio import (
     validate_speech_request,
     validate_transcription_metadata,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,

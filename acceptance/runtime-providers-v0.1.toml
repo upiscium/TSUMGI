@@ -1,6 +1,6 @@
 matrix_version = "v0.1"
-scope = "astrumweaver-provider-contract"
-description = "Public compatibility claims for first-class AstrumWeaver RuntimeProviders. Validated means covered by automated AstrumWeaver contract tests, not universal upstream hardware/model certification."
+scope = "tsumgi-provider-contract"
+description = "Public compatibility claims for first-class TSUMGI RuntimeProviders. Validated means covered by automated TSUMGI contract tests, not universal upstream hardware/model certification."
 support_status_values = ["validated", "supported_unvalidated", "unsupported"]
 integration_status_values = ["integrated", "not_integrated"]
 multi_gpu_hardware_values = ["heterogeneous_validated", "homogeneous_required", "supported_unvalidated", "unsupported"]
@@ -26,7 +26,7 @@ nixos_integration = "integrated"
 systemd_integration = "integrated"
 notes = [
   "Ollama owns CPU/GPU placement; cpu_gpu_hybrid is advisory rather than an explicit layer split.",
-  "Multi-GPU spread is validated, but heterogeneous hardware compatibility is not certified by AstrumWeaver."
+  "Multi-GPU spread is validated, but heterogeneous hardware compatibility is not certified by TSUMGI."
 ]
 evidence = [
   "tests/test_ollama_provider.py::test_ollama_provider_rejects_non_ollama_model_format",
@@ -142,12 +142,12 @@ residency_reporting = "validated"
 nixos_integration = "integrated"
 systemd_integration = "integrated"
 notes = [
-  "AstrumWeaver v0.x intentionally scopes FreeToken to single-GPU MoE/offload workloads.",
-  "Dense-model rejection is an AstrumWeaver provider scope decision, not an upstream FreeToken capability claim."
+  "TSUMGI v0.x intentionally scopes FreeToken to single-GPU MoE/offload workloads.",
+  "Dense-model rejection is an TSUMGI provider scope decision, not an upstream FreeToken capability claim."
 ]
 evidence = [
   "tests/test_freetoken_provider.py::test_moe_single_gpu_hybrid_is_compatible",
-  "tests/test_freetoken_provider.py::test_dense_is_rejected_as_astrumweaver_scope_not_upstream_limit",
+  "tests/test_freetoken_provider.py::test_dense_is_rejected_as_tsumgi_scope_not_upstream_limit",
   "tests/test_freetoken_provider.py::test_multi_gpu_worker_is_rejected_instead_of_partial_use",
   "tests/test_freetoken_provider.py::test_vram_only_is_explicitly_outside_v0_provider_scope",
   "tests/test_freetoken_provider.py::test_explicit_selection_is_preserved_and_setup_plan_is_deterministic",
@@ -180,7 +180,7 @@ nixos_integration = "integrated"
 systemd_integration = "integrated"
 notes = [
   "Current Linux package path targets x86_64 and provider compatibility requires NVIDIA compute capability 8.0 or newer when capability evidence is known.",
-  "Multi-GPU autosplit/tensor-parallel behavior is validated, but heterogeneous hardware compatibility is not certified by AstrumWeaver."
+  "Multi-GPU autosplit/tensor-parallel behavior is validated, but heterogeneous hardware compatibility is not certified by TSUMGI."
 ]
 evidence = [
   "tests/test_exllamav3_provider.py::test_exl3_single_gpu_prefer_vram_is_compatible",

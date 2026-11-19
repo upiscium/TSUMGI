@@ -6,9 +6,9 @@ from collections.abc import Mapping
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.execution import JobRequest
-from astrumweaver.runtime import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.execution import JobRequest
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -21,14 +21,14 @@ from astrumweaver.runtime import (
     RuntimeSelection,
     RuntimeSelectionMode,
 )
-from astrumweaver.setup import (
+from tsumgi.setup import (
     DeploymentPath,
     PrivilegeMode,
     SetupActionKind,
     SetupHostSnapshot,
     build_runtime_setup_plan,
 )
-from astrumweaver.runtime.providers.ollama import (
+from tsumgi.runtime.providers.ollama import (
     HttpOllamaApi,
     OllamaExecutor,
     OllamaManagedRuntime,

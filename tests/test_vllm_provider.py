@@ -7,9 +7,9 @@ from collections.abc import Mapping
 import httpx
 import pytest
 
-from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
-from astrumweaver.execution import JobRequest
-from astrumweaver.runtime import (
+from tsumgi import AcceleratorDevice, ResourceShape, WorkerSpec
+from tsumgi.execution import JobRequest
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -23,7 +23,7 @@ from astrumweaver.runtime import (
     RuntimeSelectionMode,
     resolve_runtime,
 )
-from astrumweaver.runtime.providers.vllm import (
+from tsumgi.runtime.providers.vllm import (
     HttpVllmApi,
     VllmExecutor,
     VllmLaunchPolicy,
@@ -32,7 +32,7 @@ from astrumweaver.runtime.providers.vllm import (
     VllmProviderConfig,
     VllmSubprocessController,
 )
-from astrumweaver.setup import (
+from tsumgi.setup import (
     DeploymentPath,
     PrivilegeMode,
     SetupActionKind,
@@ -610,7 +610,7 @@ def test_single_gpu_command_uses_physical_uuid_device_ids() -> None:
         executable="vllm",
         base_url="http://127.0.0.1:8000",
         model_ref="Qwen/Qwen3-8B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=VllmLaunchPolicy(
             tensor_parallel_size=1,
             enable_expert_parallel=False,
@@ -637,7 +637,7 @@ def test_single_gpu_command_uses_physical_uuid_device_ids() -> None:
     ] == "0.9"
     assert command[
         command.index("--served-model-name") + 1
-    ] == "astrumweaver"
+    ] == "tsumgi"
     assert command[
         command.index("--generation-config") + 1
     ] == "vllm"
@@ -648,7 +648,7 @@ def test_multi_gpu_command_uses_uuid_set_mp_tp_and_expert_parallel() -> None:
         executable="vllm",
         base_url="http://127.0.0.1:8000",
         model_ref="Qwen/Qwen3-30B-A3B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=VllmLaunchPolicy(
             tensor_parallel_size=2,
             enable_expert_parallel=True,
@@ -708,7 +708,7 @@ async def test_subprocess_invokes_command_without_cuda_visible_devices(
         executable="vllm",
         base_url="http://127.0.0.1:8000",
         model_ref="Qwen/Qwen3-8B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         launch_policy=VllmLaunchPolicy(
             tensor_parallel_size=1,
             enable_expert_parallel=False,
@@ -749,7 +749,7 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
                     "object": "list",
                     "data": [
                         {
-                            "id": "astrumweaver",
+                            "id": "tsumgi",
                             "object": "model",
                         }
                     ],
@@ -790,10 +790,10 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
     )
     try:
         assert await api.health()
-        assert await api.models() == ("astrumweaver",)
+        assert await api.models() == ("tsumgi",)
         chat = await api.chat(
             {
-                "model": "astrumweaver",
+                "model": "tsumgi",
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": False,
             }
@@ -801,7 +801,7 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
         assert chat["choices"][0]["message"]["content"] == "hello"
         completion = await api.completion(
             {
-                "model": "astrumweaver",
+                "model": "tsumgi",
                 "prompt": "hi",
                 "stream": False,
             }
@@ -823,7 +823,7 @@ class FakeApi:
         self,
         *,
         reachable: bool = True,
-        models: tuple[str, ...] = ("astrumweaver",),
+        models: tuple[str, ...] = ("tsumgi",),
     ) -> None:
         self.reachable = reachable
         self.model_ids = models
@@ -912,7 +912,7 @@ async def test_executor_chat_completion_metrics_and_model_binding() -> None:
     executor = VllmExecutor(
         api=api,
         model_ref="Qwen/Qwen3-8B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         residency_metadata={},
     )
 
@@ -927,7 +927,7 @@ async def test_executor_chat_completion_metrics_and_model_binding() -> None:
     )
     assert chat.text == "hello"
     assert chat.metrics["total_tokens"] == 5
-    assert api.chat_payloads[0]["model"] == "astrumweaver"
+    assert api.chat_payloads[0]["model"] == "tsumgi"
     assert api.chat_payloads[0]["stream"] is False
 
     completion = await executor.execute(
@@ -956,7 +956,7 @@ async def test_executor_cancellation_aborts_inflight_request() -> None:
     executor = VllmExecutor(
         api=api,
         model_ref="Qwen/Qwen3-8B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         residency_metadata={},
     )
 
@@ -982,7 +982,7 @@ async def test_residency_reports_policy_without_inventing_memory_bytes() -> None
     executor = VllmExecutor(
         api=FakeApi(),
         model_ref="Qwen/Qwen3-8B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         residency_metadata={
             "tensor_parallel_size": 2,
             "expert_parallel": False,
@@ -1007,7 +1007,7 @@ async def test_managed_runtime_starts_checks_alias_and_stops() -> None:
         process=process,
         context=context(),
         model_ref="Qwen/Qwen3-8B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=VllmLaunchPolicy(
             tensor_parallel_size=1,
@@ -1035,7 +1035,7 @@ async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readin
         process=process,
         context=context(),
         model_ref="Qwen/Qwen3-8B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         startup_timeout_seconds=60.0,
         launch_policy=VllmLaunchPolicy(
             tensor_parallel_size=1,
@@ -1062,7 +1062,7 @@ async def test_managed_runtime_rejects_external_server() -> None:
         process=process,
         context=context(),
         model_ref="Qwen/Qwen3-8B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=VllmLaunchPolicy(
             tensor_parallel_size=1,
@@ -1089,7 +1089,7 @@ async def test_managed_runtime_cleans_up_failed_start() -> None:
         process=process,
         context=context(),
         model_ref="Qwen/Qwen3-8B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=VllmLaunchPolicy(
             tensor_parallel_size=1,
@@ -1116,7 +1116,7 @@ async def test_managed_runtime_release_closes_api_once() -> None:
         process=process,
         context=context(),
         model_ref="Qwen/Qwen3-8B",
-        served_model_name="astrumweaver",
+        served_model_name="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=VllmLaunchPolicy(
             tensor_parallel_size=1,

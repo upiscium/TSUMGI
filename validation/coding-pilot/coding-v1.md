@@ -1,4 +1,4 @@
-# AstrumWeaver Coding Pilot Evidence
+# TSUMGI Coding Pilot Evidence
 
 This evidence is intentionally metadata-only. It contains no repository name, source text, prompt, credential, worktree path, hostname, Worker identity, GPU identity, or raw tool input/output.
 

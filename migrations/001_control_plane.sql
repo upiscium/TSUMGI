@@ -1,4 +1,4 @@
--- AstrumWeaver v0.1 durable control-plane state.
+-- TSUMGI v0.1 durable control-plane state.
 -- Application-generated UUID job IDs avoid requiring PostgreSQL extensions.
 
 BEGIN;

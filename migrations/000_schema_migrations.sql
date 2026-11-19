@@ -1,4 +1,4 @@
--- Track canonical AstrumWeaver database migrations.
+-- Track canonical TSUMGI database migrations.
 
 BEGIN;
 

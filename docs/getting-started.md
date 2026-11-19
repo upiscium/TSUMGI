@@ -32,9 +32,9 @@ This gives a clean answer to:
 
 Control requires:
 
-- PostgreSQL reachable through `ASTRUMWEAVER_DATABASE_URL`
-- `ASTRUMWEAVER_WORKER_TOKEN`
-- `ASTRUMWEAVER_CLIENT_TOKEN` when `control.client_auth = "bearer"`
+- PostgreSQL reachable through `TSUMGI_DATABASE_URL`
+- `TSUMGI_WORKER_TOKEN`
+- `TSUMGI_CLIENT_TOKEN` when `control.client_auth = "bearer"`
 
 If `control.client_auth` is omitted, it defaults to `bearer`. Set it to
 `none` only when the deployment/network boundary intentionally supplies
@@ -43,7 +43,7 @@ Client API access control.
 Worker requires:
 
 - network access to Control
-- the same `ASTRUMWEAVER_WORKER_TOKEN`
+- the same `TSUMGI_WORKER_TOKEN`
 
 When Client auth is `bearer`, the Client and Worker authority tokens must be
 different. Worker authority remains mandatory in both modes.
@@ -54,15 +54,15 @@ For a GPU Worker, `nvidia-smi` must already work.
 
 How Control is installed depends on the host:
 
-- NixOS: `services.astrumweaver.control.enable = true`
-- generic systemd: `astrumweaver-setup-control-plane`
+- NixOS: `services.tsumgi.control.enable = true`
+- generic systemd: `tsumgi-setup-control-plane`
 
 See [Installation](installation.md).
 
 After startup:
 
 ```sh
-systemctl status astrumweaver-control.service
+systemctl status tsumgi-control.service
 ```
 
 Check process health:
@@ -92,13 +92,13 @@ Expected shape:
 If `/v1/health` works but `/v1/ready` returns HTTP 503, check:
 
 1. PostgreSQL is reachable.
-2. `ASTRUMWEAVER_DATABASE_URL` is correct.
+2. `TSUMGI_DATABASE_URL` is correct.
 3. all packaged migrations have been applied.
 
 For an explicit migration:
 
 ```sh
-ASTRUMWEAVER_DATABASE_URL='postgresql://...' astrumweaver-migrate
+TSUMGI_DATABASE_URL='postgresql://...' tsumgi-migrate
 ```
 
 ## 3. Start one Worker
@@ -112,7 +112,7 @@ debug.echo
 and use:
 
 ```text
-astrumweaver.executors.structured_echo:create_executor
+tsumgi.executors.structured_echo:create_executor
 ```
 
 The NixOS and generic-systemd examples are in
@@ -121,7 +121,7 @@ The NixOS and generic-systemd examples are in
 Check the service:
 
 ```sh
-systemctl status astrumweaver-worker.service
+systemctl status tsumgi-worker.service
 ```
 
 Check Worker health on the Worker host:
@@ -146,7 +146,7 @@ The real response also contains `worker_id` and `active_job_id`.
 If the Worker is running but `registered` is false, check:
 
 - Worker `control_url`
-- `ASTRUMWEAVER_WORKER_TOKEN`
+- `TSUMGI_WORKER_TOKEN`
 - Control readiness
 - network/TLS reachability
 
@@ -167,8 +167,8 @@ Set the Control URL locally. For the default
 `client_auth = "bearer"`, also set the Client token:
 
 ```sh
-export ASTRUMWEAVER_CONTROL_URL='http://127.0.0.1:9000'
-export ASTRUMWEAVER_CLIENT_TOKEN='REPLACE_WITH_CLIENT_TOKEN'
+export TSUMGI_CONTROL_URL='http://127.0.0.1:9000'
+export TSUMGI_CLIENT_TOKEN='REPLACE_WITH_CLIENT_TOKEN'
 ```
 
 If Control explicitly uses `client_auth = "none"`, do not set a Client token
@@ -180,7 +180,7 @@ Submit:
 ```sh
 response="$(
   curl -fsS \
-    -H "Authorization: Bearer $ASTRUMWEAVER_CLIENT_TOKEN" \
+    -H "Authorization: Bearer $TSUMGI_CLIENT_TOKEN" \
     -H 'Content-Type: application/json' \
     -d '{
       "protocol_version": "v1",
@@ -192,7 +192,7 @@ response="$(
       "priority": 0,
       "max_attempts": 1
     }' \
-    "$ASTRUMWEAVER_CONTROL_URL/v1/jobs"
+    "$TSUMGI_CONTROL_URL/v1/jobs"
 )"
 
 printf '%s\n' "$response"
@@ -201,7 +201,7 @@ printf '%s\n' "$response"
 For `client_auth = "none"`, use the same JSON body but omit:
 
 ```text
--H "Authorization: Bearer $ASTRUMWEAVER_CLIENT_TOKEN"
+-H "Authorization: Bearer $TSUMGI_CLIENT_TOKEN"
 ```
 
 With `jq`:
@@ -214,14 +214,14 @@ Inspect the job:
 
 ```sh
 curl -fsS \
-  -H "Authorization: Bearer $ASTRUMWEAVER_CLIENT_TOKEN" \
-  "$ASTRUMWEAVER_CONTROL_URL/v1/jobs/$job_id" | jq
+  -H "Authorization: Bearer $TSUMGI_CLIENT_TOKEN" \
+  "$TSUMGI_CONTROL_URL/v1/jobs/$job_id" | jq
 ```
 
 For `client_auth = "none"`, the equivalent request is:
 
 ```sh
-curl -fsS "$ASTRUMWEAVER_CONTROL_URL/v1/jobs/$job_id" | jq
+curl -fsS "$TSUMGI_CONTROL_URL/v1/jobs/$job_id" | jq
 ```
 
 After the Worker claims it, the terminal state should become:
@@ -263,7 +263,7 @@ The important rule is:
 Use:
 
 ```nix
-services.astrumweaver.worker.runtime = {
+services.tsumgi.worker.runtime = {
   enable = true;
   provider = "ollama"; # example
   packages = [ ... ];
@@ -283,9 +283,9 @@ executor path are mutually exclusive.
 The interactive setup frontend is:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-tui \
   --mode runtime \
-  --driver astrumweaver.setup.systemd:create_systemd_driver
+  --driver tsumgi.setup.systemd:create_systemd_driver
 ```
 
 For an already-installed generic-systemd Worker, the TUI first loads the
@@ -299,7 +299,7 @@ actions. Unknown/mixed installed execution state fails closed.
 
 For `llama-cpp`, generic systemd has a standard Nix RuntimeBackend path:
 the reviewed apply reconciles the dedicated
-`/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp` profile and persists
+`/nix/var/nix/profiles/tsumgi-runtime-llama-cpp` profile and persists
 its absolute `llama-server` path. No custom installer JSON is required.
 
 Providers without a first-party managed RuntimeBackend still fail closed when
@@ -322,17 +322,17 @@ Read:
 For #31 acceptance, the repository also includes:
 
 ```sh
-astrumweaver-runtime-deployment-accept --help
+tsumgi-runtime-deployment-accept --help
 ```
 
 ## Troubleshooting order
 
 When the first deployment fails, check in this order:
 
-1. `systemctl status astrumweaver-control`
+1. `systemctl status tsumgi-control`
 2. Control `/v1/health`
 3. Control `/v1/ready`
-4. `systemctl status astrumweaver-worker`
+4. `systemctl status tsumgi-worker`
 5. Worker `/health`
 6. Worker token/control URL
 7. GPU preflight/isolation, if applicable
@@ -341,8 +341,8 @@ When the first deployment fails, check in this order:
 Useful logs:
 
 ```sh
-journalctl -u astrumweaver-control.service -b
-journalctl -u astrumweaver-worker.service -b
+journalctl -u tsumgi-control.service -b
+journalctl -u tsumgi-worker.service -b
 ```
 
 ## Where to go next

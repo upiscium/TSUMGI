@@ -5,14 +5,14 @@ import asyncio
 import httpx
 import pytest
 
-from astrumweaver import ArtifactRef, JobResult, ResourceShape, WorkerSpec
-from astrumweaver.control import ClientAuthMode
-from astrumweaver.control.api import create_app
-from astrumweaver.control.daemon import build_app
-from astrumweaver.control.repository import InMemoryControlRepository, StorageUnavailable
-from astrumweaver.executors.structured_echo import StructuredEchoExecutor
-from astrumweaver.transport import PROTOCOL_VERSION
-from astrumweaver.worker import (
+from tsumgi import ArtifactRef, JobResult, ResourceShape, WorkerSpec
+from tsumgi.control import ClientAuthMode
+from tsumgi.control.api import create_app
+from tsumgi.control.daemon import build_app
+from tsumgi.control.repository import InMemoryControlRepository, StorageUnavailable
+from tsumgi.executors.structured_echo import StructuredEchoExecutor
+from tsumgi.transport import PROTOCOL_VERSION
+from tsumgi.worker import (
     ControlClient,
     WorkerRuntime,
     require_executor_capabilities,
@@ -365,7 +365,7 @@ class SlowExecutor:
         self.cancelled.append(job_id)
 
     async def residency(self):
-        from astrumweaver import ResidencyReport
+        from tsumgi import ResidencyReport
 
         return ResidencyReport()
 
@@ -497,7 +497,7 @@ class DelayedStructuredExecutor:
         return None
 
     async def residency(self):
-        from astrumweaver import ResidencyReport
+        from tsumgi import ResidencyReport
 
         return ResidencyReport()
 
@@ -582,15 +582,15 @@ def test_control_daemon_client_auth_none_does_not_require_client_token(
         encoding="utf-8",
     )
     monkeypatch.setenv(
-        "ASTRUMWEAVER_DATABASE_URL",
-        "postgresql://example.invalid/astrumweaver",
+        "TSUMGI_DATABASE_URL",
+        "postgresql://example.invalid/tsumgi",
     )
-    monkeypatch.delenv("ASTRUMWEAVER_CLIENT_TOKEN", raising=False)
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker")
+    monkeypatch.delenv("TSUMGI_CLIENT_TOKEN", raising=False)
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "worker")
 
     app = build_app(str(config))
 
-    assert app.title == "AstrumWeaver Control API"
+    assert app.title == "TSUMGI Control API"
 
 
 def test_control_daemon_rejects_unknown_client_auth(
@@ -603,10 +603,10 @@ def test_control_daemon_rejects_unknown_client_auth(
         encoding="utf-8",
     )
     monkeypatch.setenv(
-        "ASTRUMWEAVER_DATABASE_URL",
-        "postgresql://example.invalid/astrumweaver",
+        "TSUMGI_DATABASE_URL",
+        "postgresql://example.invalid/tsumgi",
     )
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "worker")
 
     with pytest.raises(RuntimeError, match="client_auth must be bearer or none"):
         build_app(str(config))
@@ -636,7 +636,7 @@ def test_executor_without_capability_declaration_is_rejected() -> None:
             return None
 
         async def residency(self):
-            from astrumweaver import ResidencyReport
+            from tsumgi import ResidencyReport
 
             return ResidencyReport()
 
@@ -658,27 +658,27 @@ def test_control_daemon_requires_explicit_postgres_and_authority(
     )
 
     for name in (
-        "ASTRUMWEAVER_DATABASE_URL",
-        "ASTRUMWEAVER_CLIENT_TOKEN",
-        "ASTRUMWEAVER_WORKER_TOKEN",
+        "TSUMGI_DATABASE_URL",
+        "TSUMGI_CLIENT_TOKEN",
+        "TSUMGI_WORKER_TOKEN",
     ):
         monkeypatch.delenv(name, raising=False)
 
-    with pytest.raises(RuntimeError, match="ASTRUMWEAVER_DATABASE_URL is required"):
+    with pytest.raises(RuntimeError, match="TSUMGI_DATABASE_URL is required"):
         build_app(str(config))
 
     monkeypatch.setenv(
-        "ASTRUMWEAVER_DATABASE_URL",
-        "postgresql://example.invalid/astrumweaver",
+        "TSUMGI_DATABASE_URL",
+        "postgresql://example.invalid/tsumgi",
     )
-    with pytest.raises(RuntimeError, match="ASTRUMWEAVER_CLIENT_TOKEN is required"):
+    with pytest.raises(RuntimeError, match="TSUMGI_CLIENT_TOKEN is required"):
         build_app(str(config))
 
-    monkeypatch.setenv("ASTRUMWEAVER_CLIENT_TOKEN", "client")
-    with pytest.raises(RuntimeError, match="ASTRUMWEAVER_WORKER_TOKEN is required"):
+    monkeypatch.setenv("TSUMGI_CLIENT_TOKEN", "client")
+    with pytest.raises(RuntimeError, match="TSUMGI_WORKER_TOKEN is required"):
         build_app(str(config))
 
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "worker")
     app = build_app(str(config))
 
-    assert app.title == "AstrumWeaver Control API"
+    assert app.title == "TSUMGI Control API"

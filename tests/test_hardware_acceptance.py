@@ -4,14 +4,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from astrumweaver.control import ClientAuthMode
-from astrumweaver.validation.hardware import (
+from tsumgi.control import ClientAuthMode
+from tsumgi.validation.hardware import (
     HTTPAcceptanceControl,
     HardwareAcceptanceError,
     HardwareAcceptanceRunner,
     render_markdown,
 )
-from astrumweaver.worker.mode import GPUProcess
+from tsumgi.worker.mode import GPUProcess
 
 
 def test_http_acceptance_control_supports_client_auth_none() -> None:

@@ -41,7 +41,7 @@ checks the run config against the deployment and refuses on any mismatch. It che
 | `executable` | absolute path of the Strata Terminal entry point, `.../bin/strata` |
 | `run_config` | absolute path of the prepared run config |
 | `home`, `data_dir` | `HOME` and `STRATA_DATA_DIR` of the Strata install. Engines, packs and logs live there, so the Worker user must be able to write them |
-| `ready_dir` | private directory for the ready file. The default is the Worker unit's `RuntimeDirectory`, `/run/astrumweaver-worker` |
+| `ready_dir` | private directory for the ready file. The default is the Worker unit's `RuntimeDirectory`, `/run/tsumgi-worker` |
 | `base_url` | `http://127.0.0.1:<port>` only (default port 8080); Strata binds IPv4 loopback |
 | `served_model_name` | the run config's `model_name` |
 | `context_tokens` | the run config's `--max-context` |
@@ -122,7 +122,7 @@ Install Strata at a pinned release, prepare the model once as root, then hand th
 Worker user:
 
 ```sh
-R=/opt/astrumweaver/strata
+R=/opt/tsumgi/strata
 mkdir -p $R && cd $R
 curl -fsSLO https://github.com/Niko1221/Strata/releases/download/v0.2.13/install.sh
 echo "d47754af1f74c95bf763e0b8d484232443466decd1a22d0be3208760a2f53822  install.sh" | sha256sum -c
@@ -136,7 +136,7 @@ $R/bin/strata launch --stop
 
 Copy `$R/home/.local/share/strata/install/strata-<model>.json` to a root-owned path. Set
 `"fit_max_tokens": false` in the copy and keep `--max-context` equal to the contract's `total_tokens`.
-Then point `run_config` at the copy and run `chown -R astrumweaver: $R/home`. The model files, packs and
+Then point `run_config` at the copy and run `chown -R tsumgi: $R/home`. The model files, packs and
 the Terminal stay root-owned and world-readable.
 
 `strata launch --no-tui` hands the server to a background owner. A transient systemd unit that runs it
@@ -150,12 +150,12 @@ one extra writable path, the Strata home, which holds the engine log, state and 
 
 ```ini
 [Service]
-ReadWritePaths=/opt/astrumweaver/strata/home
+ReadWritePaths=/opt/tsumgi/strata/home
 # first start of a large model; Strata reads every expert once
 TimeoutStartSec=900
 ```
 
-Lab E2E on altair: loopback Control, the Worker as `astrumweaver` under these unit settings, and
+Lab E2E on altair: loopback Control, the Worker as `tsumgi` under these unit settings, and
 Qwen3.6 UD-Q4_K_XL at 12K.
 
 | Check | Result |

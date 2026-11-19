@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.execution import JobRequest, JobResult, ResidencyReport
-from astrumweaver.runtime import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.execution import JobRequest, JobResult, ResidencyReport
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -25,7 +25,7 @@ from astrumweaver.runtime import (
     RuntimeSetupIntent,
     RuntimeLifecycleManager,
 )
-from astrumweaver.setup import (
+from tsumgi.setup import (
     ActionInspection,
     ActionReceipt,
     DeploymentPath,
@@ -258,7 +258,7 @@ def test_systemd_gpu_plan_includes_reviewed_nvidia_driver_bridge() -> None:
     assert len(bridges) == 1
     assert bridges[0].payload["soname"] == "libcuda.so.1"
     assert bridges[0].payload["bridge_directory"] == (
-        "/etc/astrumweaver/runtime/nvidia-driver"
+        "/etc/tsumgi/runtime/nvidia-driver"
     )
     assert bridges[0].requires_privilege
     assert bridges[0].reversible

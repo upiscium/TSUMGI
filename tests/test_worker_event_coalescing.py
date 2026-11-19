@@ -5,12 +5,12 @@ import asyncio
 import httpx
 import pytest
 
-from astrumweaver import JobEvent, JobResult, ResidencyReport, ResourceShape, WorkerSpec
-from astrumweaver.control import InMemoryControlRepository, JobStatus, JobSubmission
-from astrumweaver.control.api import create_app
-from astrumweaver.gateway.chat import validate_chat_stream_chunk
-from astrumweaver.worker import ControlClient, WorkerRuntime
-from astrumweaver.worker.event_coalescing import (
+from tsumgi import JobEvent, JobResult, ResidencyReport, ResourceShape, WorkerSpec
+from tsumgi.control import InMemoryControlRepository, JobStatus, JobSubmission
+from tsumgi.control.api import create_app
+from tsumgi.gateway.chat import validate_chat_stream_chunk
+from tsumgi.worker import ControlClient, WorkerRuntime
+from tsumgi.worker.event_coalescing import (
     CHAT_CHUNK_KIND,
     CoalescingJobEventSink,
     merge_chat_chunks,

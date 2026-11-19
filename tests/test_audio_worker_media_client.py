@@ -10,14 +10,14 @@ import json
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.audio.artifact_spool import ArtifactSpool
-from astrumweaver.audio.input_channel import AudioInputChannel
-from astrumweaver.audio.output_channel import AudioOutputChannel
-from astrumweaver.control import InMemoryControlRepository, JobSubmission, WorkerRegistration
-from astrumweaver.control.api import create_app
-from astrumweaver.execution import JobRequest, JobResult
-from astrumweaver.worker.client import ClaimedJob, ControlClient, ControlTransportError
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.audio.artifact_spool import ArtifactSpool
+from tsumgi.audio.input_channel import AudioInputChannel
+from tsumgi.audio.output_channel import AudioOutputChannel
+from tsumgi.control import InMemoryControlRepository, JobSubmission, WorkerRegistration
+from tsumgi.control.api import create_app
+from tsumgi.execution import JobRequest, JobResult
+from tsumgi.worker.client import ClaimedJob, ControlClient, ControlTransportError
 from test_audio_artifact_authority import EPOCH, serving_values, setup_claim
 from test_audio_input_channel import WAV
 

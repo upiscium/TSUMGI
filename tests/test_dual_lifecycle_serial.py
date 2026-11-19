@@ -6,7 +6,7 @@ import asyncio
 import pytest
 
 from test_dual_llama_cpp import managed_pair
-from astrumweaver.runtime.contracts import RuntimeHealthState
+from tsumgi.runtime.contracts import RuntimeHealthState
 
 
 @pytest.mark.asyncio

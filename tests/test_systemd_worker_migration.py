@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
-from astrumweaver.runtime import (
+from tsumgi import AcceleratorDevice, ResourceShape, WorkerSpec
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -22,8 +22,8 @@ from astrumweaver.runtime import (
     RuntimeSelection,
     RuntimeSelectionMode,
 )
-from astrumweaver.runtime.providers import LlamaCppProvider
-from astrumweaver.setup import (
+from tsumgi.runtime.providers import LlamaCppProvider
+from tsumgi.setup import (
     DeploymentPath,
     PrivilegeMode,
     SetupAction,
@@ -32,12 +32,12 @@ from astrumweaver.setup import (
     SetupHostSnapshot,
     build_runtime_setup_plan,
 )
-from astrumweaver.setup.first_run import (
+from tsumgi.setup.first_run import (
     FirstRunExecutionMode,
     render_worker_toml,
 )
-from astrumweaver.setup.filesystem import SetupFilesystem
-from astrumweaver.setup.migration import (
+from tsumgi.setup.filesystem import SetupFilesystem
+from tsumgi.setup.migration import (
     DEFAULT_RUNTIME_MANIFEST,
     NVIDIA_DRIVER_BRIDGE_DIRECTORY,
     parse_installed_worker_toml,
@@ -45,7 +45,7 @@ from astrumweaver.setup.migration import (
     render_runtime_worker_toml,
     render_runtime_worker_unit,
 )
-from astrumweaver.setup.systemd import SystemdSetupDriver
+from tsumgi.setup.systemd import SystemdSetupDriver
 
 
 def _smoke_worker() -> WorkerSpec:
@@ -82,14 +82,14 @@ def _smoke_toml() -> str:
 def _worker_unit(
     *,
     executable: str = (
-        "/nix/var/nix/profiles/astrumweaver-installer/bin/"
-        "astrumweaver-worker"
+        "/nix/var/nix/profiles/tsumgi-installer/bin/"
+        "tsumgi-worker"
     ),
     runtime: bool = False,
     driver_bridge: bool = True,
 ) -> str:
     runtime_arg = (
-        " --runtime-manifest /etc/astrumweaver/runtime-deployment.json"
+        " --runtime-manifest /etc/tsumgi/runtime-deployment.json"
         if runtime
         else ""
     )
@@ -99,23 +99,23 @@ def _worker_unit(
         else ""
     )
     return f"""[Unit]
-Description=AstrumWeaver GPU Worker
+Description=TSUMGI GPU Worker
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-User=astrumweaver
-Group=astrumweaver
-SupplementaryGroups=astrumweaver-config
-EnvironmentFile=-/etc/astrumweaver/worker.env
-{runtime_env}ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight /etc/astrumweaver/gpu-uuids
-ExecStart={executable} --config /etc/astrumweaver/worker.toml{runtime_arg}
+User=tsumgi
+Group=tsumgi
+SupplementaryGroups=tsumgi-config
+EnvironmentFile=-/etc/tsumgi/worker.env
+{runtime_env}ExecStartPre=+/usr/local/libexec/tsumgi/gpu-preflight /etc/tsumgi/gpu-uuids
+ExecStart={executable} --config /etc/tsumgi/worker.toml{runtime_arg}
 Restart=on-failure
 RestartSec=5s
-RuntimeDirectory=astrumweaver-worker
+RuntimeDirectory=tsumgi-worker
 RuntimeDirectoryMode=0750
-StateDirectory=astrumweaver
+StateDirectory=tsumgi
 StateDirectoryMode=0750
 NoNewPrivileges=yes
 PrivateTmp=yes
@@ -152,9 +152,9 @@ def _reconcile_action() -> SetupAction:
 
 
 def _write_staged_worker(root: Path) -> tuple[Path, Path, Path]:
-    worker_path = root / "etc/astrumweaver/worker.toml"
-    unit_path = root / "etc/systemd/system/astrumweaver-worker.service"
-    manifest_path = root / "etc/astrumweaver/runtime-deployment.json"
+    worker_path = root / "etc/tsumgi/worker.toml"
+    unit_path = root / "etc/systemd/system/tsumgi-worker.service"
+    manifest_path = root / "etc/tsumgi/runtime-deployment.json"
     worker_path.parent.mkdir(parents=True, exist_ok=True)
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     worker_path.write_text(_smoke_toml(), encoding="utf-8")
@@ -271,7 +271,7 @@ def test_prior_runtime_unit_upgrades_only_driver_bridge() -> None:
             1,
         ),
         _smoke_toml().replace(
-            "astrumweaver.executors.structured_echo:create_executor",
+            "tsumgi.executors.structured_echo:create_executor",
             "example.custom:create_executor",
         ),
     ),
@@ -296,7 +296,7 @@ def test_loading_installed_worker_never_reads_worker_env(
 ) -> None:
     root = tmp_path / "root"
     _write_staged_worker(root)
-    env_path = root / "etc/astrumweaver/worker.env"
+    env_path = root / "etc/tsumgi/worker.env"
     env_path.symlink_to(root / "definitely-missing-secret")
 
     contract = SystemdSetupDriver(root=root).load_installed_worker_contract()
@@ -449,17 +449,17 @@ def test_worker_restart_stays_blocked_when_reconcile_daemon_reload_fails(
     def fake_run(argv, *, check, **kwargs):
         command = tuple(str(item) for item in argv)
         calls.append(command)
-        if command[1:] == ("stop", "astrumweaver-worker.service"):
+        if command[1:] == ("stop", "tsumgi-worker.service"):
             active["value"] = False
             return subprocess.CompletedProcess(argv, 0)
-        if command[1:] == ("start", "astrumweaver-worker.service"):
+        if command[1:] == ("start", "tsumgi-worker.service"):
             active["value"] = True
             return subprocess.CompletedProcess(argv, 0)
         if command[1:] == ("daemon-reload",):
             raise subprocess.CalledProcessError(1, argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr("astrumweaver.setup.systemd.subprocess.run", fake_run)
+    monkeypatch.setattr("tsumgi.setup.systemd.subprocess.run", fake_run)
 
     stop = SetupAction(
         action_id="01-worker-stop",
@@ -519,17 +519,17 @@ def test_worker_restart_stays_blocked_when_rollback_reload_fails(
     def fake_run(argv, *, check, **kwargs):
         command = tuple(str(item) for item in argv)
         calls.append(command)
-        if command[1:] == ("stop", "astrumweaver-worker.service"):
+        if command[1:] == ("stop", "tsumgi-worker.service"):
             active["value"] = False
             return subprocess.CompletedProcess(argv, 0)
-        if command[1:] == ("start", "astrumweaver-worker.service"):
+        if command[1:] == ("start", "tsumgi-worker.service"):
             active["value"] = True
             return subprocess.CompletedProcess(argv, 0)
         if command[1:] == ("daemon-reload",) and fail_reload["value"]:
             raise subprocess.CalledProcessError(1, argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr("astrumweaver.setup.systemd.subprocess.run", fake_run)
+    monkeypatch.setattr("tsumgi.setup.systemd.subprocess.run", fake_run)
 
     stop = SetupAction(
         action_id="01-worker-stop",

@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from astrumweaver.setup import first_run
+from tsumgi.setup import first_run
 
 
 _spec = importlib.util.spec_from_file_location(
@@ -40,7 +40,7 @@ def test_matrix_uses_production_renderer_and_is_deterministic(tmp_path, monkeypa
     literal = (tmp_path / "literal-data.nix").read_text()
     assert r"\${not_a_nix_binding}" in literal
     assert all(Path(case["module"]).is_file() for case in cases)
-    assert all("ASTRUMWEAVER_WORKER_TOKEN" not in p.read_text() for p in tmp_path.glob("*.nix"))
+    assert all("TSUMGI_WORKER_TOKEN" not in p.read_text() for p in tmp_path.glob("*.nix"))
 
 
 def test_evaluate_applies_source_and_manifest_before_json_conversion(
@@ -77,7 +77,7 @@ def test_evaluate_applies_source_and_manifest_before_json_conversion(
 
 @pytest.mark.parametrize("expression", ["myPkgs.ollama", "pkgs", "inputs.runtime", "pkgs.9foo"])
 def test_renderer_itself_rejects_unknown_package_scope(expression):
-    from astrumweaver import ResourceShape, WorkerSpec
+    from tsumgi import ResourceShape, WorkerSpec
     worker = WorkerSpec(worker_id="test", worker_class="test", resources=ResourceShape(), capabilities=frozenset({"llm.chat"}))
     with pytest.raises(ValueError, match="rooted in pkgs"):
         first_run.render_nixos_bootstrap_snippet(

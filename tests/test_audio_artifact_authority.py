@@ -11,17 +11,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.control import (
     ConflictError, InMemoryControlRepository, JobStatus, JobSubmission,
     WorkerRegistration, WorkerState,
 )
-from astrumweaver.execution import JobResult
-from astrumweaver.serving import (
+from tsumgi.execution import JobResult
+from tsumgi.serving import (
     DeploymentIdentity, LogicalServingProfile, RuntimeInstance, ServingContract,
     ServingJobBinding, WorkerServingAdvertisement, resolve_profile,
 )
-from astrumweaver.transport import job_record_to_dict
+from tsumgi.transport import job_record_to_dict
 
 EPOCH = "12345678-1234-4234-9234-123456789abc"
 NEXT_EPOCH = "22345678-1234-4234-9234-123456789abc"
@@ -106,8 +106,8 @@ def rejected(repo, claim, *, job_id=None, **changes):
 def clock(monkeypatch):
     value = SimpleNamespace(now=datetime(2030, 1, 1, tzinfo=timezone.utc))
     # Existing clock sources only: no production API injection or DB mocks.
-    monkeypatch.setattr("astrumweaver.control.repository.utc_now", lambda: value.now)
-    monkeypatch.setattr("astrumweaver.control.postgres.utc_now", lambda: value.now)
+    monkeypatch.setattr("tsumgi.control.repository.utc_now", lambda: value.now)
+    monkeypatch.setattr("tsumgi.control.postgres.utc_now", lambda: value.now)
     return value
 
 
@@ -120,7 +120,7 @@ class AuthorityCases:
     @pytest.mark.asyncio
     async def test_worker_inspection_does_not_disclose_other_claim(self, authority_repo, clock):
         import httpx
-        from astrumweaver.control.api import create_app
+        from tsumgi.control.api import create_app
         claim = setup_claim(authority_repo, clock.now)
         app = create_app(authority_repo, client_token="client-secret", worker_token="worker-secret")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://control") as client:

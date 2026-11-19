@@ -35,19 +35,19 @@ Deployment is now split intentionally by platform: NixOS materializes the select
 The setup backend is exported from:
 
 ```python
-astrumweaver.setup
+tsumgi.setup
 ```
 
 Runtime selection/provider contracts remain under:
 
 ```python
-astrumweaver.runtime
+tsumgi.runtime
 ```
 
 This separation is intentional:
 
-- `astrumweaver.runtime`: what runtime is compatible and how it behaves
-- `astrumweaver.setup`: how reviewed runtime intent becomes host mutations
+- `tsumgi.runtime`: what runtime is compatible and how it behaves
+- `tsumgi.setup`: how reviewed runtime intent becomes host mutations
 
 ## Host discovery
 
@@ -274,7 +274,7 @@ a NixOS-specific driver RUNPATH for `/run/opengl-driver/lib`; that path is not
 assumed to exist on non-NixOS systems. The driver discovers the host's
 `libcuda.so.1` through the dynamic-linker cache, validates it as a readable
 regular library, and places only that SONAME behind the canonical
-`/etc/astrumweaver/runtime/nvidia-driver` bridge. Runtime Worker units set
+`/etc/tsumgi/runtime/nvidia-driver` bridge. Runtime Worker units set
 `LD_LIBRARY_PATH` to that narrow directory only. TSUMGI deliberately
 does not add a general FHS library directory such as
 `/usr/lib/x86_64-linux-gnu`, because doing so could override the Nix closure's
@@ -326,7 +326,7 @@ Under systemd/NixOS, runtime startup and runtime-process diagnostics are
 therefore available in the owning Worker journal:
 
 ```sh
-journalctl -u astrumweaver-worker.service -b
+journalctl -u tsumgi-worker.service -b
 ```
 
 TSUMGI does not copy raw provider logs into SetupPlan, structured apply
@@ -341,7 +341,7 @@ The lifecycle helper does not move durable job ownership out of the Worker/Contr
 ## TUI relationship
 
 The interactive TUI is implemented by
-[`astrumweaver-setup-tui`](setup-tui.md).
+[`tsumgi-setup-tui`](setup-tui.md).
 
 It performs host/GPU/Worker discovery, execution-demand editing, compatibility
 explanation, explicit runtime selection, provider-option editing, exact
@@ -349,7 +349,7 @@ SetupPlan review, dry-run, digest-bound approval and structured apply progress.
 
 Without a deployment driver it stops in planning-only mode. On generic
 systemd hosts the TUI can use
-`astrumweaver.setup.systemd:create_systemd_driver`; NixOS normally uses the
+`tsumgi.setup.systemd:create_systemd_driver`; NixOS normally uses the
 declarative Worker module instead of imperative TUI mutation.
 
 The TUI does not execute ad-hoc provider shell commands outside this backend.
@@ -369,7 +369,7 @@ It must not plan or apply:
 
 ## Real-host runtime deployment acceptance
 
-The packaged `astrumweaver-runtime-deployment-accept` command validates the
+The packaged `tsumgi-runtime-deployment-accept` command validates the
 #31 GPU subset contract on an idle real Worker host and writes redacted
 evidence.
 

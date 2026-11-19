@@ -14,10 +14,10 @@ let
   fakePython = pkgs.writeShellScriptBin "python3" ''
     exec ${pkgs.python312}/bin/python3 "$@"
   '';
-  fakeDaemon = pkgs.writeShellScript "astrumweaver-permission-test-daemon" ''
+  fakeDaemon = pkgs.writeShellScript "tsumgi-permission-test-daemon" ''
     exec ${pkgs.coreutils}/bin/sleep 60
   '';
-  fakeDaemonPath = "/etc/astrumweaver-permission-test-daemon";
+  fakeDaemonPath = "/etc/tsumgi-permission-test-daemon";
   baseNode = { ... }: {
     system.stateVersion = "26.05";
     virtualisation.memorySize = 1024;
@@ -26,7 +26,7 @@ let
       integration fakeNvidia fakePython pkgs.bash pkgs.coreutils pkgs.diffutils pkgs.gawk
       pkgs.gnugrep pkgs.gnused pkgs.shadow pkgs.systemd pkgs.util-linux
     ];
-    environment.etc."astrumweaver-permission-test-daemon".source = fakeDaemon;
+    environment.etc."tsumgi-permission-test-daemon".source = fakeDaemon;
   };
   customIdentityNode = { ... }: {
     imports = [ baseNode ];
@@ -56,7 +56,7 @@ let
   };
 in
 pkgs.testers.runNixOSTest {
-  name = "astrumweaver-setup-permissions";
+  name = "tsumgi-setup-permissions";
   nodes = {
     controlFirst = baseNode;
     workerFirst = baseNode;
@@ -85,38 +85,38 @@ pkgs.testers.runNixOSTest {
     systemd_run = "${pkgs.systemd}/bin/systemd-run"
     tr = "${pkgs.coreutils}/bin/tr"
 
-    control_bin = "${integration}/bin/astrumweaver-setup-control-plane"
-    worker_bin = "${integration}/bin/astrumweaver-setup-gpu-worker"
+    control_bin = "${integration}/bin/tsumgi-setup-control-plane"
+    worker_bin = "${integration}/bin/tsumgi-setup-gpu-worker"
     fake_daemon_path = "${fakeDaemonPath}"
-    control_files = ["/etc/astrumweaver/control.toml", "/etc/astrumweaver/control.env"]
+    control_files = ["/etc/tsumgi/control.toml", "/etc/tsumgi/control.env"]
     worker_files = [
-        "/etc/astrumweaver/worker.toml", "/etc/astrumweaver/worker.env",
-        "/etc/astrumweaver/gpu-uuids", "/etc/astrumweaver/gpu-device-map",
-        "/etc/astrumweaver/runtime-deployment.json",
+        "/etc/tsumgi/worker.toml", "/etc/tsumgi/worker.env",
+        "/etc/tsumgi/gpu-uuids", "/etc/tsumgi/gpu-device-map",
+        "/etc/tsumgi/runtime-deployment.json",
     ]
-    fake_gpu_proc = "/run/astrumweaver-fake-nvidia-gpus"
-    fake_gpu_devices = "/run/astrumweaver-fake-proc-devices"
+    fake_gpu_proc = "/run/tsumgi-fake-nvidia-gpus"
+    fake_gpu_devices = "/run/tsumgi-fake-proc-devices"
     all_files = control_files + worker_files
-    control_unit = "/etc/systemd/system/astrumweaver-control.service"
-    worker_unit = "/etc/systemd/system/astrumweaver-worker.service"
-    isolation_unit = "/etc/systemd/system/astrumweaver-worker-gpu-isolation-preflight.service"
-    isolation_dropin = "/etc/systemd/system/astrumweaver-worker.service.d/10-gpu-isolation.conf"
-    dropin_override = "/etc/systemd/system/astrumweaver-worker.service.d/override.conf"
-    control_state = "/var/lib/astrumweaver-control"
-    worker_state = "/var/lib/astrumweaver"
+    control_unit = "/etc/systemd/system/tsumgi-control.service"
+    worker_unit = "/etc/systemd/system/tsumgi-worker.service"
+    isolation_unit = "/etc/systemd/system/tsumgi-worker-gpu-isolation-preflight.service"
+    isolation_dropin = "/etc/systemd/system/tsumgi-worker.service.d/10-gpu-isolation.conf"
+    dropin_override = "/etc/systemd/system/tsumgi-worker.service.d/override.conf"
+    control_state = "/var/lib/tsumgi-control"
+    worker_state = "/var/lib/tsumgi"
     snapshot_paths = [
-        "/etc/astrumweaver", control_state, worker_state, control_unit, worker_unit,
+        "/etc/tsumgi", control_state, worker_state, control_unit, worker_unit,
         isolation_unit, isolation_dropin, dropin_override,
     ] + all_files
-    sentinel_paths = snapshot_paths + ["/etc/astrumweaver/unchanged"]
+    sentinel_paths = snapshot_paths + ["/etc/tsumgi/unchanged"]
 
     def control_cmd(user):
         return (f"{control_bin} --config /tmp/control.toml --environment-file /tmp/control.env "
                 f"--executable {fake_daemon_path} --root / --user {user}")
 
     def worker_cmd(user):
-        return (f"ASTRUMWEAVER_GPU_PROC_ROOT={fake_gpu_proc} "
-                f"ASTRUMWEAVER_GPU_PROC_DEVICES={fake_gpu_devices} {worker_bin} "
+        return (f"TSUMGI_GPU_PROC_ROOT={fake_gpu_proc} "
+                f"TSUMGI_GPU_PROC_DEVICES={fake_gpu_devices} {worker_bin} "
                 "--config /tmp/worker.toml --environment-file /tmp/worker.env "
                 f"--runtime-manifest /tmp/runtime-deployment.json --executable {fake_daemon_path} "
                 f"--root / --user {user} --gpu-isolation on "
@@ -156,10 +156,10 @@ pkgs.testers.runNixOSTest {
         )
         machine.succeed(
             f"{cat} >/tmp/control.toml <<'EOF'\n[control]\nlisten = \"127.0.0.1:9000\"\nEOF\n"
-            f"{cat} >/tmp/control.env <<'EOF'\nASTRUMWEAVER_TEST=control\nEOF\n"
+            f"{cat} >/tmp/control.env <<'EOF'\nTSUMGI_TEST=control\nEOF\n"
             f"{cat} >/tmp/worker.toml <<'EOF'\n[worker]\nid = \"worker-permission-test\"\n"
             "class = \"gpu-single\"\ngpu_uuids = [\"GPU-permission-test\"]\nEOF\n"
-            f"{cat} >/tmp/worker.env <<'EOF'\nASTRUMWEAVER_TEST=worker\nEOF\n"
+            f"{cat} >/tmp/worker.env <<'EOF'\nTSUMGI_TEST=worker\nEOF\n"
             f"{cat} >/tmp/runtime-deployment.json <<'EOF'\n"
             "{\"schema_version\":\"v1\",\"provider_id\":\"test\"}\nEOF\n"
         )
@@ -172,48 +172,48 @@ pkgs.testers.runNixOSTest {
 
     def unit_is(machine, path, user, state):
         for key, value in [("User", user), ("Group", user),
-                           ("SupplementaryGroups", "astrumweaver-config"),
+                           ("SupplementaryGroups", "tsumgi-config"),
                            ("StateDirectory", state)]:
             machine.succeed(f"{grep} -Fx -- '{key}={value}' {path}")
 
     def role_layout(machine, role, user):
         files, state, unit, state_name = (
-            (control_files, control_state, control_unit, "astrumweaver-control")
+            (control_files, control_state, control_unit, "tsumgi-control")
             if role == "control" else
-            (worker_files, worker_state, worker_unit, "astrumweaver")
+            (worker_files, worker_state, worker_unit, "tsumgi")
         )
-        stat_is(machine, "/etc/astrumweaver", "root:astrumweaver-config 710")
+        stat_is(machine, "/etc/tsumgi", "root:tsumgi-config 710")
         stat_is(machine, state, f"{user}:{user} 750")
         for path in files:
             stat_is(machine, path, f"root:{user} 640")
         machine.succeed(f"test \"$(getent passwd {user} | {cut} -d: -f6)\" = '{state}'")
-        machine.succeed(f"{id} -nG {user} | {tr} ' ' '\\n' | {grep} -Fx -- astrumweaver-config")
+        machine.succeed(f"{id} -nG {user} | {tr} ' ' '\\n' | {grep} -Fx -- tsumgi-config")
         unit_is(machine, unit, user, state_name)
 
     def assert_all(machine, control_user, worker_user):
         role_layout(machine, "control", control_user)
         role_layout(machine, "worker", worker_user)
-        machine.succeed(f"{grep} -Fx -- 'GPU-permission-test=/dev/nvidia0' /etc/astrumweaver/gpu-device-map")
-        machine.succeed("test -f /usr/local/libexec/astrumweaver/gpu_mapping.py")
+        machine.succeed(f"{grep} -Fx -- 'GPU-permission-test=/dev/nvidia0' /etc/tsumgi/gpu-device-map")
+        machine.succeed("test -f /usr/local/libexec/tsumgi/gpu_mapping.py")
         machine.succeed(
-            f"! {grep} -F -- '/nix/store/' /usr/local/libexec/astrumweaver/gpu-device-map"
+            f"! {grep} -F -- '/nix/store/' /usr/local/libexec/tsumgi/gpu-device-map"
         )
         machine.succeed(
-            f"{grep} -F -- '{fake_daemon_path} --config /etc/astrumweaver/worker.toml "
-            "--runtime-manifest /etc/astrumweaver/runtime-deployment.json' "
+            f"{grep} -F -- '{fake_daemon_path} --config /etc/tsumgi/worker.toml "
+            "--runtime-manifest /etc/tsumgi/runtime-deployment.json' "
             f"{worker_unit} && {grep} -F -- 'DevicePolicy=closed' {isolation_dropin} && "
             f"{grep} -F -- 'DeviceAllow=/dev/nvidia0 rw' {isolation_dropin} && "
             f"{grep} -F -- 'Environment=CUDA_VISIBLE_DEVICES=GPU-permission-test' {isolation_dropin}"
         )
         machine.succeed(
-            "systemctl daemon-reload && systemctl cat astrumweaver-control.service >/dev/null && "
-            "systemctl cat astrumweaver-worker.service >/dev/null && "
-            "systemctl cat astrumweaver-worker-gpu-isolation-preflight.service >/dev/null"
+            "systemctl daemon-reload && systemctl cat tsumgi-control.service >/dev/null && "
+            "systemctl cat tsumgi-worker.service >/dev/null && "
+            "systemctl cat tsumgi-worker-gpu-isolation-preflight.service >/dev/null"
         )
         machine.succeed(
             "systemctl show --no-pager --all "
             "--property=DevicePolicy,DeviceAllow,Environment,EnvironmentFiles,UnsetEnvironment,ExecStartPre,Requires,After "
-            "astrumweaver-worker.service > /tmp/worker-effective-properties"
+            "tsumgi-worker.service > /tmp/worker-effective-properties"
         )
         effective_properties = machine.succeed(
             f"{cat} /tmp/worker-effective-properties"
@@ -222,11 +222,11 @@ pkgs.testers.runNixOSTest {
             "DevicePolicy=closed",
             "DeviceAllow=/dev/nvidia0 rw",
             "CUDA_VISIBLE_DEVICES=GPU-permission-test",
-            "LD_LIBRARY_PATH=/etc/astrumweaver/runtime/nvidia-driver",
-            "EnvironmentFiles=/etc/astrumweaver/worker.env",
+            "LD_LIBRARY_PATH=/etc/tsumgi/runtime/nvidia-driver",
+            "EnvironmentFiles=/etc/tsumgi/worker.env",
             "UnsetEnvironment=",
             "gpu-preflight",
-            "/etc/astrumweaver/gpu-uuids",
+            "/etc/tsumgi/gpu-uuids",
             "ignore_errors=no",
         ]:
             machine.succeed(
@@ -238,16 +238,16 @@ pkgs.testers.runNixOSTest {
                 for line in effective_properties.splitlines()
                 if line.startswith(f"{property_name}=")
             )
-            assert "astrumweaver-worker-gpu-isolation-preflight.service" in effective_value
+            assert "tsumgi-worker-gpu-isolation-preflight.service" in effective_value
 
     def verify_isolation_lifecycle(machine):
         worker_dropin = (
-            "/etc/systemd/system/astrumweaver-worker.service.d/"
+            "/etc/systemd/system/tsumgi-worker.service.d/"
             "90-test-runtime-path.conf"
         )
         preflight_dropin_dir = (
             "/etc/systemd/system/"
-            "astrumweaver-worker-gpu-isolation-preflight.service.d"
+            "tsumgi-worker-gpu-isolation-preflight.service.d"
         )
         preflight_dropin = f"{preflight_dropin_dir}/90-test-runtime-path.conf"
         path_value = ":".join([
@@ -259,29 +259,29 @@ pkgs.testers.runNixOSTest {
             "${pkgs.gawk}/bin",
         ])
         machine.succeed(
-            f"{mkdir} -p /etc/systemd/system/astrumweaver-worker.service.d "
+            f"{mkdir} -p /etc/systemd/system/tsumgi-worker.service.d "
             f"{preflight_dropin_dir}; "
             f"{cat} >{worker_dropin} <<'EOF'\n[Service]\n"
             f"Environment=PATH={path_value}\nEOF\n"
             f"{cat} >{preflight_dropin} <<'EOF'\n[Service]\n"
             f"Environment=PATH={path_value}\n"
-            f"Environment=ASTRUMWEAVER_GPU_PROC_ROOT={fake_gpu_proc}\n"
-            f"Environment=ASTRUMWEAVER_GPU_PROC_DEVICES={fake_gpu_devices}\nEOF\n"
+            f"Environment=TSUMGI_GPU_PROC_ROOT={fake_gpu_proc}\n"
+            f"Environment=TSUMGI_GPU_PROC_DEVICES={fake_gpu_devices}\nEOF\n"
             "systemctl daemon-reload"
         )
-        machine.succeed("systemctl start astrumweaver-worker.service")
-        machine.succeed("systemctl is-active --quiet astrumweaver-worker.service")
+        machine.succeed("systemctl start tsumgi-worker.service")
+        machine.succeed("systemctl is-active --quiet tsumgi-worker.service")
         machine.succeed(
-            "test \"$(systemctl is-active astrumweaver-worker-gpu-isolation-preflight.service || true)\" = inactive"
+            "test \"$(systemctl is-active tsumgi-worker-gpu-isolation-preflight.service || true)\" = inactive"
         )
         reject(
             machine,
             "active-worker-isolation-reinstall",
-            worker_cmd("astrumweaver"),
+            worker_cmd("tsumgi"),
             needle="Worker service is active; stop it before applying GPU isolation",
         )
-        machine.succeed("systemctl is-active --quiet astrumweaver-worker.service")
-        machine.succeed("systemctl stop astrumweaver-worker.service")
+        machine.succeed("systemctl is-active --quiet tsumgi-worker.service")
+        machine.succeed("systemctl stop tsumgi-worker.service")
         machine.succeed(
             f"{rm} -f {worker_dropin} {preflight_dropin}; "
             f"{rm} -rf {preflight_dropin_dir}; systemctl daemon-reload"
@@ -293,7 +293,7 @@ pkgs.testers.runNixOSTest {
         peer = worker_files if role == "control" else control_files
         state = worker_state if role == "control" else control_state
         unit = worker_unit if role == "control" else control_unit
-        machine.succeed(run_as(user, f"test -x /etc/astrumweaver; cd /etc/astrumweaver; "
+        machine.succeed(run_as(user, f"test -x /etc/tsumgi; cd /etc/tsumgi; "
                                     f"if {ls} >/dev/null 2>&1; then exit 1; fi; "
                                     f"{cat} {' '.join(own)} >/dev/null"))
         machine.succeed(" && ".join([f"test ! -e {path}" for path in peer + [state, unit]]))
@@ -303,7 +303,7 @@ pkgs.testers.runNixOSTest {
             (control_user, control_files, worker_files),
             (worker_user, worker_files, control_files),
         ]:
-            machine.succeed(run_as(user, f"test -x /etc/astrumweaver; cd /etc/astrumweaver; "
+            machine.succeed(run_as(user, f"test -x /etc/tsumgi; cd /etc/tsumgi; "
                                         f"if {ls} >/dev/null 2>&1; then exit 1; fi; "
                                         f"{cat} {' '.join(own)} >/dev/null"))
             for path in peer:
@@ -322,7 +322,7 @@ pkgs.testers.runNixOSTest {
 
     def service_cat(user, path):
         return (f"{systemd_run} --wait --pipe --uid {user} --gid {user} "
-                f"-p SupplementaryGroups=astrumweaver-config {cat} {path}")
+                f"-p SupplementaryGroups=tsumgi-config {cat} {path}")
 
     def assert_systemd_access(machine, control_user, worker_user):
         for user, own, peer in [
@@ -336,8 +336,8 @@ pkgs.testers.runNixOSTest {
 
     def damage(machine):
         machine.succeed(
-            f"{chown} root:root /etc/astrumweaver {control_state} {worker_state} {' '.join(all_files)} && "
-            f"{chmod} 0777 /etc/astrumweaver && {chmod} 0700 {control_state} {worker_state} && "
+            f"{chown} root:root /etc/tsumgi {control_state} {worker_state} {' '.join(all_files)} && "
+            f"{chmod} 0777 /etc/tsumgi && {chmod} 0700 {control_state} {worker_state} && "
             f"{chmod} 0600 {' '.join(all_files)}"
         )
 
@@ -345,28 +345,28 @@ pkgs.testers.runNixOSTest {
         for order in [("control", "worker"), ("worker", "control")]:
             damage(machine)
             for role in order:
-                install(machine, role, "astrumweaver-control" if role == "control" else "astrumweaver")
-            assert_all(machine, "astrumweaver-control", "astrumweaver")
+                install(machine, role, "tsumgi-control" if role == "control" else "tsumgi")
+            assert_all(machine, "tsumgi-control", "tsumgi")
 
     def exercise_order(machine, first):
         prepare(machine)
-        machine.succeed("! getent passwd astrumweaver-control && ! getent group astrumweaver-control && "
-                        "! getent passwd astrumweaver && ! getent group astrumweaver")
-        install(machine, first, "astrumweaver-control" if first == "control" else "astrumweaver")
-        assert_only(machine, first, "astrumweaver-control" if first == "control" else "astrumweaver")
+        machine.succeed("! getent passwd tsumgi-control && ! getent group tsumgi-control && "
+                        "! getent passwd tsumgi && ! getent group tsumgi")
+        install(machine, first, "tsumgi-control" if first == "control" else "tsumgi")
+        assert_only(machine, first, "tsumgi-control" if first == "control" else "tsumgi")
         second = "worker" if first == "control" else "control"
-        install(machine, second, "astrumweaver" if second == "worker" else "astrumweaver-control")
-        assert_all(machine, "astrumweaver-control", "astrumweaver")
+        install(machine, second, "tsumgi" if second == "worker" else "tsumgi-control")
+        assert_all(machine, "tsumgi-control", "tsumgi")
         verify_isolation_lifecycle(machine)
         repair_both_orders(machine)
-        assert_access(machine, "astrumweaver-control", "astrumweaver")
-        assert_systemd_access(machine, "astrumweaver-control", "astrumweaver")
+        assert_access(machine, "tsumgi-control", "tsumgi")
+        assert_systemd_access(machine, "tsumgi-control", "tsumgi")
 
     def clear(machine):
         machine.succeed(
-            f"{rm} -rf /etc/astrumweaver {control_state} {worker_state} /usr/local/libexec/astrumweaver; "
+            f"{rm} -rf /etc/tsumgi {control_state} {worker_state} /usr/local/libexec/tsumgi; "
             f"{rm} -f {control_unit} {worker_unit} {isolation_unit}; "
-            f"{rm} -rf /etc/systemd/system/astrumweaver-worker.service.d"
+            f"{rm} -rf /etc/systemd/system/tsumgi-worker.service.d"
         )
 
     def snapshot(machine, name, paths=snapshot_paths, users=[], groups=[]):
@@ -413,28 +413,28 @@ pkgs.testers.runNixOSTest {
     # Model an older shared-identity installation, then the explicit stopped
     # operator migration in deployment.md. No implicit unit or state rewrite.
     controlFirst.succeed(
-        f"systemctl stop astrumweaver-control.service astrumweaver-worker.service; "
+        f"systemctl stop tsumgi-control.service tsumgi-worker.service; "
         f"cp {control_unit} /tmp/reviewed-control.unit; cp {worker_unit} /tmp/reviewed-worker.unit; "
-        f"sed -i -e '/^SupplementaryGroups=/d' -e 's/^User=.*/User=astrumweaver/' "
-        f"-e 's/^Group=.*/Group=astrumweaver/' -e 's/^StateDirectory=.*/StateDirectory=astrumweaver/' {control_unit}; "
+        f"sed -i -e '/^SupplementaryGroups=/d' -e 's/^User=.*/User=tsumgi/' "
+        f"-e 's/^Group=.*/Group=tsumgi/' -e 's/^StateDirectory=.*/StateDirectory=tsumgi/' {control_unit}; "
         f"sed -i '/^SupplementaryGroups=/d' {worker_unit}; "
-        f"{chown} root:astrumweaver {' '.join(control_files)}"
+        f"{chown} root:tsumgi {' '.join(control_files)}"
     )
-    reject(controlFirst, "legacy-control-retry", control_cmd("astrumweaver-control"),
-           users=["astrumweaver-control", "astrumweaver"], needle="legacy/shared")
-    reject(controlFirst, "legacy-worker-retry", worker_cmd("astrumweaver"),
-           users=["astrumweaver-control", "astrumweaver"], needle="legacy/shared")
+    reject(controlFirst, "legacy-control-retry", control_cmd("tsumgi-control"),
+           users=["tsumgi-control", "tsumgi"], needle="legacy/shared")
+    reject(controlFirst, "legacy-worker-retry", worker_cmd("tsumgi"),
+           users=["tsumgi-control", "tsumgi"], needle="legacy/shared")
     controlFirst.succeed(
         f"{chown} root:root {' '.join(control_files)}; {chmod} 0600 {' '.join(control_files)}; "
         f"cp /tmp/reviewed-control.unit {control_unit}; cp /tmp/reviewed-worker.unit {worker_unit}"
     )
     snapshot(controlFirst, "worker-state-preserved", paths=[worker_state, worker_state + "/permission-write-check"])
-    install(controlFirst, "control", "astrumweaver-control")
+    install(controlFirst, "control", "tsumgi-control")
     check_snapshot(controlFirst, "worker-state-preserved", paths=[worker_state, worker_state + "/permission-write-check"])
-    install(controlFirst, "worker", "astrumweaver")
-    assert_all(controlFirst, "astrumweaver-control", "astrumweaver")
-    assert_access(controlFirst, "astrumweaver-control", "astrumweaver")
-    assert_systemd_access(controlFirst, "astrumweaver-control", "astrumweaver")
+    install(controlFirst, "worker", "tsumgi")
+    assert_all(controlFirst, "tsumgi-control", "tsumgi")
+    assert_access(controlFirst, "tsumgi-control", "tsumgi")
+    assert_systemd_access(controlFirst, "tsumgi-control", "tsumgi")
 
     prepare(customIdentity)
     customIdentity.succeed(
@@ -460,7 +460,7 @@ pkgs.testers.runNixOSTest {
     prepare(negativeFixtures)
     clear(negativeFixtures)
     reject(negativeFixtures, "wrong-primary", control_cmd("bad-primary"),
-           users=["bad-primary", "astrumweaver-control"])
+           users=["bad-primary", "tsumgi-control"])
 
     clear(negativeFixtures)
     install(negativeFixtures, "worker", "cross-worker")
@@ -479,45 +479,45 @@ pkgs.testers.runNixOSTest {
 
     clear(negativeFixtures)
     negativeFixtures.succeed(
-        f"{mkdir} -p /etc/astrumweaver {worker_state}; printf sentinel > /etc/astrumweaver/unchanged; "
-        f"{chmod} 0700 /etc/astrumweaver; {chmod} 0701 {worker_state}"
+        f"{mkdir} -p /etc/tsumgi {worker_state}; printf sentinel > /etc/tsumgi/unchanged; "
+        f"{chmod} 0700 /etc/tsumgi; {chmod} 0701 {worker_state}"
     )
-    reject(negativeFixtures, "legacy-state", control_cmd("astrumweaver-control"),
-           users=["astrumweaver-control"], needle="legacy/shared", paths=sentinel_paths)
+    reject(negativeFixtures, "legacy-state", control_cmd("tsumgi-control"),
+           users=["tsumgi-control"], needle="legacy/shared", paths=sentinel_paths)
 
     clear(negativeFixtures)
     negativeFixtures.succeed(
-        f"{mkdir} -p /etc/astrumweaver /etc/systemd/system {control_state}; "
-        f"printf sentinel > /etc/astrumweaver/unchanged; "
-        f"printf '[Service]\\nUser=astrumweaver\\nGroup=astrumweaver\\nStateDirectory=astrumweaver\\n' > {control_unit}; "
-        f"{chmod} 0700 /etc/astrumweaver {control_state}; {chmod} 0600 {control_unit}"
+        f"{mkdir} -p /etc/tsumgi /etc/systemd/system {control_state}; "
+        f"printf sentinel > /etc/tsumgi/unchanged; "
+        f"printf '[Service]\\nUser=tsumgi\\nGroup=tsumgi\\nStateDirectory=tsumgi\\n' > {control_unit}; "
+        f"{chmod} 0700 /etc/tsumgi {control_state}; {chmod} 0600 {control_unit}"
     )
-    reject(negativeFixtures, "legacy-unit", control_cmd("astrumweaver-control"),
-           users=["astrumweaver-control"], needle="legacy/shared", paths=sentinel_paths)
+    reject(negativeFixtures, "legacy-unit", control_cmd("tsumgi-control"),
+           users=["tsumgi-control"], needle="legacy/shared", paths=sentinel_paths)
 
     clear(negativeFixtures)
     negativeFixtures.succeed(
-        f"{mkdir} -p /etc/astrumweaver /etc/systemd/system; "
-        f"printf '[Service]\\nUser=astrumweaver-control\\nGroup=astrumweaver-control\\n' > {control_unit}"
+        f"{mkdir} -p /etc/tsumgi /etc/systemd/system; "
+        f"printf '[Service]\\nUser=tsumgi-control\\nGroup=tsumgi-control\\n' > {control_unit}"
     )
-    reject(negativeFixtures, "malformed-unit", control_cmd("astrumweaver-control"),
-           users=["astrumweaver-control"])
+    reject(negativeFixtures, "malformed-unit", control_cmd("tsumgi-control"),
+           users=["tsumgi-control"])
 
     clear(negativeFixtures)
     negativeFixtures.succeed(
-        f"{mkdir} -p /etc/astrumweaver /etc/systemd/system; "
-        f"printf '[Service]\\nUser=astrumweaver-control\\nGroup=other-service\\nStateDirectory=astrumweaver-control\\n' > {control_unit}"
+        f"{mkdir} -p /etc/tsumgi /etc/systemd/system; "
+        f"printf '[Service]\\nUser=tsumgi-control\\nGroup=other-service\\nStateDirectory=tsumgi-control\\n' > {control_unit}"
     )
-    reject(negativeFixtures, "group-mismatch", control_cmd("astrumweaver-control"),
-           users=["astrumweaver-control"])
+    reject(negativeFixtures, "group-mismatch", control_cmd("tsumgi-control"),
+           users=["tsumgi-control"])
 
     clear(negativeFixtures)
     negativeFixtures.succeed(
-        f"{mkdir} -p /etc/astrumweaver /etc/systemd/system/astrumweaver-worker.service.d; "
+        f"{mkdir} -p /etc/tsumgi /etc/systemd/system/tsumgi-worker.service.d; "
         f"printf '[Service]\\nSupplementaryGroups=other-service\\n' > {dropin_override}"
     )
-    reject(negativeFixtures, "dropin-override", control_cmd("astrumweaver-control"),
-           users=["astrumweaver-control"])
+    reject(negativeFixtures, "dropin-override", control_cmd("tsumgi-control"),
+           users=["tsumgi-control"])
 
     for index, role in enumerate(["control", "worker"], 1):
         clear(negativeFixtures)
@@ -527,7 +527,7 @@ pkgs.testers.runNixOSTest {
                                  f"useradd --uid {41100 + index} --gid {user} --no-create-home --home-dir /var/empty {user}; "
                                  f"useradd --non-unique --uid {41100 + index} --gid nogroup --no-create-home --home-dir /var/empty {alias}")
         reject_numeric(negativeFixtures, f"own-{role}-uid-alias", role, user, "UID",
-                       users=[user, alias], groups=[user, "astrumweaver-config"])
+                       users=[user, alias], groups=[user, "tsumgi-config"])
         remove_fixture_alias(negativeFixtures, user=alias)
 
     for index, role in enumerate(["control", "worker"], 1):
@@ -539,7 +539,7 @@ pkgs.testers.runNixOSTest {
                                  f"useradd --uid {42100 + index} --gid {user} --no-create-home --home-dir /var/empty {user}; "
                                  f"gpasswd --add nobody {alias}; test -z \"$(getent group {user} | {cut} -d: -f4)\"")
         reject_numeric(negativeFixtures, f"own-{role}-gid-alias", role, user, "GID",
-                       users=[user], groups=[user, alias, "astrumweaver-config"])
+                       users=[user], groups=[user, alias, "tsumgi-config"])
         remove_fixture_alias(negativeFixtures, group=alias)
 
     for index, role in enumerate(["control", "worker"], 1):
@@ -551,12 +551,12 @@ pkgs.testers.runNixOSTest {
                                  f"gpasswd --add nobody {alias}; test -z \"$(getent group {user} | {cut} -d: -f4)\"; "
                                  f"! getent passwd {user}")
         reject_numeric(negativeFixtures, f"absent-{role}-gid-alias", role, user, "GID",
-                       users=[user], groups=[user, alias, "astrumweaver-config"])
+                       users=[user], groups=[user, alias, "tsumgi-config"])
         remove_fixture_alias(negativeFixtures, group=alias)
 
     clear(negativeFixtures)
     config_gid = negativeFixtures.succeed(
-        f"getent group astrumweaver-config | {cut} -d: -f3"
+        f"getent group tsumgi-config | {cut} -d: -f3"
     ).strip()
     config_alias = "numeric-config-gid-alias"
     negativeFixtures.succeed(f"groupadd --non-unique --gid {config_gid} {config_alias}; "
@@ -565,7 +565,7 @@ pkgs.testers.runNixOSTest {
         clear(negativeFixtures)
         user = f"numeric-config-{role}"
         reject_numeric(negativeFixtures, f"shared-config-{role}-gid-alias", role, user, "GID",
-                       users=[user], groups=["astrumweaver-config", config_alias])
+                       users=[user], groups=["tsumgi-config", config_alias])
     remove_fixture_alias(negativeFixtures, group=config_alias)
 
     # Exercise the installed peer path as well as the requested role path.
@@ -588,7 +588,7 @@ pkgs.testers.runNixOSTest {
             alias_users = [peer, user]
         reject_numeric(negativeFixtures, f"peer-{kind.lower()}-alias", "control", user, kind,
                        users=alias_users,
-                       groups=["astrumweaver-config", peer, alias_group])
+                       groups=["tsumgi-config", peer, alias_group])
         if kind == "UID":
             remove_fixture_alias(negativeFixtures, user=alias, group=alias_group)
         else:

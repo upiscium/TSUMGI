@@ -12,7 +12,7 @@ RUNTIME_MANIFEST_SOURCE=''
 EXECUTABLE=''
 ROOT='/'
 START=0
-SERVICE_USER='astrumweaver'
+SERVICE_USER='tsumgi'
 GPU_ISOLATION='auto'
 GPU_UUIDS=()
 GPU_DEVICE_ENTRIES=()
@@ -24,18 +24,18 @@ Usage: setup-gpu-worker.sh --config FILE --executable ABSOLUTE_PATH [options]
 Options:
   --environment-file FILE   Optional systemd EnvironmentFile source.
   --runtime-manifest FILE    Reviewed RuntimeProvider deployment manifest.
-  --executable PATH         Optional absolute daemon override; defaults to astrumweaver-worker on PATH.
+  --executable PATH         Optional absolute daemon override; defaults to tsumgi-worker on PATH.
   GPU ownership is read only from worker.gpu_uuids in --config.
   --gpu-isolation MODE      GPU device-cgroup policy: auto|on|off (default: auto).
   --gpu-device UUID=PATH    Reviewed UUID to /dev/nvidiaN mapping; may be repeated.
   --root DIR                Stage files below DIR instead of live /.
-  --user NAME               Worker service account and group (default: astrumweaver).
+  --user NAME               Worker service account and group (default: tsumgi).
   --start                   Enable and start the service after installation.
   -h, --help                Show this help.
 
-Control and Worker share the traverse-only /etc/astrumweaver directory, but use
-separate role accounts and state directories. Worker remains astrumweaver with
-/var/lib/astrumweaver for SystemdSetupDriver compatibility; when both roles are
+Control and Worker share the traverse-only /etc/tsumgi directory, but use
+separate role accounts and state directories. Worker remains tsumgi with
+/var/lib/tsumgi for SystemdSetupDriver compatibility; when both roles are
 installed, their --user values must differ. Existing role identity/state
 changes are rejected pending an explicit migration review.
 
@@ -96,11 +96,11 @@ fi
 validate_role_user_name "$SERVICE_USER"
 
 ROOT="$(normalize_root "$ROOT")"
-ETC_DIR="$(root_path "$ROOT" /etc/astrumweaver)"
-STATE_DIR="$(root_path "$ROOT" /var/lib/astrumweaver)"
+ETC_DIR="$(root_path "$ROOT" /etc/tsumgi)"
+STATE_DIR="$(root_path "$ROOT" /var/lib/tsumgi)"
 UNIT_DIR="$(root_path "$ROOT" /etc/systemd/system)"
-DROPIN_DIR="$UNIT_DIR/astrumweaver-worker.service.d"
-LIBEXEC_DIR="$(root_path "$ROOT" /usr/local/libexec/astrumweaver)"
+DROPIN_DIR="$UNIT_DIR/tsumgi-worker.service.d"
+LIBEXEC_DIR="$(root_path "$ROOT" /usr/local/libexec/tsumgi)"
 CONFIG_DEST="$ETC_DIR/worker.toml"
 ENV_DEST="$ETC_DIR/worker.env"
 RUNTIME_MANIFEST_DEST="$ETC_DIR/runtime-deployment.json"
@@ -110,8 +110,8 @@ PREFLIGHT_DEST="$LIBEXEC_DIR/gpu-preflight"
 DEVICE_MAP_HELPER_DEST="$LIBEXEC_DIR/gpu-device-map"
 GPU_ISOLATION_PROBE_DEST="$LIBEXEC_DIR/gpu-isolation-probe"
 GPU_MAPPING_PYTHON_DEST="$LIBEXEC_DIR/gpu_mapping.py"
-UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
-ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
+UNIT_DEST="$UNIT_DIR/tsumgi-worker.service"
+ISOLATION_UNIT_DEST="$UNIT_DIR/tsumgi-worker-gpu-isolation-preflight.service"
 ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
 LEGACY_GPU_DEVICE_MAP_SHA256='faa3836dbf190616d0c4ad32deaad1d3dda66ff1d903468095ab33edc6ea735a'
 LEGACY_GPU_PREFLIGHT_SHA256='6a807fa50fc944193f98a32778ef37df98db8e6744546c99a2694bc492bfc236'
@@ -119,25 +119,25 @@ LEGACY_GPU_MAPPING_PYTHON_SHA256_V54='41d4e6d29650a5da43b1441fb8c8c711e717fca956
 LEGACY_GPU_MAPPING_PYTHON_SHA256_V59='d7e872214c0768311508b6b4d081ba498e3fd377ea32a10f59b9926e79887485'
 runtime_arg=''
 if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
-  runtime_arg=' --runtime-manifest /etc/astrumweaver/runtime-deployment.json'
+  runtime_arg=' --runtime-manifest /etc/tsumgi/runtime-deployment.json'
 fi
 
-validate_role_unit_pair "$ROOT" worker "$SERVICE_USER" astrumweaver
+validate_role_unit_pair "$ROOT" worker "$SERVICE_USER" tsumgi
 validate_legacy_shared_state_path "$ROOT" worker
-EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
+EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" tsumgi-worker)"
 reject_symlink_path \
   "$ETC_DIR" "$STATE_DIR" "$CONFIG_DEST" "$ENV_DEST" \
   "$RUNTIME_MANIFEST_DEST" "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST" \
   "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$GPU_ISOLATION_PROBE_DEST" "$GPU_MAPPING_PYTHON_DEST" "$UNIT_DEST" \
   "$ISOLATION_UNIT_DEST" "$ISOLATION_DROPIN_DEST"
 validate_unit_template \
-  "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \
+  "$REPO_ROOT/systemd/tsumgi-worker.service.in" \
   "$UNIT_DEST" \
   "$EXECUTABLE" \
   "$SERVICE_USER" \
   "$runtime_arg" \
   worker \
-  astrumweaver
+  tsumgi
 
 declared_tmp="$(mktemp)"
 expected_tmp="$(mktemp)"
@@ -160,7 +160,7 @@ GPU_ISOLATION_PROBE_SOURCE="$REPO_ROOT/libexec/gpu-isolation-probe"
 [[ -f "$GPU_ISOLATION_PROBE_SOURCE" ]] || die "GPU isolation capability probe is unavailable"
 GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/libexec/gpu_mapping.py"
 if [[ ! -f "$GPU_MAPPING_PYTHON_SOURCE" ]]; then
-  GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/src/astrumweaver/gpu_mapping.py"
+  GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/src/tsumgi/gpu_mapping.py"
 fi
 [[ -f "$GPU_MAPPING_PYTHON_SOURCE" ]] || die "canonical GPU mapper is unavailable"
 
@@ -191,21 +191,6 @@ normalize_reviewed_legacy_bash_script() {
   return 1
 }
 
-
-normalize_reviewed_gpu_mapper_v59() {
-  local source="$1" migrated="$2"
-  local old='../src/astrumweaver/validation/gpu_mapping.py'
-  local new='../src/astrumweaver/gpu_mapping.py'
-  local count
-
-  count="$(grep -oF -- "$old" "$source" | wc -l | tr -d ' ')"
-  [[ "$count" == 2 ]] || return 1
-  if grep -Fq -- "$new" "$source"; then
-    return 1
-  fi
-
-  sed "s#${old}#${new}#g" "$source" >"$migrated"
-}
 
 install_reviewed_file_upgrade() {
   local source="$1" destination="$2" mode="$3"
@@ -269,18 +254,6 @@ install_reviewed_script_upgrade() {
     log "upgrading reviewed Nix-patched helper: $destination"
     install -D -m "$mode" "$source" "$destination"
     return 0
-  fi
-
-  if [[ "$(basename "$destination")" == "gpu-device-map" ]]; then
-    migrated="$(mktemp)"
-    if normalize_reviewed_gpu_mapper_v59 "$normalized" "$migrated" \
-      && cmp -s "$source" "$migrated"; then
-      rm -f "$normalized" "$migrated"
-      log "upgrading reviewed v59 GPU mapper: $destination"
-      install -D -m "$mode" "$source" "$destination"
-      return 0
-    fi
-    rm -f "$migrated"
   fi
 
   if [[ -n "$legacy_sha256" ]]; then
@@ -365,7 +338,7 @@ if [[ "$ROOT" == "/" ]]; then
     fi
     "$device_map_exec_tmp" verify "$expected_tmp" "$device_map_tmp"
 
-    if systemctl is-active --quiet astrumweaver-worker.service; then
+    if systemctl is-active --quiet tsumgi-worker.service; then
       die "Worker service is active; stop it before applying GPU isolation"
     else
       service_status=$?
@@ -378,8 +351,8 @@ if [[ "$ROOT" == "/" ]]; then
     if [[ "$exact_set" == 0 ]]; then
       visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
       set +e
-      ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$device_map_exec_tmp" \
-      ASTRUMWEAVER_NVIDIA_SMI="$(command -v nvidia-smi)" \
+      TSUMGI_GPU_DEVICE_MAP_COMMAND="$device_map_exec_tmp" \
+      TSUMGI_NVIDIA_SMI="$(command -v nvidia-smi)" \
         bash "$GPU_ISOLATION_PROBE_SOURCE" \
         "$expected_tmp" \
         "$device_map_tmp" \
@@ -422,7 +395,7 @@ install_reviewed_file_upgrade \
   "$LEGACY_GPU_MAPPING_PYTHON_SHA256_V59"
 
 render_unit \
-  "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \
+  "$REPO_ROOT/systemd/tsumgi-worker.service.in" \
   "$UNIT_DEST" \
   "$EXECUTABLE" \
   "$SERVICE_USER" \
@@ -476,19 +449,19 @@ if [[ "$isolation_enabled" == 1 ]]; then
 
   cat >"$isolation_unit_tmp" <<'EOF'
 [Unit]
-Description=Verify AstrumWeaver Worker GPU UUID/device mapping
-Before=astrumweaver-worker.service
+Description=Verify TSUMGI Worker GPU UUID/device mapping
+Before=tsumgi-worker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/libexec/astrumweaver/gpu-device-map verify /etc/astrumweaver/gpu-uuids /etc/astrumweaver/gpu-device-map
+ExecStart=/usr/local/libexec/tsumgi/gpu-device-map verify /etc/tsumgi/gpu-uuids /etc/tsumgi/gpu-device-map
 EOF
   install_generated_same_or_fail "$isolation_unit_tmp" "$ISOLATION_UNIT_DEST" 0644
 
   {
     printf '[Unit]\n'
-    printf 'Requires=astrumweaver-worker-gpu-isolation-preflight.service\n'
-    printf 'After=astrumweaver-worker-gpu-isolation-preflight.service\n\n'
+    printf 'Requires=tsumgi-worker-gpu-isolation-preflight.service\n'
+    printf 'After=tsumgi-worker-gpu-isolation-preflight.service\n\n'
     printf '[Service]\n'
     printf 'DevicePolicy=closed\n'
     while IFS='=' read -r uuid path; do
@@ -509,12 +482,12 @@ EOF
     visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
     printf 'Environment=CUDA_VISIBLE_DEVICES=%s\n' "$visible"
     if [[ "$ROOT" != "/" || "$exact_set" == 0 ]]; then
-      printf 'Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access\n'
-      printf 'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map\n'
-      printf 'Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml\n'
-      printf 'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map\n'
+      printf 'Environment=TSUMGI_GPU_PREFLIGHT_MODE=isolated-access\n'
+      printf 'Environment=TSUMGI_GPU_DEVICE_MAP=/etc/tsumgi/gpu-device-map\n'
+      printf 'Environment=TSUMGI_GPU_WORKER_CONFIG=/etc/tsumgi/worker.toml\n'
+      printf 'Environment=TSUMGI_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/tsumgi/gpu-device-map\n'
       if [[ "$ROOT" == "/" ]]; then
-        printf 'Environment=ASTRUMWEAVER_NVIDIA_SMI=%s\n' "$(command -v nvidia-smi)"
+        printf 'Environment=TSUMGI_NVIDIA_SMI=%s\n' "$(command -v nvidia-smi)"
       fi
     fi
   } >"$isolation_dropin_tmp"
@@ -528,6 +501,6 @@ reconcile_service_file "$ROOT" "$SERVICE_USER" "$GPU_UUID_DEST"
 reconcile_service_file "$ROOT" "$SERVICE_USER" "$GPU_DEVICE_MAP_DEST"
 
 if [[ "$ROOT" == "/" ]]; then
-  systemd_reload_and_maybe_start astrumweaver-worker.service "$START"
+  systemd_reload_and_maybe_start tsumgi-worker.service "$START"
 fi
 log "GPU worker host integration complete"

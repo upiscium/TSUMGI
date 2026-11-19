@@ -41,13 +41,13 @@ The maintained [release decision matrix](release-readiness.md) has two options:
 | Embedding | Opt-in pinned, immutable embedding-space semantics; no arbitrary space substitution. |
 | System-One / Decision | Experimental **OBSERVED_ONLY**, uncalibrated, recommendation-only, no autonomous binding/authority escalation. |
 | Native composite dual models (#122) | Source implementation integrated to main via #128; native CUDA co-residency and managed Worker smoke were tested in isolated environments. **Site activation belongs to #124**, not a code-merge side effect. |
-| Branding (#120) | **TSUMGI** repository/product branding; `astrumweaver` Python, Nix, CLI, systemd, environment and data paths remain backward-compatible runtime identifiers. Phase B rename is a separately gated project, **not a prerequisite** to publishing the current runtime. |
+| Branding (#120) | **TSUMGI** repository/product branding; `tsumgi` Python, Nix, CLI, systemd, environment and data paths remain backward-compatible runtime identifiers. Phase B rename is a separately gated project, **not a prerequisite** to publishing the current runtime. |
 
 [#80](https://github.com/upiscium/TSUMGI/issues/80) was **administratively** closed by explicit owner decision. Its earlier documentation-only Real Smoke rerun **did not record an end-to-end technical PASS**. Preserve this as an evidence limitation; do not fabricate a technical observation or silently reinstate an already-waived administrative closure condition. A fresh installed-candidate/specific-site smoke may still be required under the accepted #79/#124 release scope.
 
 ## Current deployment inventory: read-only, not site acceptance
 
-The 2026-10-14 **read-only** inspection of **three authorized GPU Worker LXCs** found three active `astrumweaver-worker.service` units under a role-local `astrumweaver` systemd UID; each had root-owned role-config files with observed restrictive access bits, and **one** had an active native llama.cpp process. No local Control service was found on those three Worker nodes. No site-wide Control, database, ingress, backup or complete GPU-host topology was inferred.
+The 2026-10-14 **read-only** inspection of **three authorized GPU Worker LXCs** found three active `tsumgi-worker.service` units under a role-local `tsumgi` systemd UID; each had root-owned role-config files with observed restrictive access bits, and **one** had an active native llama.cpp process. No local Control service was found on those three Worker nodes. No site-wide Control, database, ingress, backup or complete GPU-host topology was inferred.
 
 This inventory confirms there are **already running services that must not be overwritten casually**. It **does not** show their binaries are the new `main` SHA, that credentials are isolated from all same-UID processes, or that each selected GPU is physically inaccessible to unrelated host workloads. It is not a tested production backup, live rollback, successful #124 GO, new hardware replay or certification of inactive/offline nodes. Hostnames, endpoints, device identifiers, secret values and model paths are intentionally omitted from this document.
 

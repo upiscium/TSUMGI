@@ -8,8 +8,8 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.control import (
     ConflictError,
     EventBufferFull,
     JobSubmission,
@@ -17,8 +17,8 @@ from astrumweaver.control import (
     WorkerRegistration,
     utc_now,
 )
-from astrumweaver.control.migrate import apply_migrations
-from astrumweaver.serving import (
+from tsumgi.control.migrate import apply_migrations
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     RuntimeInstance,
@@ -29,10 +29,10 @@ from astrumweaver.serving import (
 )
 
 
-DATABASE_URL = os.environ.get("ASTRUMWEAVER_TEST_DATABASE_URL")
+DATABASE_URL = os.environ.get("TSUMGI_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(
     not DATABASE_URL,
-    reason="ASTRUMWEAVER_TEST_DATABASE_URL is not configured",
+    reason="TSUMGI_TEST_DATABASE_URL is not configured",
 )
 EPOCH = "12345678-1234-4234-9234-123456789abc"
 

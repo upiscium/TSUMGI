@@ -1,0 +1,29 @@
+[Unit]
+Description=TSUMGI Control Plane
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+SupplementaryGroups=tsumgi-config
+EnvironmentFile=-/etc/tsumgi/control.env
+ExecStart=@EXECUTABLE@ --config /etc/tsumgi/control.toml
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=tsumgi-control
+RuntimeDirectoryMode=0750
+StateDirectory=tsumgi-control
+StateDirectoryMode=0750
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -13,7 +13,7 @@ A normal text-generating LLM that can be prompted to classify is **not** a
 supported decision deployment. Worker startup and health fail closed unless the
 loaded model advertises native decision output.
 
-The public AstrumWeaver surface is namespaced rather than presented as an
+The public TSUMGI surface is namespaced rather than presented as an
 OpenAI API:
 
 ```text
@@ -49,7 +49,7 @@ checks with the active llama.cpp tokenizer before calling the decision endpoint.
 
 Client choice order is part of the request contract.
 
-The provider request does not reuse caller IDs as map keys. AstrumWeaver maps
+The provider request does not reuse caller IDs as map keys. TSUMGI maps
 the ordered choices to deterministic positional provider keys:
 
 ```text
@@ -88,7 +88,7 @@ The scores are **conditional on the supplied choice set**. They are not
 unconditional event probabilities and are not comparable across arbitrary
 choice sets without a separate validation contract.
 
-AstrumWeaver validates that the provider returns exactly the expected positional
+TSUMGI validates that the provider returns exactly the expected positional
 keys, finite scores in `[0, 1]`, a normalized sum, a maximal selected choice,
 and zero generated output tokens. Invalid provider output fails the Job rather
 than being repaired or silently renormalized.
@@ -185,7 +185,7 @@ The response never interprets a score as permission or task correctness.
 
 ## Shadow acceptance
 
-The packaged `astrumweaver-decision-shadow-accept` runner consumes a private
+The packaged `tsumgi-decision-shadow-accept` runner consumes a private
 labelled fixture. Fixture state/question/choice text and case IDs are not
 published.
 

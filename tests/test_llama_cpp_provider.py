@@ -8,9 +8,9 @@ from collections.abc import Mapping
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.execution import JobExecutionError, JobRequest
-from astrumweaver.runtime import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.execution import JobExecutionError, JobRequest
+from tsumgi.runtime import (
     ExecutionDemand,
     GPUTopology,
     ModelDemand,
@@ -25,7 +25,7 @@ from astrumweaver.runtime import (
     RuntimeSelectionMode,
     resolve_runtime,
 )
-from astrumweaver.runtime.providers.llama_cpp import (
+from tsumgi.runtime.providers.llama_cpp import (
     HttpLlamaCppApi,
     LlamaCppExecutor,
     LlamaCppLaunchPolicy,
@@ -35,7 +35,7 @@ from astrumweaver.runtime.providers.llama_cpp import (
     LlamaCppSplitMode,
     LlamaCppSubprocessController,
 )
-from astrumweaver.setup import (
+from tsumgi.setup import (
     DeploymentPath,
     PrivilegeMode,
     SetupActionKind,
@@ -516,7 +516,7 @@ def test_single_gpu_command_pins_uuid_and_uses_no_split() -> None:
         executable="llama-server",
         base_url="http://127.0.0.1:8080",
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         gpu_uuids=("GPU-one",),
         context_size=4096,
         launch_policy=policy,
@@ -553,7 +553,7 @@ def test_multi_gpu_command_uses_visible_devices_and_tensor_split() -> None:
         executable="llama-server",
         base_url="http://127.0.0.1:8080",
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         gpu_uuids=("GPU-large", "GPU-small"),
         context_size=8192,
         launch_policy=policy,
@@ -602,7 +602,7 @@ async def test_subprocess_environment_pins_gpu_uuid_set(monkeypatch) -> None:
         executable="llama-server",
         base_url="http://127.0.0.1:8080",
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         gpu_uuids=("GPU-large", "GPU-small"),
         context_size=4096,
         launch_policy=LlamaCppLaunchPolicy(
@@ -648,7 +648,7 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
                 200,
                 json={
                     "object": "list",
-                    "data": [{"id": "astrumweaver", "object": "model"}],
+                    "data": [{"id": "tsumgi", "object": "model"}],
                 },
             )
         if request.url.path == "/v1/chat/completions/input_tokens":
@@ -691,10 +691,10 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
     )
     try:
         assert await api.health()
-        assert await api.models() == ("astrumweaver",)
+        assert await api.models() == ("tsumgi",)
         chat = await api.chat(
             {
-                "model": "astrumweaver",
+                "model": "tsumgi",
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": False,
             }
@@ -702,14 +702,14 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
         assert chat["choices"][0]["message"]["content"] == "hello"
         assert await api.chat_input_tokens(
             {
-                "model": "astrumweaver",
+                "model": "tsumgi",
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": False,
             }
         ) == 3
         completion = await api.completion(
             {
-                "model": "astrumweaver",
+                "model": "tsumgi",
                 "prompt": "hi",
                 "stream": False,
             }
@@ -756,7 +756,7 @@ async def test_http_api_parses_openai_sse_until_done() -> None:
             chunk
             async for chunk in api.chat_stream(
                 {
-                    "model": "astrumweaver",
+                    "model": "tsumgi",
                     "messages": [{"role": "user", "content": "hi"}],
                     "stream": True,
                 }
@@ -792,7 +792,7 @@ async def test_http_api_rejects_non_data_sse_frame() -> None:
                 chunk
                 async for chunk in api.chat_stream(
                     {
-                        "model": "astrumweaver",
+                        "model": "tsumgi",
                         "messages": [],
                         "stream": True,
                     }
@@ -807,7 +807,7 @@ class FakeApi:
         self,
         *,
         reachable: bool = True,
-        models: tuple[str, ...] = ("astrumweaver",),
+        models: tuple[str, ...] = ("tsumgi",),
         decision_capable: bool = False,
     ) -> None:
         self.reachable = reachable
@@ -898,7 +898,7 @@ class FakeApi:
     async def system_one(self, payload: Mapping[str, object]):
         self.decision_payloads.append(dict(payload))
         return {
-            "model": "astrumweaver",
+            "model": "tsumgi",
             "answers": {
                 "decision": {
                     "type": "choice",
@@ -946,7 +946,7 @@ async def test_gateway_chat_stream_emits_text_tool_and_usage_chunks():
             "id": "chat-provider",
             "object": "chat.completion.chunk",
             "created": 1,
-            "model": "astrumweaver",
+            "model": "tsumgi",
             "choices": [
                 {
                     "index": 0,
@@ -1007,7 +1007,7 @@ async def test_gateway_chat_stream_emits_text_tool_and_usage_chunks():
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
         tools_enabled=True,
     )
@@ -1086,7 +1086,7 @@ async def test_gateway_chat_stream_rejects_malformed_tool_argument_fragment():
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
         tools_enabled=True,
     )
@@ -1123,7 +1123,7 @@ async def test_gateway_chat_stream_context_overflow_precedes_provider_stream():
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
     )
     with pytest.raises(JobExecutionError) as error:
@@ -1191,7 +1191,7 @@ async def test_executor_chat_completion_metrics_and_model_binding() -> None:
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={"split_mode": "none"},
     )
 
@@ -1206,7 +1206,7 @@ async def test_executor_chat_completion_metrics_and_model_binding() -> None:
     )
     assert chat.text == "hello"
     assert chat.metrics["total_tokens"] == 5
-    assert api.chat_payloads[0]["model"] == "astrumweaver"
+    assert api.chat_payloads[0]["model"] == "tsumgi"
     assert api.chat_payloads[0]["stream"] is False
 
     completion = await executor.execute(
@@ -1235,7 +1235,7 @@ async def test_executor_cancellation_aborts_inflight_request() -> None:
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
     )
 
@@ -1261,7 +1261,7 @@ async def test_residency_reports_policy_without_inventing_memory_bytes() -> None
     executor = LlamaCppExecutor(
         api=FakeApi(),
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={
             "residency_policy": "cpu_gpu_hybrid",
             "split_mode": "layer",
@@ -1286,7 +1286,7 @@ async def test_managed_runtime_starts_checks_alias_and_stops() -> None:
         process=process,
         context=context(),
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=LlamaCppLaunchPolicy(
             gpu_layers="auto",
@@ -1318,7 +1318,7 @@ async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readin
         process=process,
         context=context(),
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         startup_timeout_seconds=60.0,
         launch_policy=LlamaCppLaunchPolicy(
             gpu_layers="auto",
@@ -1349,7 +1349,7 @@ async def test_managed_runtime_rejects_external_server() -> None:
         process=process,
         context=context(),
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=LlamaCppLaunchPolicy(
             gpu_layers="auto",
@@ -1380,7 +1380,7 @@ async def test_managed_runtime_cleans_up_failed_start() -> None:
         process=process,
         context=context(),
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=LlamaCppLaunchPolicy(
             gpu_layers="all",
@@ -1411,7 +1411,7 @@ async def test_managed_runtime_release_closes_api_once() -> None:
         process=process,
         context=context(),
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=LlamaCppLaunchPolicy(
             gpu_layers="auto",
@@ -1466,7 +1466,7 @@ async def test_stage_a_gateway_chat_counts_actual_template_before_inference() ->
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
         tools_enabled=True,
     )
@@ -1507,7 +1507,7 @@ async def test_stage_a_gateway_chat_counts_actual_template_before_inference() ->
     assert result.text == "hello"
     assert len(api.chat_token_payloads) == 1
     counted = api.chat_token_payloads[0]
-    assert counted["model"] == "astrumweaver"
+    assert counted["model"] == "tsumgi"
     assert counted["tools"][0]["function"]["name"] == "read_file"
     assert counted["stream"] is False
     assert api.chat_payloads == [counted]
@@ -1520,7 +1520,7 @@ async def test_stage_a_gateway_chat_context_overflow_is_non_retryable() -> None:
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
     )
 
@@ -1558,7 +1558,7 @@ async def test_stage_a_gateway_chat_total_context_reserves_output_tokens() -> No
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
     )
 
@@ -1595,7 +1595,7 @@ async def test_stage_a_gateway_chat_rejects_wrong_adapter_before_provider_call()
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
     )
 
@@ -1646,7 +1646,7 @@ def test_llama_cpp_jinja_tool_mode_threads_into_setup_and_command() -> None:
         executable="llama-server",
         base_url="http://127.0.0.1:8080",
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         gpu_uuids=("GPU-one",),
         context_size=4096,
         launch_policy=LlamaCppLaunchPolicy(
@@ -1686,7 +1686,7 @@ async def test_stage_a_tool_request_requires_jinja_runtime_evidence() -> None:
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
         tools_enabled=False,
     )
@@ -1734,14 +1734,14 @@ def test_llama_cpp_executor_advertises_tools_only_with_jinja() -> None:
     plain = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
         tools_enabled=False,
     )
     tools = LlamaCppExecutor(
         api=api,
         model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
         tools_enabled=True,
     )
@@ -1779,7 +1779,7 @@ def test_llama_cpp_embedding_process_uses_dedicated_mode_and_pooling() -> None:
         executable="llama-server",
         base_url="http://127.0.0.1:8080",
         model_ref="/models/embed.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         gpu_uuids=(),
         context_size=4096,
         launch_policy=LlamaCppLaunchPolicy(
@@ -1810,7 +1810,7 @@ async def test_embedding_executor_rechecks_space_limits_and_vectors() -> None:
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/embed.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
         embeddings=True,
         pooling="last",
@@ -1850,7 +1850,7 @@ async def test_embedding_executor_rechecks_space_limits_and_vectors() -> None:
         {
             "input": ["alpha beta", "gamma"],
             "encoding_format": "float",
-            "model": "astrumweaver",
+            "model": "tsumgi",
         }
     ]
     assert [item["index"] for item in result.outputs["data"]] == [0, 1]
@@ -1866,7 +1866,7 @@ async def test_embedding_executor_fails_closed_on_space_or_token_mismatch() -> N
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/embed.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
         embeddings=True,
         pooling="last",
@@ -1921,7 +1921,7 @@ def test_generation_executor_does_not_advertise_embedding_capability() -> None:
     executor = LlamaCppExecutor(
         api=FakeApi(),
         model_ref="/models/chat.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
     )
     assert executor.capabilities == frozenset({"llm.chat", "text.generate"})
@@ -1967,7 +1967,7 @@ async def test_http_llama_cpp_system_one_and_native_decision_probe() -> None:
                 json={
                     "data": [
                         {
-                            "id": "astrumweaver",
+                            "id": "tsumgi",
                             "architecture": {
                                 "input_modalities": ["text"],
                                 "output_modalities": ["decisions"],
@@ -1980,7 +1980,7 @@ async def test_http_llama_cpp_system_one_and_native_decision_probe() -> None:
             return httpx.Response(
                 200,
                 json={
-                    "model": "astrumweaver",
+                    "model": "tsumgi",
                     "answers": {
                         "decision": {
                             "type": "choice",
@@ -2017,7 +2017,7 @@ async def test_http_llama_cpp_system_one_and_native_decision_probe() -> None:
         },
     }
     try:
-        assert await api.decision_capable("astrumweaver") is True
+        assert await api.decision_capable("tsumgi") is True
         assert await api.decision_capable("other") is False
         response = await api.system_one(payload)
     finally:
@@ -2033,7 +2033,7 @@ async def test_decision_executor_rechecks_semantics_limits_and_provider_scores()
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/openjev.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
         decision=True,
     )
@@ -2109,7 +2109,7 @@ async def test_decision_executor_fails_closed_before_provider_call() -> None:
     executor = LlamaCppExecutor(
         api=api,
         model_ref="/models/openjev.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         residency_metadata={},
         decision=True,
     )
@@ -2187,7 +2187,7 @@ async def test_managed_decision_runtime_requires_native_decision_model() -> None
         process=incapable_process,
         context=context(),
         model_ref="/models/plain.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=LlamaCppLaunchPolicy(
             gpu_layers=0,
@@ -2217,7 +2217,7 @@ async def test_managed_decision_runtime_requires_native_decision_model() -> None
         process=process,
         context=context(),
         model_ref="/models/openjev.gguf",
-        model_alias="astrumweaver",
+        model_alias="tsumgi",
         startup_timeout_seconds=1.0,
         launch_policy=LlamaCppLaunchPolicy(
             gpu_layers=0,
@@ -2250,7 +2250,7 @@ def _kv_policy() -> LlamaCppLaunchPolicy:
 def test_kv_cache_types_are_passed_only_when_set() -> None:
     base = dict(
         executable="llama-server", base_url="http://127.0.0.1:8080", model_ref="/models/qwen.gguf",
-        model_alias="astrumweaver", gpu_uuids=("GPU-one",), context_size=196608,
+        model_alias="tsumgi", gpu_uuids=("GPU-one",), context_size=196608,
         launch_policy=_kv_policy(), offline=True, no_webui=True,
     )
     plain = LlamaCppSubprocessController(**base).command()
@@ -2311,7 +2311,7 @@ def test_default_setup_intent_has_no_kv_cache_keys() -> None:
 
 
 def chat_contract(total_tokens: int, capability: str = "llm.chat"):
-    from astrumweaver.serving import ServingContract
+    from tsumgi.serving import ServingContract
 
     return ServingContract(
         deployment_revision="sha256:" + "0" * 64,
@@ -2325,7 +2325,7 @@ def chat_contract(total_tokens: int, capability: str = "llm.chat"):
 def test_chat_contract_must_fit_the_server_context() -> None:
     def make(context_size):
         return LlamaCppExecutor(
-            api=FakeApi(), model_ref="/models/qwen.gguf", model_alias="astrumweaver",
+            api=FakeApi(), model_ref="/models/qwen.gguf", model_alias="tsumgi",
             residency_metadata={}, tools_enabled=True, context_size=context_size,
         )
 

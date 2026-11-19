@@ -4,8 +4,8 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.runtime import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.runtime import (
     CompatibilityReason,
     ExecutionDemand,
     GPUTopology,

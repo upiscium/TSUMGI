@@ -1,4 +1,4 @@
-"""Guard the TSUMGI project name without silently renaming runtime interfaces."""
+"""Guard the TSUMGI names across the docs, package metadata and Nix interface."""
 
 from pathlib import Path
 
@@ -14,10 +14,10 @@ def test_readme_and_docs_use_tsumgi_brand() -> None:
     assert "TSUMGI（紡ぎ）" in naming
 
 
-def test_legacy_interfaces_remain_declared() -> None:
+def test_runtime_interfaces_use_the_tsumgi_names() -> None:
     project = (ROOT / "pyproject.toml").read_text()
     flake = (ROOT / "flake.nix").read_text()
-    assert 'name = "astrumweaver"' in project
-    assert 'astrumweaver-control = "astrumweaver.control.daemon:main"' in project
-    assert "services.astrumweaver.control" in flake
-    assert "services.astrumweaver.worker" in flake
+    assert 'name = "tsumgi"' in project
+    assert 'tsumgi-control = "tsumgi.control.daemon:main"' in project
+    assert "services.tsumgi.control" in flake
+    assert "services.tsumgi.worker" in flake

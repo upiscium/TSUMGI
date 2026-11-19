@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from astrumweaver.validation.runtime_deployment import (
+from tsumgi.validation.runtime_deployment import (
     RuntimeDeploymentAcceptanceError,
     RuntimeDeploymentAcceptanceRunner,
     SystemdRuntimeDeploymentHost,
@@ -21,12 +21,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 ISOLATED_ENV = (
     "CUDA_VISIBLE_DEVICES=GPU-selected "
-    "ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access "
-    "ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map "
-    "ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml "
-    "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="
-    "/usr/local/libexec/astrumweaver/gpu-device-map "
-    "ASTRUMWEAVER_NVIDIA_SMI=/usr/bin/nvidia-smi"
+    "TSUMGI_GPU_PREFLIGHT_MODE=isolated-access "
+    "TSUMGI_GPU_DEVICE_MAP=/etc/tsumgi/gpu-device-map "
+    "TSUMGI_GPU_WORKER_CONFIG=/etc/tsumgi/worker.toml "
+    "TSUMGI_GPU_DEVICE_MAP_COMMAND="
+    "/usr/local/libexec/tsumgi/gpu-device-map "
+    "TSUMGI_NVIDIA_SMI=/usr/bin/nvidia-smi"
 )
 
 
@@ -37,19 +37,19 @@ def test_acceptance_resolves_absolute_profile_sibling_without_ambient_path(
 ) -> None:
     profile_bin = tmp_path / "installer-profile" / "bin"
     profile_bin.mkdir(parents=True)
-    sibling = profile_bin / "astrumweaver-gpu-device-map"
+    sibling = profile_bin / "tsumgi-gpu-device-map"
     sibling.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     sibling.chmod(0o755)
 
     ambient = tmp_path / "ambient"
     ambient.mkdir()
-    ambient_mapper = ambient / "astrumweaver-gpu-device-map"
+    ambient_mapper = ambient / "tsumgi-gpu-device-map"
     ambient_mapper.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
     ambient_mapper.chmod(0o755)
     monkeypatch.setenv("PATH", str(ambient))
 
     resolved = resolve_packaged_gpu_device_map(
-        argv0=str(profile_bin / "astrumweaver-runtime-deployment-accept"),
+        argv0=str(profile_bin / "tsumgi-runtime-deployment-accept"),
         installed_path=tmp_path / "missing-installed-helper",
     )
 
@@ -59,18 +59,18 @@ def test_acceptance_resolves_absolute_profile_sibling_without_ambient_path(
 def test_acceptance_prefers_reviewed_installed_mapper_over_profile_sibling(
     tmp_path: Path,
 ) -> None:
-    installed = tmp_path / "usr/local/libexec/astrumweaver/gpu-device-map"
+    installed = tmp_path / "usr/local/libexec/tsumgi/gpu-device-map"
     installed.parent.mkdir(parents=True)
     installed.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     installed.chmod(0o755)
     profile_bin = tmp_path / "installer-profile" / "bin"
     profile_bin.mkdir(parents=True)
-    sibling = profile_bin / "astrumweaver-gpu-device-map"
+    sibling = profile_bin / "tsumgi-gpu-device-map"
     sibling.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     sibling.chmod(0o755)
 
     resolved = resolve_packaged_gpu_device_map(
-        argv0=str(profile_bin / "astrumweaver-runtime-deployment-accept"),
+        argv0=str(profile_bin / "tsumgi-runtime-deployment-accept"),
         installed_path=installed,
     )
 
@@ -82,12 +82,12 @@ def test_acceptance_resolves_isolation_probe_profile_sibling(
 ) -> None:
     profile_bin = tmp_path / "installer-profile" / "bin"
     profile_bin.mkdir(parents=True)
-    sibling = profile_bin / "astrumweaver-gpu-isolation-probe"
+    sibling = profile_bin / "tsumgi-gpu-isolation-probe"
     sibling.write_text("#!/usr/bin/env bash\nexit 3\n", encoding="utf-8")
     sibling.chmod(0o755)
 
     resolved = resolve_packaged_gpu_isolation_probe(
-        argv0=str(profile_bin / "astrumweaver-runtime-deployment-accept"),
+        argv0=str(profile_bin / "tsumgi-runtime-deployment-accept"),
         installed_path=tmp_path / "missing-installed-helper",
     )
 
@@ -106,10 +106,10 @@ def test_acceptance_rejects_bare_isolation_probe_override(
         match="gpu-isolation-probe must be an absolute executable path",
     ):
         SystemdRuntimeDeploymentHost(
-            service="astrumweaver-worker.service",
+            service="tsumgi-worker.service",
             worker_config=tmp_path / "worker.toml",
             gpu_device_map=str(mapper),
-            gpu_isolation_probe="astrumweaver-gpu-isolation-probe",
+            gpu_isolation_probe="tsumgi-gpu-isolation-probe",
         )
 
 
@@ -119,9 +119,9 @@ def test_acceptance_rejects_bare_mapper_override(tmp_path: Path) -> None:
         match="absolute executable path",
     ):
         SystemdRuntimeDeploymentHost(
-            service="astrumweaver-worker.service",
+            service="tsumgi-worker.service",
             worker_config=tmp_path / "worker.toml",
-            gpu_device_map="astrumweaver-gpu-device-map",
+            gpu_device_map="tsumgi-gpu-device-map",
         )
 
 
@@ -134,7 +134,7 @@ def test_acceptance_rejects_missing_or_non_executable_mapper(
         match="existing executable file",
     ):
         SystemdRuntimeDeploymentHost(
-            service="astrumweaver-worker.service",
+            service="tsumgi-worker.service",
             worker_config=tmp_path / "worker.toml",
             gpu_device_map=str(missing),
         )
@@ -146,7 +146,7 @@ def test_acceptance_rejects_missing_or_non_executable_mapper(
         match="existing executable file",
     ):
         SystemdRuntimeDeploymentHost(
-            service="astrumweaver-worker.service",
+            service="tsumgi-worker.service",
             worker_config=tmp_path / "worker.toml",
             gpu_device_map=str(non_executable),
         )
@@ -160,13 +160,13 @@ def test_systemctl_show_properties_parse_effective_values() -> None:
         "DeviceAllow=/dev/nvidiactl rw\n"
         "Environment=CUDA_VISIBLE_DEVICES=GPU-selected\n"
         "Environment=OTHER=value\n"
-        "EnvironmentFiles=/etc/astrumweaver/worker.env (ignore_errors=yes)\n"
+        "EnvironmentFiles=/etc/tsumgi/worker.env (ignore_errors=yes)\n"
         "UnsetEnvironment=\n"
-        "ExecStartPre={ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-        "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-        "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }\n"
-        "Requires=astrumweaver-worker-gpu-isolation-preflight.service\n"
-        "After=network-online.target astrumweaver-worker-gpu-isolation-preflight.service\n"
+        "ExecStartPre={ path=/usr/local/libexec/tsumgi/gpu-preflight ; "
+        "argv[]=/usr/local/libexec/tsumgi/gpu-preflight "
+        "/etc/tsumgi/gpu-uuids ; ignore_errors=no ; }\n"
+        "Requires=tsumgi-worker-gpu-isolation-preflight.service\n"
+        "After=network-online.target tsumgi-worker-gpu-isolation-preflight.service\n"
     )
 
     assert properties == {
@@ -174,18 +174,18 @@ def test_systemctl_show_properties_parse_effective_values() -> None:
         "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
         "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected OTHER=value",
         "EnvironmentFiles": (
-            "/etc/astrumweaver/worker.env (ignore_errors=yes)"
+            "/etc/tsumgi/worker.env (ignore_errors=yes)"
         ),
         "UnsetEnvironment": "",
         "ExecStartPre": (
-            "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-            "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-            "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }"
+            "{ path=/usr/local/libexec/tsumgi/gpu-preflight ; "
+            "argv[]=/usr/local/libexec/tsumgi/gpu-preflight "
+            "/etc/tsumgi/gpu-uuids ; ignore_errors=no ; }"
         ),
-        "Requires": "astrumweaver-worker-gpu-isolation-preflight.service",
+        "Requires": "tsumgi-worker-gpu-isolation-preflight.service",
         "After": (
             "network-online.target "
-            "astrumweaver-worker-gpu-isolation-preflight.service"
+            "tsumgi-worker-gpu-isolation-preflight.service"
         ),
     }
 
@@ -203,17 +203,17 @@ def test_systemd_host_reads_effective_properties_with_systemctl_show(
         "  'DeviceAllow=/dev/nvidia0 rw' \\\n"
         "  'DeviceAllow=/dev/nvidiactl rw' \\\n"
         "  'Environment=CUDA_VISIBLE_DEVICES=GPU-selected' \\\n"
-        "  'Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access' \\\n"
-        "  'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map' \\\n"
-        "  'Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml' \\\n"
-        "  'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map' \\\n"        "  'Environment=ASTRUMWEAVER_NVIDIA_SMI=/usr/bin/nvidia-smi' \\\n"
-        "  'EnvironmentFiles=/etc/astrumweaver/worker.env (ignore_errors=yes)' \\\n"
+        "  'Environment=TSUMGI_GPU_PREFLIGHT_MODE=isolated-access' \\\n"
+        "  'Environment=TSUMGI_GPU_DEVICE_MAP=/etc/tsumgi/gpu-device-map' \\\n"
+        "  'Environment=TSUMGI_GPU_WORKER_CONFIG=/etc/tsumgi/worker.toml' \\\n"
+        "  'Environment=TSUMGI_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/tsumgi/gpu-device-map' \\\n"        "  'Environment=TSUMGI_NVIDIA_SMI=/usr/bin/nvidia-smi' \\\n"
+        "  'EnvironmentFiles=/etc/tsumgi/worker.env (ignore_errors=yes)' \\\n"
         "  'UnsetEnvironment=' \\\n"
-        "  'ExecStartPre={ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-        "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-        "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }' \\\n"
-        "  'Requires=astrumweaver-worker-gpu-isolation-preflight.service' \\\n"
-        "  'After=network-online.target astrumweaver-worker-gpu-isolation-preflight.service'\n",
+        "  'ExecStartPre={ path=/usr/local/libexec/tsumgi/gpu-preflight ; "
+        "argv[]=/usr/local/libexec/tsumgi/gpu-preflight "
+        "/etc/tsumgi/gpu-uuids ; ignore_errors=no ; }' \\\n"
+        "  'Requires=tsumgi-worker-gpu-isolation-preflight.service' \\\n"
+        "  'After=network-online.target tsumgi-worker-gpu-isolation-preflight.service'\n",
         encoding="utf-8",
     )
     systemctl.chmod(0o755)
@@ -222,7 +222,7 @@ def test_systemd_host_reads_effective_properties_with_systemctl_show(
     mapper.chmod(0o755)
 
     host = SystemdRuntimeDeploymentHost(
-        service="astrumweaver-worker.service",
+        service="tsumgi-worker.service",
         worker_config=tmp_path / "worker.toml",
         systemctl=str(systemctl),
         gpu_device_map=str(mapper),
@@ -236,7 +236,7 @@ def test_systemd_host_reads_effective_properties_with_systemctl_show(
         "--no-pager",
         "--all",
         "--property=DevicePolicy,DeviceAllow,Environment,EnvironmentFiles,UnsetEnvironment,ExecStartPre,Requires,After",
-        "astrumweaver-worker.service",
+        "tsumgi-worker.service",
     ]
 
 
@@ -256,7 +256,7 @@ def test_systemd_host_decodes_known_service_activity_statuses(
     mapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     mapper.chmod(0o755)
     host = SystemdRuntimeDeploymentHost(
-        service="astrumweaver-worker.service",
+        service="tsumgi-worker.service",
         worker_config=tmp_path / "worker.toml",
         systemctl=str(systemctl),
         gpu_device_map=str(mapper),
@@ -275,7 +275,7 @@ def test_systemd_host_rejects_unknown_service_activity_status(
     mapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     mapper.chmod(0o755)
     host = SystemdRuntimeDeploymentHost(
-        service="astrumweaver-worker.service",
+        service="tsumgi-worker.service",
         worker_config=tmp_path / "worker.toml",
         systemctl=str(systemctl),
         gpu_device_map=str(mapper),
@@ -316,14 +316,14 @@ class FakeHost:
             "EnvironmentFiles": "",
             "UnsetEnvironment": "",
             "ExecStartPre": (
-                "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-                "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-                "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }"
+                "{ path=/usr/local/libexec/tsumgi/gpu-preflight ; "
+                "argv[]=/usr/local/libexec/tsumgi/gpu-preflight "
+                "/etc/tsumgi/gpu-uuids ; ignore_errors=no ; }"
             ),
-            "Requires": "astrumweaver-worker-gpu-isolation-preflight.service",
+            "Requires": "tsumgi-worker-gpu-isolation-preflight.service",
             "After": (
                 "network-online.target "
-                "astrumweaver-worker-gpu-isolation-preflight.service"
+                "tsumgi-worker-gpu-isolation-preflight.service"
             ),
         }
         self.active = initially_active
@@ -398,7 +398,7 @@ def test_systemd_host_classifies_isolation_probe_unavailable(
     probe.chmod(0o755)
 
     host = SystemdRuntimeDeploymentHost(
-        service="astrumweaver-worker.service",
+        service="tsumgi-worker.service",
         worker_config=worker_config,
         gpu_device_map=str(mapper),
         gpu_isolation_probe=str(probe),
@@ -419,7 +419,7 @@ def test_systemd_host_uses_canonical_gpu_device_mapper(tmp_path: Path) -> None:
     mapper.chmod(0o755)
 
     host = SystemdRuntimeDeploymentHost(
-        service="astrumweaver-worker.service",
+        service="tsumgi-worker.service",
         worker_config=tmp_path / "worker.toml",
         gpu_device_map=str(mapper),
     )
@@ -524,7 +524,7 @@ def test_runtime_deployment_acceptance_rejects_extra_physical_device_allow() -> 
             "Environment": ISOLATED_ENV,
             "EnvironmentFiles": "",
             "UnsetEnvironment": "",
-            "ExecStartPre": "/usr/local/libexec/astrumweaver/gpu-preflight x",
+            "ExecStartPre": "/usr/local/libexec/tsumgi/gpu-preflight x",
         }
     )
 
@@ -553,7 +553,7 @@ def test_runtime_deployment_rejects_broad_or_incomplete_device_grants(
             "DevicePolicy": "closed",
             "DeviceAllow": device_allow,
             "Environment": ISOLATED_ENV,
-            "ExecStartPre": "path=/usr/local/libexec/astrumweaver/gpu-preflight ;",
+            "ExecStartPre": "path=/usr/local/libexec/tsumgi/gpu-preflight ;",
         }
     )
 
@@ -570,7 +570,7 @@ def test_runtime_deployment_rejects_effective_policy_override() -> None:
             "DevicePolicy": "auto",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
             "Environment": ISOLATED_ENV,
-            "ExecStartPre": "/usr/local/libexec/astrumweaver/gpu-preflight x",
+            "ExecStartPre": "/usr/local/libexec/tsumgi/gpu-preflight x",
         }
     )
 
@@ -639,9 +639,9 @@ def test_runtime_deployment_accepts_reviewed_nixos_preflight_command() -> None:
     preflight = (
         "/nix/store/"
         + "a" * 32
-        + "-astrumweaver-gpu-preflight/bin/astrumweaver-gpu-preflight"
+        + "-tsumgi-gpu-preflight/bin/tsumgi-gpu-preflight"
     )
-    expected_uuids = "/nix/store/" + "b" * 32 + "-astrumweaver-gpu-uuids"
+    expected_uuids = "/nix/store/" + "b" * 32 + "-tsumgi-gpu-uuids"
     host = FakeHost(
         unit_properties={
             "DevicePolicy": "closed",
@@ -651,8 +651,8 @@ def test_runtime_deployment_accepts_reviewed_nixos_preflight_command() -> None:
                 f"{{ path={preflight} ; argv[]={preflight} {expected_uuids} ; "
                 "ignore_errors=no ; }"
             ),
-            "Requires": "astrumweaver-worker-gpu-isolation-preflight.service",
-            "After": "network-online.target astrumweaver-worker-gpu-isolation-preflight.service",
+            "Requires": "tsumgi-worker-gpu-isolation-preflight.service",
+            "After": "network-online.target tsumgi-worker-gpu-isolation-preflight.service",
         }
     )
 

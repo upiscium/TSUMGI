@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from astrumweaver import (
+from tsumgi import (
     AcceleratorDevice,
     JobRequirements,
     ResourceShape,
@@ -10,7 +10,7 @@ from astrumweaver import (
     match_worker,
     worker_matches,
 )
-from astrumweaver.control.serde import worker_spec_from_dict, worker_spec_to_dict
+from tsumgi.control.serde import worker_spec_from_dict, worker_spec_to_dict
 
 
 def multi_gpu_worker() -> WorkerSpec:

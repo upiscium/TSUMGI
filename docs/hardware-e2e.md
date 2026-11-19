@@ -63,7 +63,7 @@ max_single_gpu_vram_mb = 16384
 max_concurrency = 1
 
 [executor]
-factory = "astrumweaver.executors.structured_echo:create_executor"
+factory = "tsumgi.executors.structured_echo:create_executor"
 
 [executor.settings]
 ```
@@ -93,14 +93,14 @@ For the default `client_auth = "bearer"`, set the **Client**
 authority locally:
 
 ```sh
-export ASTRUMWEAVER_CLIENT_TOKEN='...'
+export TSUMGI_CLIENT_TOKEN='...'
 ```
 
 Then run:
 
 ```sh
-sudo --preserve-env=ASTRUMWEAVER_CLIENT_TOKEN \
-  astrumweaver-hardware-accept \
+sudo --preserve-env=TSUMGI_CLIENT_TOKEN \
+  tsumgi-hardware-accept \
   --control-url 'https://private-control.example' \
   --gpu-uuid 'GPU-private-uuid' \
   --revision '<public-git-commit-sha>' \
@@ -119,7 +119,7 @@ For generic non-NixOS systemd deployment:
 ```
 
 If Control explicitly uses `client_auth = "none"`, no Client token is needed.
-Do not export `ASTRUMWEAVER_CLIENT_TOKEN`; add:
+Do not export `TSUMGI_CLIENT_TOKEN`; add:
 
 ```text
 --client-auth none

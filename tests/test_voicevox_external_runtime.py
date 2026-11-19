@@ -7,19 +7,19 @@ import os
 
 import pytest
 
-from astrumweaver.execution import ResidencyReport
-from astrumweaver.runtime.contracts import (
+from tsumgi.execution import ResidencyReport
+from tsumgi.runtime.contracts import (
     ManagedRuntime,
     RuntimeHealthState,
 )
-from astrumweaver.runtime.providers.voicevox_discovery import (
+from tsumgi.runtime.providers.voicevox_discovery import (
     VoicevoxDiscoveryConfig,
     VoicevoxDiscoveryResult,
     VoicevoxDiscoveryStatus,
     VoicevoxObservedCatalog,
     VoicevoxObservedStyle,
 )
-from astrumweaver.runtime.providers.voicevox_external import (
+from tsumgi.runtime.providers.voicevox_external import (
     ExternalVoicevoxManagedRuntime,
     ExternalVoicevoxRuntimeError,
 )

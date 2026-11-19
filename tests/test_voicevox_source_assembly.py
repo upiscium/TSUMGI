@@ -15,33 +15,33 @@ from test_audio_provider_binding import values
 from test_voicevox_linux_process import setup as make_linux_process
 from test_voicevox_provider import FakeMedia, job
 
-from astrumweaver.contracts import ResourceShape, WorkerSpec
-from astrumweaver.gateway.audio import (
+from tsumgi.contracts import ResourceShape, WorkerSpec
+from tsumgi.gateway.audio import (
     AudioGatewayProfile,
     AudioProfileCatalog,
     VoiceAlias,
     audio_semantic_revision,
 )
-from astrumweaver.runtime.contracts import RuntimeHealthState, RuntimeHostFacts
-from astrumweaver.runtime.deployment import _PROVIDER_TYPES
-from astrumweaver.runtime.providers.voicevox_http import VoicevoxHttpConfig
-from astrumweaver.runtime.providers.voicevox_linux_process import (
+from tsumgi.runtime.contracts import RuntimeHealthState, RuntimeHostFacts
+from tsumgi.runtime.deployment import _PROVIDER_TYPES
+from tsumgi.runtime.providers.voicevox_http import VoicevoxHttpConfig
+from tsumgi.runtime.providers.voicevox_linux_process import (
     VoicevoxLinuxLaunchSpec,
 )
-from astrumweaver.runtime.providers.voicevox_managed import VoicevoxRuntimeFailure
-from astrumweaver.runtime.providers.voicevox_source_assembly import (
+from tsumgi.runtime.providers.voicevox_managed import VoicevoxRuntimeFailure
+from tsumgi.runtime.providers.voicevox_source_assembly import (
     VoicevoxSourceAssemblyError,
     VoicevoxSourceAssemblyIntent,
     VoicevoxSourceAssemblyReview,
     review_voicevox_source_assembly,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     LogicalServingProfile,
     ServingDeploymentDeclaration,
     resolve_profile,
 )
-from astrumweaver.setup import SetupPlan
-from astrumweaver.setup.contracts import DeploymentPath, SetupHostSnapshot
+from tsumgi.setup import SetupPlan
+from tsumgi.setup.contracts import DeploymentPath, SetupHostSnapshot
 
 
 def static_intent() -> VoicevoxSourceAssemblyIntent:

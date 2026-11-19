@@ -52,7 +52,7 @@ under. Leave it out to accept any `Host` header.
 Make a hash (at least 12 characters; the password itself is never stored):
 
 ```sh
-python -m astrumweaver.control.admin_auth
+python -m tsumgi.control.admin_auth
 ```
 
 Put the printed line in the Control config:
@@ -77,13 +77,13 @@ Instead of a hash, give Control a file to keep the credentials in:
 ```toml
 [admin_ui]
 enabled = true
-credentials_file = "/var/lib/astrumweaver-control/admin-credentials.json"
+credentials_file = "/var/lib/tsumgi-control/admin-credentials.json"
 trusted_proxies = ["10.12.1.1"]
 ```
 
 While the file does not exist, `/admin` shows only a setup page, and every other
 console path answers 403. Control writes a one-time setup code to its log
-(`journalctl -u astrumweaver-control`) and to `<file>.setup-code` (mode 0600).
+(`journalctl -u tsumgi-control`) and to `<file>.setup-code` (mode 0600).
 Open `/admin`, enter the code, a user name and a password (12 characters or more).
 The hash goes into the file (mode 0600), the code is deleted, and the normal
 login applies from then on. Wrong codes count against the same lockout as wrong

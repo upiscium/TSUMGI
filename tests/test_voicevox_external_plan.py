@@ -9,14 +9,14 @@ from dataclasses import replace
 
 import pytest
 
-from astrumweaver.gateway.audio import VoiceAlias
-from astrumweaver.runtime.providers.voicevox_discovery import (
+from tsumgi.gateway.audio import VoiceAlias
+from tsumgi.runtime.providers.voicevox_discovery import (
     VoicevoxDiscoveryConfig,
     VoicevoxDiscoveryResult,
     VoicevoxDiscoveryStatus,
     _catalog,
 )
-from astrumweaver.runtime.providers.voicevox_external_plan import (
+from tsumgi.runtime.providers.voicevox_external_plan import (
     ExternalVoicevoxPlanEvent,
     ExternalVoicevoxPlanningError,
     ExternalVoicevoxPlanState,
@@ -609,7 +609,7 @@ def test_reflectively_mutated_state_serialization_rejects_private_text():
 
 
 def test_transition_constructor_rejects_private_reason_and_requests():
-    from astrumweaver.runtime.providers.voicevox_external_plan import (
+    from tsumgi.runtime.providers.voicevox_external_plan import (
         ExternalVoicevoxPlanTransition,
     )
 
@@ -654,7 +654,7 @@ def test_reflective_retirement_state_mutation_rejected_by_public_property():
 
 
 def test_direct_transition_can_only_emit_fixed_valid_redacted_codes():
-    from astrumweaver.runtime.providers.voicevox_external_plan import (
+    from tsumgi.runtime.providers.voicevox_external_plan import (
         ExternalVoicevoxPlanTransition,
     )
 

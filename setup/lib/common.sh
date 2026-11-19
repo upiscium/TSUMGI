@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 027
 
-CONFIG_GROUP_NAME='astrumweaver-config'
+CONFIG_GROUP_NAME='tsumgi-config'
 CONFIG_GROUP_GID=''
 ROLE_PEER_USER=''
 ROLE_PEER_GROUP=''
@@ -11,8 +11,8 @@ ROLE_PEER_UNIT=''
 UNIT_USER=''
 UNIT_GROUP=''
 UNIT_STATE=''
-log() { printf '[astrumweaver-setup] %s\n' "$*" >&2; }
-die() { printf '[astrumweaver-setup] ERROR: %s\n' "$*" >&2; exit 1; }
+log() { printf '[tsumgi-setup] %s\n' "$*" >&2; }
+die() { printf '[tsumgi-setup] ERROR: %s\n' "$*" >&2; exit 1; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
 normalize_root() {
@@ -50,7 +50,7 @@ install_same_or_fail() {
 
 install_generated_same_or_fail() { install_same_or_fail "$1" "$2" "$3"; }
 legacy_service_migration() {
-  die "legacy/shared AstrumWeaver service state or identity detected in $1 ($2); stop both services and review migration guidance before rerunning setup"
+  die "legacy/shared TSUMGI service state or identity detected in $1 ($2); stop both services and review migration guidance before rerunning setup"
 }
 unit_values() {
   local key="$1" unit="$2"
@@ -116,8 +116,8 @@ validate_role_unit_pair() {
   local dir own peer peer_role peer_state
   dir="$(root_path "$root" /etc/systemd/system)"
   case "$role" in
-    control) own="$dir/astrumweaver-control.service"; peer="$dir/astrumweaver-worker.service"; peer_role=worker; peer_state=astrumweaver ;;
-    worker) own="$dir/astrumweaver-worker.service"; peer="$dir/astrumweaver-control.service"; peer_role=control; peer_state=astrumweaver-control ;;
+    control) own="$dir/tsumgi-control.service"; peer="$dir/tsumgi-worker.service"; peer_role=worker; peer_state=tsumgi ;;
+    worker) own="$dir/tsumgi-worker.service"; peer="$dir/tsumgi-control.service"; peer_role=control; peer_state=tsumgi-control ;;
     *) die "unknown service role: $role" ;;
   esac
   ROLE_PEER_USER=''; ROLE_PEER_GROUP=''; ROLE_PEER_UNIT=''
@@ -140,7 +140,7 @@ validate_legacy_shared_state_path() {
   local root="$1" role="$2" legacy
   case "$role" in
     control)
-      legacy="$(root_path "$root" /var/lib/astrumweaver)"
+      legacy="$(root_path "$root" /var/lib/tsumgi)"
       if [[ -e "$legacy" || -L "$legacy" ]] && [[ -z "$ROLE_PEER_UNIT" ]]; then
         legacy_service_migration "$legacy" 'legacy shared state path has no validated Worker unit'
       fi
@@ -156,7 +156,7 @@ render_unit_content() {
       -e "s|@EXECUTABLE@|$executable|g" \
       -e "s|@USER@|$user|g" \
       -e "s|@RUNTIME_ARG@|$runtime_arg|g" \
-      -e '/^EnvironmentFile=-\/etc\/astrumweaver\/worker.env$/a Environment=LD_LIBRARY_PATH=/etc/astrumweaver/runtime/nvidia-driver' \
+      -e '/^EnvironmentFile=-\/etc\/tsumgi\/worker.env$/a Environment=LD_LIBRARY_PATH=/etc/tsumgi/runtime/nvidia-driver' \
       "$template"
     return
   fi
@@ -177,7 +177,7 @@ validate_unit_template() {
   if [[ -e "$destination" ]]; then
     [[ -f "$destination" ]] || die "destination exists but is not a file: $destination"
     if ! cmp -s "$temporary" "$destination"; then
-      if grep -Eq '^ExecStart=/nix/store/[^[:space:]]+/bin/astrumweaver-(control|worker)([[:space:]]|$)' "$destination"; then
+      if grep -Eq '^ExecStart=/nix/store/[^[:space:]]+/bin/tsumgi-(control|worker)([[:space:]]|$)' "$destination"; then
         rm -f "$temporary"
         die "legacy store-pinned $role service executable detected in $destination; perform the reviewed unit migration before changing ExecStart (refusing overwrite)"
       fi
@@ -196,7 +196,7 @@ render_unit() {
 }
 validate_role_user_name() {
   case "$1" in
-    root|astrumweaver-config|video|render) die "service user '$1' is reserved and cannot own a role-private primary group" ;;
+    root|tsumgi-config|video|render) die "service user '$1' is reserved and cannot own a role-private primary group" ;;
   esac
 }
 passwd_ids() {
@@ -266,7 +266,7 @@ validate_config_group_preflight() {
 validate_role_group() {
   local name="$1" gid="$2" reserved reserved_gid
   case "$name" in
-    root|astrumweaver-config|video|render) die "role-private primary group '$name' is reserved" ;;
+    root|tsumgi-config|video|render) die "role-private primary group '$name' is reserved" ;;
   esac
   validate_id GID "$gid" "role-private group '$name'"
   validate_unique_numeric_id group "$name" "$gid"

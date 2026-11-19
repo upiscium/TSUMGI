@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 die() {
-  printf '[astrumweaver-gpu-isolation-probe] ERROR: %s\n' "$*" >&2
+  printf '[tsumgi-gpu-isolation-probe] ERROR: %s\n' "$*" >&2
   exit 1
 }
 
@@ -20,9 +20,9 @@ CUDA_VISIBLE="$4"
 [[ -n "$CUDA_VISIBLE" ]] || die "CUDA visible-device order is empty"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-GPU_DEVICE_MAP="${ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND:-$SCRIPT_DIR/gpu-device-map}"
-NVIDIA_SMI="${ASTRUMWEAVER_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
-SYSTEMD_RUN="${ASTRUMWEAVER_SYSTEMD_RUN:-$(command -v systemd-run || true)}"
+GPU_DEVICE_MAP="${TSUMGI_GPU_DEVICE_MAP_COMMAND:-$SCRIPT_DIR/gpu-device-map}"
+NVIDIA_SMI="${TSUMGI_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
+SYSTEMD_RUN="${TSUMGI_SYSTEMD_RUN:-$(command -v systemd-run || true)}"
 
 [[ "$GPU_DEVICE_MAP" == /* && -x "$GPU_DEVICE_MAP" ]] \
   || die "canonical GPU mapper is unavailable"
@@ -49,7 +49,7 @@ declare -a COMMAND=(
   --wait
   --pipe
   --collect
-  "--unit=astrumweaver-gpu-isolation-probe-$$"
+  "--unit=tsumgi-gpu-isolation-probe-$$"
   "--property=Type=oneshot"
   "--property=DevicePolicy=closed"
 )
@@ -86,15 +86,15 @@ PROBE_RC=$?
 set -e
 
 if [[ "$PROBE_RC" -eq 0 ]]; then
-  printf '[astrumweaver-gpu-isolation-probe] enforceable selected_count=%s\n' \
+  printf '[tsumgi-gpu-isolation-probe] enforceable selected_count=%s\n' \
     "${#DEVICE_PATHS[@]}"
   exit 0
 fi
 
-if grep -Fq '[astrumweaver-gpu-device-map] ISOLATION_UNAVAILABLE:' \
+if grep -Fq '[tsumgi-gpu-device-map] ISOLATION_UNAVAILABLE:' \
   <<<"$PROBE_OUTPUT"; then
   printf '%s\n' \
-    '[astrumweaver-gpu-isolation-probe] ISOLATION_UNAVAILABLE: GPU subset isolation is not enforceable in this environment; narrow guest-visible GPU exposure externally' \
+    '[tsumgi-gpu-isolation-probe] ISOLATION_UNAVAILABLE: GPU subset isolation is not enforceable in this environment; narrow guest-visible GPU exposure externally' \
     >&2
   exit 3
 fi

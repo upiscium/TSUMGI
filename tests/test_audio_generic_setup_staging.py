@@ -11,7 +11,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXECUTABLE = "/reviewed/bin/astrumweaver-control"
+EXECUTABLE = "/reviewed/bin/tsumgi-control"
 # Public synthetic sentinels, not usable deployment credentials.
 TOKENS = (
     "synthetic-b2b-control-bearer",
@@ -20,10 +20,10 @@ TOKENS = (
 )
 CHANGED_TOKEN = "synthetic-b2b-audio-bearer-changed"
 ENVIRONMENT = (
-    "ASTRUMWEAVER_DATABASE_URL=postgresql://unused.invalid/synthetic_b2b\n"
-    f"ASTRUMWEAVER_CLIENT_TOKEN={TOKENS[0]}\n"
-    f"ASTRUMWEAVER_AUDIO_CLIENT_TOKEN={TOKENS[1]}\n"
-    f"ASTRUMWEAVER_WORKER_TOKEN={TOKENS[2]}\n"
+    "TSUMGI_DATABASE_URL=postgresql://unused.invalid/synthetic_b2b\n"
+    f"TSUMGI_CLIENT_TOKEN={TOKENS[0]}\n"
+    f"TSUMGI_AUDIO_CLIENT_TOKEN={TOKENS[1]}\n"
+    f"TSUMGI_WORKER_TOKEN={TOKENS[2]}\n"
 ).encode("utf-8")
 
 
@@ -37,7 +37,7 @@ def _config(mode: str) -> bytes:
     return (control + 'client_auth = "bearer"\n' + f"""
 [audio_gateway]
 enabled = {str(mode == "enabled").lower()}
-catalog = "/etc/astrumweaver/synthetic-b2b-audio-profiles.json"
+catalog = "/etc/tsumgi/synthetic-b2b-audio-profiles.json"
 
 [audio_gateway.ingress]
 request_bytes = 2048
@@ -67,13 +67,13 @@ max_decoded_bytes = 128
 max_duration_seconds = 1
 
 [audio_gateway.input_spool]
-root = "/var/lib/astrumweaver-control/audio/input"
+root = "/var/lib/tsumgi-control/audio/input"
 ttl_seconds = 60.0
 max_total_bytes = 4096
 max_artifacts = 4
 
 [audio_gateway.output_spool]
-root = "/var/lib/astrumweaver-control/audio/output"
+root = "/var/lib/tsumgi-control/audio/output"
 ttl_seconds = 30.0
 max_total_bytes = 2048
 max_artifacts = 3
@@ -129,37 +129,37 @@ def _snapshot(staged: Path) -> dict[str, tuple[bytes, int]]:
 def _assert_staged_contract(
     staged: Path, config: bytes, environment: bytes | None,
 ) -> None:
-    template = (ROOT / "systemd/astrumweaver-control.service.in").read_bytes()
-    unit = template.replace(b"@USER@", b"astrumweaver-control").replace(
+    template = (ROOT / "systemd/tsumgi-control.service.in").read_bytes()
+    unit = template.replace(b"@USER@", b"tsumgi-control").replace(
         b"@EXECUTABLE@", EXECUTABLE.encode("utf-8"),
     )
     expected = {
-        "etc/astrumweaver/control.toml": (config, 0o640),
-        "etc/systemd/system/astrumweaver-control.service": (unit, 0o644),
+        "etc/tsumgi/control.toml": (config, 0o640),
+        "etc/systemd/system/tsumgi-control.service": (unit, 0o644),
     }
     if environment is not None:
-        expected["etc/astrumweaver/control.env"] = (environment, 0o640)
+        expected["etc/tsumgi/control.env"] = (environment, 0o640)
     assert _snapshot(staged) == expected
     # Pin existing role identity, state and optional env semantics in addition
     # to verifying the whole unchanged rendered template (including sandbox).
     lines = unit.decode("utf-8").splitlines()
     for directive in (
-        "User=astrumweaver-control",
-        "Group=astrumweaver-control",
-        "SupplementaryGroups=astrumweaver-config",
-        "StateDirectory=astrumweaver-control",
+        "User=tsumgi-control",
+        "Group=tsumgi-control",
+        "SupplementaryGroups=tsumgi-config",
+        "StateDirectory=tsumgi-control",
         "StateDirectoryMode=0750",
-        "EnvironmentFile=-/etc/astrumweaver/control.env",
-        f"ExecStart={EXECUTABLE} --config /etc/astrumweaver/control.toml",
+        "EnvironmentFile=-/etc/tsumgi/control.env",
+        f"ExecStart={EXECUTABLE} --config /etc/tsumgi/control.toml",
     ):
         key = directive.split("=", 1)[0] + "="
         assert [line for line in lines if line.startswith(key)] == [directive]
-    state = staged / "var/lib/astrumweaver-control"
+    state = staged / "var/lib/tsumgi-control"
     assert state.is_dir()
     assert stat.S_IMODE(state.stat().st_mode) == 0o750
     assert list(state.iterdir()) == []  # No audio parent, roots or spool allocation.
-    assert not (staged / "var/lib/astrumweaver").exists()
-    assert not (staged / "etc/astrumweaver/synthetic-b2b-audio-profiles.json").exists()
+    assert not (staged / "var/lib/tsumgi").exists()
+    assert not (staged / "etc/tsumgi/synthetic-b2b-audio-profiles.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -212,5 +212,5 @@ def test_audio_setup_refuses_changed_sources_without_overwriting(
     refused = _run_setup(tmp_path, config, environment)
     assert refused.returncode != 0
     assert "destination differs; refusing overwrite:" in refused.stderr
-    assert str(tmp_path / "staged/etc/astrumweaver" / destination) in refused.stderr
+    assert str(tmp_path / "staged/etc/tsumgi" / destination) in refused.stderr
     _assert_staged_contract(tmp_path / "staged", payload, ENVIRONMENT)

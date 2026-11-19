@@ -5,13 +5,13 @@ import asyncio
 import httpx
 import pytest
 
-from astrumweaver import JobResult, ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import JobResult, ResourceShape, WorkerSpec
+from tsumgi.control import (
     InMemoryControlRepository,
     WorkerRegistration,
 )
-from astrumweaver.control.api import create_app
-from astrumweaver.gateway.decision import (
+from tsumgi.control.api import create_app
+from tsumgi.gateway.decision import (
     DECISION_OPERATION_SCHEMA,
     DECISION_SCORE_KIND,
     LLAMA_CPP_SCORE_SEMANTICS,
@@ -20,8 +20,8 @@ from astrumweaver.gateway.decision import (
     DecisionProfileCatalog,
     DecisionSemanticsIdentity,
 )
-from astrumweaver.gateway.decision_api import create_decision_router
-from astrumweaver.serving import (
+from tsumgi.gateway.decision_api import create_decision_router
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     RuntimeInstance,
@@ -168,7 +168,7 @@ def request(profile: DecisionGatewayProfile) -> dict:
 
 def provider_result(probabilities=(0.7, 0.2, 0.1)):
     return {
-        "model": "astrumweaver",
+        "model": "tsumgi",
         "answers": {
             "decision": {
                 "type": "choice",

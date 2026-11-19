@@ -4,21 +4,21 @@ from collections import deque
 from collections.abc import Callable
 import tomllib
 
-from astrumweaver.executors.structured_echo import StructuredEchoExecutor
-from astrumweaver.runtime import RuntimeHostFacts
-from astrumweaver.setup import (
+from tsumgi.executors.structured_echo import StructuredEchoExecutor
+from tsumgi.runtime import RuntimeHostFacts
+from tsumgi.setup import (
     DeploymentPath,
     DiscoveredGpu,
     PrivilegeMode,
     SetupHostSnapshot,
 )
-from astrumweaver.setup.first_run import SystemdBootstrapResult
-from astrumweaver.setup.tui import (
+from tsumgi.setup.first_run import SystemdBootstrapResult
+from tsumgi.setup.tui import (
     TuiRunStatus,
     build_worker_spec,
     run_first_run_tui,
 )
-from astrumweaver.worker.runtime import require_executor_capabilities
+from tsumgi.worker.runtime import require_executor_capabilities
 
 
 Response = str | Callable[[str], str]
@@ -110,7 +110,7 @@ class RecordingInstaller:
 def test_smoke_capabilities_are_authoritative_before_review_and_in_generic_toml(
     monkeypatch,
 ) -> None:
-    from astrumweaver.setup import tui as tui_module
+    from tsumgi.setup import tui as tui_module
 
     RecordingInstaller.instances.clear()
     monkeypatch.setattr(
@@ -161,7 +161,7 @@ def test_smoke_capabilities_are_authoritative_before_review_and_in_generic_toml(
     worker_toml = str(installer.worker_calls[0]["worker_toml"])
     parsed = tomllib.loads(worker_toml)
     assert parsed["executor"]["factory"] == (
-        "astrumweaver.executors.structured_echo:create_executor"
+        "tsumgi.executors.structured_echo:create_executor"
     )
     assert "runtime" not in parsed
     advertised = frozenset(parsed["worker"]["capabilities"])
@@ -171,7 +171,7 @@ def test_smoke_capabilities_are_authoritative_before_review_and_in_generic_toml(
 
 
 def test_smoke_capabilities_are_rendered_in_nixos_snippet(tmp_path) -> None:
-    output_path = tmp_path / "astrumweaver-first-run.nix"
+    output_path = tmp_path / "tsumgi-first-run.nix"
     io = ScriptedIO(
         [
             "2",  # worker only
@@ -198,7 +198,7 @@ def test_smoke_capabilities_are_rendered_in_nixos_snippet(tmp_path) -> None:
     assert 'capabilities = [ "debug.echo" ];' in rendered
     assert '"llm.chat"' not in rendered
     assert '"text.generate"' not in rendered
-    assert 'executorFactory = "astrumweaver.executors.structured_echo:create_executor";' in rendered
+    assert 'executorFactory = "tsumgi.executors.structured_echo:create_executor";' in rendered
     require_executor_capabilities(
         StructuredEchoExecutor(),
         frozenset({"debug.echo"}),

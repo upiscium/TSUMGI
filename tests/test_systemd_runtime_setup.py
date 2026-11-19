@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from astrumweaver.setup.systemd import (
+from tsumgi.setup.systemd import (
     GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE,
     GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER,
     create_systemd_driver,
 )
 
-from astrumweaver.setup import (
+from tsumgi.setup import (
     SetupAction,
     SetupActionKind,
     SetupActionState,
@@ -107,7 +107,7 @@ def test_systemd_driver_renders_reviewed_runtime_manifest_under_staged_root(
     assert receipt.changed
     assert after.state is SetupActionState.SATISFIED
     manifest = (
-        root / "etc/astrumweaver/runtime-deployment.json"
+        root / "etc/tsumgi/runtime-deployment.json"
     )
     assert json.loads(manifest.read_text(encoding="utf-8")) == deployment
 
@@ -180,7 +180,7 @@ def test_standard_llama_cpp_profile_ignores_ambient_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "root"
-    manager = tmp_path / "astrumweaver-runtime-profile"
+    manager = tmp_path / "tsumgi-runtime-profile"
     marker = tmp_path / "runtime-installed"
     manager.write_text(
         "#!/usr/bin/env bash\n"
@@ -207,14 +207,14 @@ def test_standard_llama_cpp_profile_ignores_ambient_path(
     ambient.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     ambient.chmod(0o755)
 
-    monkeypatch.setenv("ASTRUMWEAVER_SETUP_ROOT", str(root))
-    monkeypatch.setenv("ASTRUMWEAVER_RUNTIME_PROFILE_MANAGER", str(manager))
+    monkeypatch.setenv("TSUMGI_SETUP_ROOT", str(root))
+    monkeypatch.setenv("TSUMGI_RUNTIME_PROFILE_MANAGER", str(manager))
     monkeypatch.setenv(
         "PATH",
         str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
     )
-    monkeypatch.delenv("ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON", raising=False)
-    monkeypatch.delenv("ASTRUMWEAVER_RUNTIME_VERIFIERS_JSON", raising=False)
+    monkeypatch.delenv("TSUMGI_RUNTIME_INSTALLERS_JSON", raising=False)
+    monkeypatch.delenv("TSUMGI_RUNTIME_VERIFIERS_JSON", raising=False)
 
     driver = create_systemd_driver()
     install = action(
@@ -244,9 +244,9 @@ def test_standard_runtime_profile_paths_are_absolute_and_separate() -> None:
         GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER
         != GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE
     )
-    assert "astrumweaver-installer" in GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER
+    assert "tsumgi-installer" in GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER
     assert (
-        "astrumweaver-runtime-llama-cpp"
+        "tsumgi-runtime-llama-cpp"
         in GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE
     )
 
@@ -255,7 +255,7 @@ def test_systemd_driver_materializes_narrow_nvidia_driver_bridge(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "root"
-    runtime_state = root / "etc/astrumweaver/runtime"
+    runtime_state = root / "etc/tsumgi/runtime"
     runtime_state.mkdir(parents=True)
 
     host_driver = tmp_path / "host/libcuda.so.1"
@@ -272,7 +272,7 @@ def test_systemd_driver_materializes_narrow_nvidia_driver_bridge(
             "provider_id": "llama-cpp",
             "soname": "libcuda.so.1",
             "bridge_directory": (
-                "/etc/astrumweaver/runtime/nvidia-driver"
+                "/etc/tsumgi/runtime/nvidia-driver"
             ),
         },
     )
@@ -300,7 +300,7 @@ def test_systemd_driver_blocks_unmanaged_nvidia_bridge_target(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "root"
-    bridge_dir = root / "etc/astrumweaver/runtime/nvidia-driver"
+    bridge_dir = root / "etc/tsumgi/runtime/nvidia-driver"
     bridge_dir.mkdir(parents=True)
     (bridge_dir / "libcuda.so.1").write_bytes(b"operator-file")
 
@@ -318,7 +318,7 @@ def test_systemd_driver_blocks_unmanaged_nvidia_bridge_target(
             "provider_id": "llama-cpp",
             "soname": "libcuda.so.1",
             "bridge_directory": (
-                "/etc/astrumweaver/runtime/nvidia-driver"
+                "/etc/tsumgi/runtime/nvidia-driver"
             ),
         },
     )
@@ -377,7 +377,7 @@ def test_systemd_health_check_waits_for_reviewed_readiness(
     monkeypatch.setattr(driver, "_service_failed", lambda: False)
     sleeps: list[float] = []
     monkeypatch.setattr(
-        "astrumweaver.setup.systemd.time.sleep",
+        "tsumgi.setup.systemd.time.sleep",
         lambda seconds: sleeps.append(seconds),
     )
     health = action(
@@ -429,11 +429,11 @@ def test_systemd_health_check_stops_at_reviewed_deadline(
     monkeypatch.setattr(driver, "_service_failed", lambda: False)
     times = iter((0.0, 0.5, 1.1, 1.1))
     monkeypatch.setattr(
-        "astrumweaver.setup.systemd.time.monotonic",
+        "tsumgi.setup.systemd.time.monotonic",
         lambda: next(times),
     )
     monkeypatch.setattr(
-        "astrumweaver.setup.systemd.time.sleep",
+        "tsumgi.setup.systemd.time.sleep",
         lambda _seconds: None,
     )
     health = action(
@@ -510,16 +510,16 @@ def test_systemd_gpu_preflight_accepts_exact_set_and_rejects_unisolated_superset
     (
         (
             "closed",
-            "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-            "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-            "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }",
+            "{ path=/usr/local/libexec/tsumgi/gpu-preflight ; "
+            "argv[]=/usr/local/libexec/tsumgi/gpu-preflight "
+            "/etc/tsumgi/gpu-uuids ; ignore_errors=no ; }",
             True,
         ),
         (
             "auto",
-            "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-            "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-            "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }",
+            "{ path=/usr/local/libexec/tsumgi/gpu-preflight ; "
+            "argv[]=/usr/local/libexec/tsumgi/gpu-preflight "
+            "/etc/tsumgi/gpu-uuids ; ignore_errors=no ; }",
             False,
         ),
         (
@@ -554,11 +554,11 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
         "DeviceAllow=/dev/nvidia0 rw\n"
         "DeviceAllow=/dev/nvidiactl rw\n"
         "Environment=CUDA_VISIBLE_DEVICES=GPU-a\n"
-        "Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access\n"
-        "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map\n"
-        "Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml\n"
-        "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map\n"
-        "Environment=ASTRUMWEAVER_NVIDIA_SMI=/usr/bin/nvidia-smi\n",
+        "Environment=TSUMGI_GPU_PREFLIGHT_MODE=isolated-access\n"
+        "Environment=TSUMGI_GPU_DEVICE_MAP=/etc/tsumgi/gpu-device-map\n"
+        "Environment=TSUMGI_GPU_WORKER_CONFIG=/etc/tsumgi/worker.toml\n"
+        "Environment=TSUMGI_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/tsumgi/gpu-device-map\n"
+        "Environment=TSUMGI_NVIDIA_SMI=/usr/bin/nvidia-smi\n",
         encoding="utf-8",
     )
     verifier = tmp_path / "gpu-device-map-verify"
@@ -581,16 +581,16 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
             "DeviceAllow=/dev/nvidia0 rw",
             "DeviceAllow=/dev/nvidiactl rw",
             "Environment=CUDA_VISIBLE_DEVICES=GPU-a",
-            "Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access",
-            "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map",
-            "Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml",
-            "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map",
-            "Environment=ASTRUMWEAVER_NVIDIA_SMI=/usr/bin/nvidia-smi",
+            "Environment=TSUMGI_GPU_PREFLIGHT_MODE=isolated-access",
+            "Environment=TSUMGI_GPU_DEVICE_MAP=/etc/tsumgi/gpu-device-map",
+            "Environment=TSUMGI_GPU_WORKER_CONFIG=/etc/tsumgi/worker.toml",
+            "Environment=TSUMGI_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/tsumgi/gpu-device-map",
+            "Environment=TSUMGI_NVIDIA_SMI=/usr/bin/nvidia-smi",
             "EnvironmentFiles=",
             "UnsetEnvironment=",
             f"ExecStartPre={effective_exec_start_pre}",
-            "Requires=astrumweaver-worker-gpu-isolation-preflight.service",
-            "After=network-online.target astrumweaver-worker-gpu-isolation-preflight.service",
+            "Requires=tsumgi-worker-gpu-isolation-preflight.service",
+            "After=network-online.target tsumgi-worker-gpu-isolation-preflight.service",
         ],
     )
     driver = SystemdSetupDriver(

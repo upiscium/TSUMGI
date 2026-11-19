@@ -11,7 +11,7 @@ ENV_SOURCE=''
 EXECUTABLE=''
 ROOT='/'
 START=0
-SERVICE_USER='astrumweaver-control'
+SERVICE_USER='tsumgi-control'
 
 usage() {
   cat <<'USAGE'
@@ -19,15 +19,15 @@ Usage: setup-control-plane.sh --config FILE [options]
 
 Options:
   --environment-file FILE   Optional systemd EnvironmentFile source.
-  --executable PATH         Optional absolute daemon override; defaults to astrumweaver-control on PATH.
+  --executable PATH         Optional absolute daemon override; defaults to tsumgi-control on PATH.
   --root DIR                Stage files below DIR instead of live /.
-  --user NAME               Control service account and group (default: astrumweaver-control).
+  --user NAME               Control service account and group (default: tsumgi-control).
   --start                   Enable and start the service after installation.
   -h, --help                Show this help.
 
-Control and Worker share the traverse-only /etc/astrumweaver directory, but use
+Control and Worker share the traverse-only /etc/tsumgi directory, but use
 separate role accounts and state directories. Control defaults to the
-astrumweaver-control account and /var/lib/astrumweaver-control; when both roles
+tsumgi-control account and /var/lib/tsumgi-control; when both roles
 are installed, their --user values must differ. Existing role identity/state
 changes are rejected pending an explicit migration review.
 
@@ -71,26 +71,26 @@ fi
 validate_role_user_name "$SERVICE_USER"
 
 ROOT="$(normalize_root "$ROOT")"
-ETC_DIR="$(root_path "$ROOT" /etc/astrumweaver)"
-STATE_DIR="$(root_path "$ROOT" /var/lib/astrumweaver-control)"
+ETC_DIR="$(root_path "$ROOT" /etc/tsumgi)"
+STATE_DIR="$(root_path "$ROOT" /var/lib/tsumgi-control)"
 UNIT_DIR="$(root_path "$ROOT" /etc/systemd/system)"
 CONFIG_DEST="$ETC_DIR/control.toml"
 ENV_DEST="$ETC_DIR/control.env"
-UNIT_DEST="$UNIT_DIR/astrumweaver-control.service"
+UNIT_DEST="$UNIT_DIR/tsumgi-control.service"
 
-validate_role_unit_pair "$ROOT" control "$SERVICE_USER" astrumweaver-control
+validate_role_unit_pair "$ROOT" control "$SERVICE_USER" tsumgi-control
 validate_legacy_shared_state_path "$ROOT" control
-EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-control)"
+EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" tsumgi-control)"
 reject_symlink_path \
   "$ETC_DIR" "$STATE_DIR" "$CONFIG_DEST" "$ENV_DEST" "$UNIT_DEST"
 validate_unit_template \
-  "$REPO_ROOT/systemd/astrumweaver-control.service.in" \
+  "$REPO_ROOT/systemd/tsumgi-control.service.in" \
   "$UNIT_DEST" \
   "$EXECUTABLE" \
   "$SERVICE_USER" \
   '' \
   control \
-  astrumweaver-control
+  tsumgi-control
 if [[ "$ROOT" == "/" ]]; then
   validate_live_service_accounts control "$SERVICE_USER"
   ensure_live_service_user "$SERVICE_USER" "$STATE_DIR" control
@@ -109,7 +109,7 @@ if [[ -n "$ENV_SOURCE" ]]; then
 fi
 
 render_unit \
-  "$REPO_ROOT/systemd/astrumweaver-control.service.in" \
+  "$REPO_ROOT/systemd/tsumgi-control.service.in" \
   "$UNIT_DEST" \
   "$EXECUTABLE" \
   "$SERVICE_USER"
@@ -118,7 +118,7 @@ reconcile_service_file "$ROOT" "$SERVICE_USER" "$CONFIG_DEST"
 reconcile_service_file "$ROOT" "$SERVICE_USER" "$ENV_DEST"
 
 if [[ "$ROOT" == "/" ]]; then
-  systemd_reload_and_maybe_start astrumweaver-control.service "$START"
+  systemd_reload_and_maybe_start tsumgi-control.service "$START"
 elif [[ "$START" == 1 ]]; then
   die "--start cannot be used with staged --root installs"
 fi

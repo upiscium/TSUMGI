@@ -1,4 +1,4 @@
-{ lib, buildEnv, python312, python312Packages, writeShellScriptBin, astrumweaver }:
+{ lib, buildEnv, python312, python312Packages, writeShellScriptBin, tsumgi }:
 
 let
   # Keep the PostgreSQL dependency in Control/Installer, not the Worker.
@@ -6,22 +6,22 @@ let
   # interpreter closure. Calling that script from python.withPackages does
   # not automatically make the additional psycopg package importable.
   pythonEnv = python312.withPackages (_: [
-    astrumweaver
+    tsumgi
     python312Packages.psycopg
     python312Packages.psycopg-pool
   ]);
 
   # Bind each executable to the interpreter that actually contains psycopg.
   # Higher priority is intentional: replace the base console wrappers.
-  control = lib.hiPrio (writeShellScriptBin "astrumweaver-control" ''
-    exec ${pythonEnv}/bin/python -m astrumweaver.control.daemon "$@"
+  control = lib.hiPrio (writeShellScriptBin "tsumgi-control" ''
+    exec ${pythonEnv}/bin/python -m tsumgi.control.daemon "$@"
   '');
-  migrate = lib.hiPrio (writeShellScriptBin "astrumweaver-migrate" ''
-    exec ${pythonEnv}/bin/python -m astrumweaver.control.migrate "$@"
+  migrate = lib.hiPrio (writeShellScriptBin "tsumgi-migrate" ''
+    exec ${pythonEnv}/bin/python -m tsumgi.control.migrate "$@"
   '');
 in
 buildEnv {
-  name = "astrumweaver-control-cli-env";
+  name = "tsumgi-control-cli-env";
   paths = [ control migrate pythonEnv ];
   ignoreCollisions = true;
   meta = {

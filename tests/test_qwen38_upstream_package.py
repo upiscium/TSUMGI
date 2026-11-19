@@ -14,8 +14,8 @@ def test_qwen38_upstream_runtime_is_separately_pinned() -> None:
     assert "ggml-org/llama.cpp" in core
     assert "qwen38-llama-cpp" in manager
     assert "runtime-qwen38-llama-cpp" in manager
-    assert "astrumweaver-runtime-qwen38" in manager
-    assert "astrumweaver-runtime-llama-cpp" in manager
+    assert "tsumgi-runtime-qwen38" in manager
+    assert "tsumgi-runtime-llama-cpp" in manager
     assert "env -i" in bridge
     assert '--reasoning off --flash-attn on &' in bridge
     assert "cuda_stub_is_not_a_driver" in bridge
@@ -37,11 +37,11 @@ def test_qwen38_profile_coexists_with_the_default_after_main_integration() -> No
     package_paths = {
         "llama-cpp": (
             "runtime-llama-cpp",
-            "astrumweaver-runtime-llama-cpp",
+            "tsumgi-runtime-llama-cpp",
         ),
         "qwen38-llama-cpp": (
             "runtime-qwen38-llama-cpp",
-            "astrumweaver-runtime-qwen38",
+            "tsumgi-runtime-qwen38",
         ),
     }
     # This source contract is supplemented by the real Nix flake evaluation,
@@ -102,8 +102,8 @@ def test_profile_manager_refuses_unmanaged_rollback() -> None:
 
 
 def _qwen38_ctx():
-    from astrumweaver import ResourceShape, WorkerSpec
-    from astrumweaver.runtime import (
+    from tsumgi import ResourceShape, WorkerSpec
+    from tsumgi.runtime import (
         ExecutionDemand, GPUTopology, ModelDemand, ModelTopology,
         ResidencyPolicy, RuntimeCompatibilityContext, RuntimeHostFacts,
     )
@@ -134,7 +134,7 @@ def _qwen38_ctx():
 
 
 def test_qwen38_matches_explicit_installer_and_existing_managed_site_references() -> None:
-    from astrumweaver.runtime.providers.llama_cpp import (
+    from tsumgi.runtime.providers.llama_cpp import (
         LlamaCppProvider, LlamaCppProviderConfig, LLAMA_CPP_QWEN38_RUNTIME,
         LLAMA_CPP_QWEN38_PACKAGE, LLAMA_CPP_QWEN38_PROFILE,
     )
@@ -156,7 +156,7 @@ def test_qwen38_matches_explicit_installer_and_existing_managed_site_references(
 def test_qwen38_rejects_mismatched_install_intent_and_setup_tampering() -> None:
     from dataclasses import replace
     import pytest
-    from astrumweaver.runtime.providers.llama_cpp import (
+    from tsumgi.runtime.providers.llama_cpp import (
         LlamaCppProvider, LlamaCppProviderConfig, LLAMA_CPP_QWEN38_RUNTIME,
         LLAMA_CPP_QWEN38_PACKAGE, LLAMA_CPP_QWEN38_PROFILE,
     )
@@ -191,13 +191,13 @@ def test_qwen38_rejects_mismatched_install_intent_and_setup_tampering() -> None:
 
 def test_absolute_qwen38_managed_profile_is_a_supported_manager_selector() -> None:
     manager = (Path(__file__).resolve().parents[1] / "nix/runtime-profile-support.nix").read_text()
-    assert "qwen38-llama-cpp|/nix/var/nix/profiles/astrumweaver-runtime-qwen38)" in manager
+    assert "qwen38-llama-cpp|/nix/var/nix/profiles/tsumgi-runtime-qwen38)" in manager
 
 
 def test_reviewed_generic_upstream_setup_cannot_inject_pinned_qwen38_executable() -> None:
     from dataclasses import replace
     import pytest
-    from astrumweaver.runtime.providers.llama_cpp import (
+    from tsumgi.runtime.providers.llama_cpp import (
         LlamaCppProvider, LlamaCppProviderConfig, LLAMA_CPP_QWEN38_RUNTIME,
     )
     context = _qwen38_ctx()

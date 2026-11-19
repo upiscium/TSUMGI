@@ -8,24 +8,24 @@ from datetime import timedelta
 import httpx
 import pytest
 
-from astrumweaver import JobResult, ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import JobResult, ResourceShape, WorkerSpec
+from tsumgi.control import (
     InMemoryControlRepository,
     JobStatus,
     JobSubmission,
     WorkerRegistration,
     utc_now,
 )
-from astrumweaver.control.api import create_app
-from astrumweaver.gateway.api import ChatGatewayService, create_chat_router
-from astrumweaver.gateway.chat import (
+from tsumgi.control.api import create_app
+from tsumgi.gateway.api import ChatGatewayService, create_chat_router
+from tsumgi.gateway.chat import (
     CHAT_OPERATION_SCHEMA,
     LLAMA_CPP_CHAT_ADAPTER,
     ChatGatewayError,
     ChatGatewayProfile,
     ChatProfileCatalog,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     RuntimeInstance,
@@ -236,7 +236,7 @@ async def test_models_expose_configured_profile_not_runtime_inventory():
                 "id": "local-code-v1",
                 "object": "model",
                 "created": 0,
-                "owned_by": "astrumweaver",
+                "owned_by": "tsumgi",
                 "x_astrumweaver": {
                     "profile_revision": gateway.resolved.profile_revision,
                     "deployment_revision": gateway.resolved.deployment.revision,
@@ -1248,7 +1248,7 @@ async def test_streaming_body_close_before_first_iteration_cancels_job():
 
 @pytest.mark.asyncio
 async def test_asgi_streaming_response_closes_owning_stream_before_first_event():
-    from astrumweaver.gateway.api import _OwnedChatStreamingResponse
+    from tsumgi.gateway.api import _OwnedChatStreamingResponse
 
     repository = InMemoryControlRepository()
     gateway, advertisement = serving_values()

@@ -101,7 +101,7 @@ read back for static inspection; execution correctness remains unverified.
 
 The frozen uncommitted source manifest is exactly these three new files:
 
-1. `src/astrumweaver/gateway/audio_ingress.py`
+1. `src/tsumgi/gateway/audio_ingress.py`
 2. `tests/test_audio_ingress.py`
 3. `docs/design/audio-ingress-wave2.md`
 

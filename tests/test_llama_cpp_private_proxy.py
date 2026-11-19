@@ -9,7 +9,7 @@ from threading import Thread
 import httpx
 import pytest
 
-from astrumweaver.runtime.providers.llama_cpp import HttpLlamaCppApi
+from tsumgi.runtime.providers.llama_cpp import HttpLlamaCppApi
 
 
 @contextmanager

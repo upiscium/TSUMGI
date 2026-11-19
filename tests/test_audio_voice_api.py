@@ -9,9 +9,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from astrumweaver.control.auth import ClientAuthMode
-from astrumweaver.gateway.api import create_chat_router
-from astrumweaver.gateway.audio import (
+from tsumgi.control.auth import ClientAuthMode
+from tsumgi.gateway.api import create_chat_router
+from tsumgi.gateway.audio import (
     SPEECH_OPERATION_SCHEMA,
     TRANSCRIPTION_OPERATION_SCHEMA,
     AudioGatewayError,
@@ -22,14 +22,14 @@ from astrumweaver.gateway.audio import (
     validate_speech_request,
     validate_transcription_metadata,
 )
-from astrumweaver.gateway.audio_voice_api import create_audio_voice_router
-from astrumweaver.gateway.chat import (
+from tsumgi.gateway.audio_voice_api import create_audio_voice_router
+from tsumgi.gateway.chat import (
     CHAT_OPERATION_SCHEMA,
     LLAMA_CPP_CHAT_ADAPTER,
     ChatGatewayProfile,
     ChatProfileCatalog,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,

@@ -48,7 +48,7 @@ def load_gpu_uuids(path: Path) -> tuple[str, ...]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="astrumweaver-worker-gpu-uuids",
+        prog="tsumgi-worker-gpu-uuids",
         description="Read the canonical GPU UUID sequence from worker.toml",
     )
     parser.add_argument("--config", required=True)
@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         values = load_gpu_uuids(Path(args.config))
     except ValueError as exc:
         print(
-            f"[astrumweaver-worker-gpu-uuids] ERROR: {exc}",
+            f"[tsumgi-worker-gpu-uuids] ERROR: {exc}",
             file=sys.stderr,
         )
         return 2

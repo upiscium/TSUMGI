@@ -1,4 +1,4 @@
-# AstrumWeaver v0.1 Hardware E2E Evidence
+# TSUMGI v0.1 Hardware E2E Evidence
 
 This file is intentionally redacted. It contains no hostname, IP address, VM/LXC identifier, GPU UUID, credential, private URL, or GPU model.
 

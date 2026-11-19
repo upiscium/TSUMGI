@@ -11,13 +11,13 @@ from dataclasses import replace
 
 import pytest
 
-from astrumweaver.runtime.providers.voicevox_discovery import (
+from tsumgi.runtime.providers.voicevox_discovery import (
     VoicevoxDiscoveryConfig,
     VoicevoxDiscoveryResult,
     VoicevoxDiscoveryStatus,
     _catalog,
 )
-from astrumweaver.runtime.providers.voicevox_external_polling import (
+from tsumgi.runtime.providers.voicevox_external_polling import (
     ExternalVoicevoxPollingCoordinator,
     ExternalVoicevoxPollingError,
     VoicevoxExternalPollingConfig,

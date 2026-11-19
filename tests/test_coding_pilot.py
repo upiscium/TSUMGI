@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 import pytest
 
-from astrumweaver.validation.coding_pilot import (
+from tsumgi.validation.coding_pilot import (
     CodingPilotError,
     build_evidence,
     render_coding_pilot_markdown,

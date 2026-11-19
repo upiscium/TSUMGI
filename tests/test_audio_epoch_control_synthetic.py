@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from astrumweaver.audio.epoch_control_synthetic import (
+from tsumgi.audio.epoch_control_synthetic import (
     SyntheticAudioControlEpochAdapter,
     SyntheticControlEpochConflict,
     SyntheticEpochReceipt,
@@ -20,22 +20,22 @@ from astrumweaver.audio.epoch_control_synthetic import (
     SyntheticPrincipalKind,
     SyntheticWorkerWitness,
 )
-from astrumweaver.gateway.audio import VoiceAlias
-from astrumweaver.runtime.providers.voicevox_discovery import (
+from tsumgi.gateway.audio import VoiceAlias
+from tsumgi.runtime.providers.voicevox_discovery import (
     VoicevoxDiscoveryConfig,
     _catalog,
 )
-from astrumweaver.runtime.providers.voicevox_external_epoch import (
+from tsumgi.runtime.providers.voicevox_external_epoch import (
     AudioEpochCleanupIntent,
     AudioEpochFenceIntent,
     AudioEpochIdentity,
     AudioEpochPhase,
     ExternalAudioQualification,
 )
-from astrumweaver.runtime.providers.voicevox_external_plan import (
+from tsumgi.runtime.providers.voicevox_external_plan import (
     OperatorPolicyStatus,
 )
-from astrumweaver.runtime.providers.voicevox_external_reconcile import (
+from tsumgi.runtime.providers.voicevox_external_reconcile import (
     ExternalVoicevoxReconcileConfig,
 )
 

@@ -4,8 +4,8 @@ import re
 import tomllib
 from pathlib import Path
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.control import InMemoryControlRepository, WorkerRegistration
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.control import InMemoryControlRepository, WorkerRegistration
 
 
 ROOT = Path(__file__).resolve().parents[1]

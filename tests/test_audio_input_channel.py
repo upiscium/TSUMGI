@@ -7,10 +7,10 @@ import wave
 
 import pytest
 
-from astrumweaver.audio.artifact_spool import ArtifactSpool
-from astrumweaver.audio.input_channel import AudioInputChannel
-from astrumweaver.control.models import JobSubmission
-from astrumweaver.control.repository import ConflictError, NotFoundError
+from tsumgi.audio.artifact_spool import ArtifactSpool
+from tsumgi.audio.input_channel import AudioInputChannel
+from tsumgi.control.models import JobSubmission
+from tsumgi.control.repository import ConflictError, NotFoundError
 from test_audio_artifact_authority_postgres import isolated_database
 from test_audio_artifact_authority import serving_values
 
@@ -147,7 +147,7 @@ def test_pcm16_independent_decoded_byte_limit(tmp_path):
 
 
 def test_pcm16_rejects_size_limit_before_sample_read(tmp_path, monkeypatch):
-    import astrumweaver.audio.pcm16 as parser
+    import tsumgi.audio.pcm16 as parser
 
     channel = make_channel(
         tmp_path, FakeRepository(), max_wire_bytes=256, max_decoded_bytes=14,
@@ -268,9 +268,9 @@ def test_finite_quotas_required(tmp_path):
 async def test_authenticated_input_api_and_current_worker_download(tmp_path):
     from datetime import UTC, datetime, timedelta
     import httpx
-    from astrumweaver.control import InMemoryControlRepository
-    from astrumweaver.control.api import create_app
-    from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
+    from tsumgi.control import InMemoryControlRepository
+    from tsumgi.control.api import create_app
+    from tsumgi.transport import PROTOCOL_VERSION, SERVING_EXTENSION
     from test_audio_artifact_authority import EPOCH, setup_claim
 
     repo = InMemoryControlRepository(lease_seconds=60)
@@ -342,7 +342,7 @@ async def test_authenticated_input_api_and_current_worker_download(tmp_path):
 
 def test_postgres_input_admission_and_failure_cleanup(tmp_path, isolated_database):
     from datetime import UTC, datetime, timedelta
-    from astrumweaver.control import PostgresControlRepository
+    from tsumgi.control import PostgresControlRepository
     from test_audio_artifact_authority import EPOCH, setup_claim
 
     repo = PostgresControlRepository(isolated_database, lease_seconds=60)
@@ -388,7 +388,7 @@ def test_postgres_input_admission_and_failure_cleanup(tmp_path, isolated_databas
 
 
 def test_ambiguous_commit_preserves_input_for_idempotent_retry(tmp_path):
-    from astrumweaver.control.repository import StorageUnavailable
+    from tsumgi.control.repository import StorageUnavailable
     repo = FakeRepository(StorageUnavailable("commit outcome unknown"))
     channel = make_channel(tmp_path, repo)
     ref = channel.stage(WAV)
@@ -445,7 +445,7 @@ def test_bound_input_cannot_be_destroyed_or_rebound_by_bad_retry(tmp_path):
 
 
 def test_ambiguous_result_protects_receipt_from_mismatched_retry(tmp_path):
-    from astrumweaver.control.repository import StorageUnavailable
+    from tsumgi.control.repository import StorageUnavailable
     repo = FakeRepository(StorageUnavailable("unknown commit outcome"))
     channel = make_channel(tmp_path, repo)
     ref = channel.stage(WAV)
@@ -479,7 +479,7 @@ def test_input_ttl_must_cover_admitted_job_deadline(tmp_path):
 
 
 def test_pending_ambiguous_admission_cannot_be_discarded(tmp_path):
-    from astrumweaver.control.repository import StorageUnavailable
+    from tsumgi.control.repository import StorageUnavailable
     repo = FakeRepository(StorageUnavailable("unknown outcome"))
     channel = make_channel(tmp_path, repo)
     ref = channel.stage(WAV)
@@ -498,7 +498,7 @@ def test_pending_ambiguous_admission_cannot_be_discarded(tmp_path):
 def test_identical_idempotent_replay_after_job_deadline(tmp_path, monkeypatch):
     from datetime import timedelta
     from types import SimpleNamespace
-    from astrumweaver.audio import input_channel as module
+    from tsumgi.audio import input_channel as module
 
     repo = FakeRepository()
     channel = make_channel(tmp_path, repo)
@@ -515,8 +515,8 @@ def test_identical_idempotent_replay_after_job_deadline(tmp_path, monkeypatch):
 def test_ambiguous_committed_postgres_input_is_worker_readable_without_client_retry(
     tmp_path, isolated_database,
 ):
-    from astrumweaver.control import PostgresControlRepository
-    from astrumweaver.control.repository import StorageUnavailable
+    from tsumgi.control import PostgresControlRepository
+    from tsumgi.control.repository import StorageUnavailable
     from test_audio_artifact_authority import EPOCH, setup_claim
 
     backing = PostgresControlRepository(isolated_database, lease_seconds=60)
@@ -566,8 +566,8 @@ def test_ambiguous_committed_postgres_input_is_worker_readable_without_client_re
 
 
 def test_pending_input_does_not_rebind_to_job_with_only_matching_artifact_ref(tmp_path):
-    from astrumweaver.control import InMemoryControlRepository
-    from astrumweaver.control.repository import StorageUnavailable
+    from tsumgi.control import InMemoryControlRepository
+    from tsumgi.control.repository import StorageUnavailable
     from test_audio_artifact_authority import EPOCH, setup_claim
     from dataclasses import replace
 
@@ -618,8 +618,8 @@ async def test_opted_in_generic_job_route_rejects_unstaged_audio(
     tmp_path, capability, payload,
 ):
     import httpx
-    from astrumweaver.control import InMemoryControlRepository
-    from astrumweaver.control.api import create_app
+    from tsumgi.control import InMemoryControlRepository
+    from tsumgi.control.api import create_app
 
     repo = InMemoryControlRepository()
     channel = make_channel(tmp_path, repo)
@@ -646,8 +646,8 @@ async def test_opted_in_generic_job_route_rejects_unstaged_audio(
 @pytest.mark.asyncio
 async def test_opted_in_generic_job_route_preserves_unrelated_jobs(tmp_path):
     import httpx
-    from astrumweaver.control import InMemoryControlRepository
-    from astrumweaver.control.api import create_app
+    from tsumgi.control import InMemoryControlRepository
+    from tsumgi.control.api import create_app
 
     repo = InMemoryControlRepository()
     channel = make_channel(tmp_path, repo)
@@ -671,8 +671,8 @@ async def test_opted_in_generic_job_route_preserves_unrelated_jobs(tmp_path):
 @pytest.mark.asyncio
 async def test_generic_job_route_unchanged_when_audio_input_not_enabled():
     import httpx
-    from astrumweaver.control import InMemoryControlRepository
-    from astrumweaver.control.api import create_app
+    from tsumgi.control import InMemoryControlRepository
+    from tsumgi.control.api import create_app
 
     repo = InMemoryControlRepository()
     app = create_app(
@@ -701,8 +701,8 @@ async def test_real_postgres_rejects_generic_unstaged_audio_before_database_writ
 ):
     import httpx
     import psycopg
-    from astrumweaver.control import PostgresControlRepository
-    from astrumweaver.control.api import create_app
+    from tsumgi.control import PostgresControlRepository
+    from tsumgi.control.api import create_app
 
     repo = PostgresControlRepository(isolated_database, lease_seconds=60)
     channel = make_channel(tmp_path, repo)
