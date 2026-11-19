@@ -12,6 +12,7 @@ from astrumweaver.control.admin_auth import (
     FAILURE_WINDOW_SECONDS,
     MAX_FAILURES,
     BasicAuth,
+    StaticCredentials,
     hash_password,
     parse_hash,
 )
@@ -38,7 +39,7 @@ class Clock:
 def make(clock=None, trusted=()):
     clock = clock or Clock()
     app = FastAPI()
-    auth = BasicAuth("ops", HASH, clock=clock, trusted_proxies=trusted)
+    auth = BasicAuth(StaticCredentials("ops", HASH), clock=clock, trusted_proxies=trusted)
     app.include_router(create_admin_router(InMemoryControlRepository(), auth=auth))
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://c")
     return client, clock
@@ -119,7 +120,7 @@ def test_hash_format_and_validation():
             parse_hash(bad)
     for user in ("", "a:b", "tab\tname"):
         with pytest.raises(ValueError):
-            BasicAuth(user, HASH)
+            StaticCredentials(user, HASH)
 
 
 def _config(tmp_path, extra):
@@ -170,7 +171,7 @@ async def test_ipv6_clients_share_a_bucket_per_64():
 @pytest.mark.asyncio
 async def test_visits_without_credentials_leave_no_state_behind():
     app = FastAPI()
-    auth = BasicAuth("ops", HASH, trusted_proxies=("127.0.0.1",))
+    auth = BasicAuth(StaticCredentials("ops", HASH), trusted_proxies=("127.0.0.1",))
     app.include_router(create_admin_router(InMemoryControlRepository(), auth=auth))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://c") as client:
         for i in range(50):
@@ -182,7 +183,7 @@ def test_tracking_is_bounded_and_keeps_locked_out_clients():
     import astrumweaver.control.admin_auth as mod
 
     clock = Clock()
-    auth = BasicAuth("ops", HASH, clock=clock)
+    auth = BasicAuth(StaticCredentials("ops", HASH), clock=clock)
     for _ in range(MAX_FAILURES):
         auth._record("attacker", clock.now, False)
     for i in range(mod._MAX_TRACKED_CLIENTS + 10):
@@ -197,7 +198,7 @@ async def test_busy_verifier_refuses_quickly_instead_of_queueing():
     import astrumweaver.control.admin_auth as mod
 
     app = FastAPI()
-    auth = BasicAuth("ops", HASH)
+    auth = BasicAuth(StaticCredentials("ops", HASH))
     app.include_router(create_admin_router(InMemoryControlRepository(), auth=auth))
     for _ in range(mod._MAX_CONCURRENT_VERIFICATIONS):
         auth._slots.acquire()
@@ -216,9 +217,9 @@ def test_hashes_that_cannot_run_are_refused_at_start_up():
     key = b64.b64encode(b"k" * 32).decode()
     for n, r in ((2**17, 8), (2**15, 32), (2**20, 1)):  # above the memory cap
         with pytest.raises(ValueError):
-            BasicAuth("ops", f"scrypt${n}${r}$1${salt}${key}")
+            StaticCredentials("ops", f"scrypt${n}${r}$1${salt}${key}")
     with pytest.raises(ValueError):  # key length out of range
-        BasicAuth("ops", f"scrypt$16384$8$1${salt}${b64.b64encode(b'k').decode()}")
+        StaticCredentials("ops", f"scrypt$16384$8$1${salt}${b64.b64encode(b'k').decode()}")
 
 
 @pytest.mark.asyncio
@@ -226,7 +227,7 @@ async def test_non_ascii_credentials_and_exact_retry_after():
     unicode_hash = hash_password("パスワードは長いほうがいい", salt=b"0123456789abcdef")
     app = FastAPI()
     clock = Clock()
-    app.include_router(create_admin_router(InMemoryControlRepository(), auth=BasicAuth("運用", unicode_hash, clock=clock)))
+    app.include_router(create_admin_router(InMemoryControlRepository(), auth=BasicAuth(StaticCredentials("運用", unicode_hash), clock=clock)))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://c") as client:
         assert (await client.get("/admin", headers=basic("運用", "パスワードは長いほうがいい"))).status_code == 200
         for _ in range(MAX_FAILURES):
@@ -240,7 +241,7 @@ async def test_non_ascii_credentials_and_exact_retry_after():
 async def test_host_check_runs_before_authentication():
     app = FastAPI()
     app.include_router(
-        create_admin_router(InMemoryControlRepository(), allowed_hosts=["control.lan"], auth=BasicAuth("ops", HASH))
+        create_admin_router(InMemoryControlRepository(), allowed_hosts=["control.lan"], auth=BasicAuth(StaticCredentials("ops", HASH)))
     )
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://x") as client:
         assert (await client.get("/admin", headers={**basic(), "host": "evil.example"})).status_code == 403
@@ -274,3 +275,141 @@ def test_password_prompt_rejects_short_and_mismatched_passwords(monkeypatch, cap
     assert admin_auth.main() == 1
     answers = iter(["long enough password"] * 2)
     assert admin_auth.main() == 0 and capsys.readouterr().out.strip().startswith("scrypt$")
+
+
+# ---- first-run setup ----------------------------------------------------------
+
+from astrumweaver.control.admin_auth import CredentialsFile  # noqa: E402
+
+SETUP = {"username": "ops", "password": "a long enough password"}
+
+
+def make_setup(tmp_path, clock=None, trusted=()):
+    store = CredentialsFile(tmp_path / "admin-credentials.json")
+    auth = BasicAuth(store, clock=clock or Clock(), trusted_proxies=trusted)
+    app = FastAPI()
+    app.include_router(create_admin_router(InMemoryControlRepository(), auth=auth))
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://c")
+    return client, store, auth
+
+
+def code_of(store):
+    return store.code_path.read_text().strip()
+
+
+def post_setup(client, **body):
+    return client.post("/admin/api/setup", json=body)
+
+
+@pytest.mark.asyncio
+async def test_setup_mode_serves_only_the_setup_page(tmp_path):
+    client, store, auth = make_setup(tmp_path)
+    assert auth.needs_setup and store.code_path.stat().st_mode & 0o777 == 0o600
+    async with client:
+        page = await client.get("/admin")
+        assert page.status_code == 200 and "セットアップコード" in page.text
+        assert (await client.get("/admin/setup.js")).status_code == 200
+        assert (await client.get("/admin/app.css")).status_code == 200
+        for path in ("/admin/api/workers", "/admin/app.js"):
+            assert (await client.get(path)).status_code == 403, path
+        assert (await client.post("/admin/api/model-check", json={"url": "x"})).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_setup_with_the_code_sets_the_password_once(tmp_path):
+    client, store, _ = make_setup(tmp_path)
+    code = code_of(store)
+    async with client:
+        done = await post_setup(client, code=code, **SETUP)
+        assert done.status_code == 200
+        assert not store.code_path.exists() and store.path.stat().st_mode & 0o777 == 0o600
+        assert SETUP["password"] not in store.path.read_text()
+        # Now the normal login applies.
+        assert (await client.get("/admin")).status_code == 401
+        assert (await client.get("/admin", headers=basic("ops", SETUP["password"]))).status_code == 200
+        # Setup is closed, with or without the old code.
+        again = await post_setup(client, code=code, username="evil", password="another long password")
+        assert again.status_code == 401  # needs the login first
+        assert (await client.post("/admin/api/setup", json={"code": code, **SETUP}, headers=basic("ops", SETUP["password"]))).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_setup_code_is_refused_and_throttled(tmp_path):
+    client, store, _ = make_setup(tmp_path)
+    async with client:
+        for _ in range(MAX_FAILURES):
+            assert (await post_setup(client, code="0000-0000-0000-0000-0000", **SETUP)).status_code == 403
+        locked = await post_setup(client, code=code_of(store), **SETUP)
+        assert locked.status_code == 429 and not store.path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"username": "", "password": "a long enough password"},
+        {"username": "a:b", "password": "a long enough password"},
+        {"username": "ops", "password": "short"},
+        {"username": "ops", "password": "x" * 300},
+        {"username": 5, "password": "a long enough password"},
+    ],
+)
+async def test_bad_username_or_password_is_rejected_without_burning_the_code(tmp_path, body):
+    client, store, _ = make_setup(tmp_path)
+    async with client:
+        response = await post_setup(client, code=code_of(store), **body)
+        assert response.status_code == 400 and not store.path.exists() and store.code_path.exists()
+        assert (await post_setup(client, code=code_of(store), **SETUP)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_setup_needs_json_and_an_object_body(tmp_path):
+    client, store, _ = make_setup(tmp_path)
+    async with client:
+        form = await client.post("/admin/api/setup", data={"code": code_of(store), **SETUP})
+        assert form.status_code == 415
+        assert (await client.post("/admin/api/setup", json=["x"])).status_code == 400
+        assert (await post_setup(client, username="ops", password="a long enough password")).status_code == 400  # no code
+
+
+def test_the_code_survives_a_restart_and_is_not_reissued_once_set_up(tmp_path):
+    first = CredentialsFile(tmp_path / "c.json")
+    code = code_of(first)
+    assert code_of(CredentialsFile(tmp_path / "c.json")) == code
+    assert first.set_up(code, "ops", "a long enough password") is True
+    assert CredentialsFile(tmp_path / "c.json").needs_setup is False
+    assert not (tmp_path / "c.json.setup-code").exists()
+
+
+def test_a_broken_credentials_file_stops_the_start_up(tmp_path):
+    (tmp_path / "c.json").write_text("{not json")
+    with pytest.raises(ValueError):
+        CredentialsFile(tmp_path / "c.json")
+    (tmp_path / "c.json").write_text('{"username": "ops", "password_hash": "plain"}')
+    with pytest.raises(ValueError):
+        CredentialsFile(tmp_path / "c.json")
+    with pytest.raises(ValueError):
+        CredentialsFile(tmp_path / "missing-dir" / "c.json")
+
+
+@pytest.mark.asyncio
+async def test_daemon_credentials_file_mode(tmp_path, monkeypatch):
+    base_environment(monkeypatch)
+    path = tmp_path / "admin-credentials.json"
+    app = build_app(_config(tmp_path, f'credentials_file = "{path}"\n'))
+    code = (tmp_path / "admin-credentials.json.setup-code").read_text().strip()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://c") as client:
+        assert (await client.get("/admin/api/workers")).status_code == 403
+        assert (await client.post("/admin/api/setup", json={"code": code, **SETUP})).status_code == 200
+        assert (await client.get("/admin", headers=basic("ops", SETUP["password"]))).status_code == 200
+
+
+def test_daemon_refuses_both_credential_sources_and_a_bad_path(tmp_path, monkeypatch):
+    base_environment(monkeypatch)
+    both = f'username = "ops"\npassword_hash = "{HASH}"\ncredentials_file = "{tmp_path}/c.json"\n'
+    with pytest.raises(RuntimeError, match="not both"):
+        build_app(_config(tmp_path, both))
+    with pytest.raises(RuntimeError):
+        build_app(_config(tmp_path, 'credentials_file = ""\n'))
+    with pytest.raises(RuntimeError):
+        build_app(_config(tmp_path, f'credentials_file = "{tmp_path}/nodir/c.json"\n'))

@@ -1,10 +1,18 @@
-"""HTTP Basic authentication for the operator console.
+"""Authentication for the operator console: HTTP Basic with a scrypt hash.
 
-The password is never stored: the Control config holds a scrypt hash made by
-``python -m astrumweaver.control.admin_auth``. Verification is constant time,
-runs the same work for an unknown user name, and repeated failures from one
-client are throttled (the throttle also applies to the right password, so a
-guessing run cannot tell when it hit).
+The password is never stored, only a scrypt hash. It comes from one of two
+places:
+
+* the Control config (``username`` + ``password_hash``, made with
+  ``python -m astrumweaver.control.admin_auth``), or
+* a credentials file written by the first-run setup page. Until that file
+  exists the console serves only the setup page, and the setup needs a
+  one-time code that Control writes to its log and to ``<file>.setup-code``.
+
+Verification is constant time, runs the same work for an unknown user name,
+and repeated failures from one client are throttled (the throttle also covers
+the right password, so a guessing run cannot tell when it hit). Setup code
+guesses use the same throttle.
 """
 
 from __future__ import annotations
@@ -15,13 +23,16 @@ import getpass
 import hashlib
 import hmac
 import ipaddress
+import json
 import logging
 import os
+import secrets
 import sys
 import threading
 import time
 from collections import deque
 from collections.abc import Collection
+from pathlib import Path
 
 from fastapi import HTTPException, Request
 
@@ -31,7 +42,8 @@ _SCRYPT_N = 2**14
 _SCRYPT_R = 8
 _SCRYPT_P = 1
 _KEY_BYTES = 32
-_MIN_PASSWORD_LENGTH = 12
+MIN_PASSWORD_LENGTH = 12
+MAX_PASSWORD_LENGTH = 256
 REALM = "TSUMGI operator console"
 
 MAX_FAILURES = 5
@@ -40,9 +52,13 @@ _MAX_TRACKED_CLIENTS = 1024
 _MAX_CONCURRENT_VERIFICATIONS = 2
 _SCRYPT_MAXMEM = 64 * 1024 * 1024
 
+# What the console serves while no password exists yet.
+SETUP_GET_PATHS = frozenset({"/admin", "/admin/", "/admin/app.css", "/admin/setup.js"})
+SETUP_POST_PATH = "/admin/api/setup"
+
 
 def hash_password(password: str, *, salt: bytes | None = None) -> str:
-    """``scrypt$N$r$p$salt$key`` (base64) for the config file."""
+    """``scrypt$N$r$p$salt$key`` (base64) for the config or credentials file."""
     salt = os.urandom(16) if salt is None else salt
     key = hashlib.scrypt(
         password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_KEY_BYTES,
@@ -71,32 +87,177 @@ def parse_hash(value: str) -> tuple[int, int, int, bytes, bytes]:
     return parsed
 
 
-class BasicAuth:
-    """Checks ``Authorization: Basic`` against one user name and password hash.
+def check_username(username: object) -> str:
+    if (
+        not isinstance(username, str) or not 1 <= len(username) <= 64
+        or ":" in username or any(ord(c) < 32 or ord(c) == 127 for c in username)
+    ):
+        raise ValueError("ユーザー名は 1〜64 文字で、':' と制御文字は使えません")
+    return username
 
-    ``trusted_proxies`` lists the peer addresses allowed to tell us the real
-    client in ``X-Forwarded-For`` (the reverse proxy in front of Control).
-    From any other peer the header is ignored, so a client that reaches
-    Control directly cannot dodge the throttle by forging it.
-    """
 
-    def __init__(
-        self,
-        username: str,
-        password_hash: str,
-        *,
-        trusted_proxies: Collection[str] = (),
-        clock=time.monotonic,
-    ) -> None:
-        if not username or ":" in username or any(ord(c) < 32 for c in username):
-            raise ValueError("admin_ui.username must be non-empty text without ':'")
-        self._username = username.encode()
-        self._n, self._r, self._p, self._salt, self._key = parse_hash(password_hash)
-        # Fail at start-up, not on every login, if the parameters cannot run.
+def check_password(password: object) -> str:
+    if not isinstance(password, str) or not MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH:
+        raise ValueError(f"パスワードは {MIN_PASSWORD_LENGTH}〜{MAX_PASSWORD_LENGTH} 文字にしてください")
+    return password
+
+
+class _Verifier:
+    """One user name and password hash, checked in constant time."""
+
+    def __init__(self, username: str, password_hash: str) -> None:
+        self.username = check_username(username).encode()
+        self.n, self.r, self.p, self.salt, self.key = parse_hash(password_hash)
+        # Fail when it is loaded, not on every login, if the parameters cannot run.
         try:
             self._derive(b"")
         except (ValueError, MemoryError) as exc:
             raise ValueError("admin_ui.password_hash has unusable scrypt parameters") from exc
+
+    def _derive(self, password: bytes) -> bytes:
+        return hashlib.scrypt(
+            password, salt=self.salt, n=self.n, r=self.r, p=self.p,
+            dklen=len(self.key), maxmem=_SCRYPT_MAXMEM,
+        )
+
+    def matches(self, user: bytes, password: bytes) -> bool:
+        key = self._derive(password)
+        # Both comparisons always run: no early exit on a wrong user name.
+        user_ok = hmac.compare_digest(user, self.username)
+        key_ok = hmac.compare_digest(key, self.key)
+        return user_ok and key_ok
+
+
+class StaticCredentials:
+    """Credentials from the Control config. There is no setup page."""
+
+    needs_setup = False
+
+    def __init__(self, username: str, password_hash: str) -> None:
+        self._verifier = _Verifier(username, password_hash)
+
+    def verifier(self) -> _Verifier:
+        return self._verifier
+
+
+class CredentialsFile:
+    """Credentials in a file that the setup page writes once.
+
+    The file's existence is checked on every request, so a second Control
+    process, or a reset by deleting the file and restarting, behaves correctly.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self.path = Path(path)
+        self.code_path = self.path.with_name(self.path.name + ".setup-code")
+        self._lock = threading.Lock()
+        self._cached: tuple[tuple[int, int], _Verifier] | None = None
+        if not self.path.parent.is_dir():
+            raise ValueError(f"admin_ui.credentials_file: {self.path.parent} is not a directory")
+        if self.needs_setup:
+            self._announce_code()
+        else:
+            self.verifier()  # refuse to start on a file that cannot be used
+
+    @property
+    def needs_setup(self) -> bool:
+        return not self.path.exists()
+
+    def _announce_code(self) -> None:
+        with self._lock:
+            try:
+                code = self.code_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                code = ""
+            if not code:
+                raw = secrets.token_hex(10)
+                code = "-".join(raw[i:i + 4] for i in range(0, 20, 4))
+                tmp = self.code_path.with_name(self.code_path.name + ".tmp")
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(code + "\n")
+                os.replace(tmp, self.code_path)
+        LOG.warning(
+            "operator console: no password is set yet. Open /admin and enter the setup code %s "
+            "(also in %s).", code, self.code_path,
+        )
+
+    def verifier(self) -> _Verifier:
+        try:
+            stat = self.path.stat()
+            fingerprint = (stat.st_mtime_ns, stat.st_size)
+            cached = self._cached
+            if cached is not None and cached[0] == fingerprint:
+                return cached[1]
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            verifier = _Verifier(data["username"], data["password_hash"])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ValueError(f"credentials file {self.path} is unusable") from exc
+        self._cached = (fingerprint, verifier)
+        return verifier
+
+    def set_up(self, code: str, username: str, password: str) -> bool:
+        """Create the credentials. ``False`` means the setup code was wrong.
+
+        Raises ``ValueError`` for a bad user name or password (the code is then
+        not consumed) and ``FileExistsError`` if somebody set it up first.
+        """
+        username = check_username(username)
+        password = check_password(password)
+        with self._lock:
+            if self.path.exists():
+                raise FileExistsError(self.path)
+            try:
+                expected = self.code_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                return False
+            if not expected or not hmac.compare_digest(code.strip().encode(), expected.encode()):
+                return False
+            document = json.dumps({"username": username, "password_hash": hash_password(password)})
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(document)
+            try:
+                os.link(tmp, self.path)  # atomic create: fails if it already exists
+            finally:
+                os.unlink(tmp)
+            self.code_path.unlink(missing_ok=True)
+        LOG.warning("operator console: password set up for user %r; the setup code is now void", username)
+        return True
+
+
+def _bucket(address: str) -> str:
+    """One throttle bucket per client; an IPv6 /64 is one bucket."""
+    try:
+        parsed = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError:
+        return address[:64]
+    if parsed.version == 6:
+        return str(ipaddress.ip_network(f"{parsed}/64", strict=False).network_address)
+    return str(parsed)
+
+
+class BasicAuth:
+    """FastAPI dependency: ``Authorization: Basic`` against the credentials.
+
+    ``trusted_proxies`` lists the peer addresses allowed to name the real
+    client in ``X-Forwarded-For`` (the reverse proxy in front of Control).
+    From any other peer the header is ignored, so a client that reaches
+    Control directly cannot dodge the throttle by forging it.
+
+    While the credentials need a first-run setup, only the setup page and its
+    POST are open; every other path is refused.
+    """
+
+    def __init__(
+        self,
+        credentials: StaticCredentials | CredentialsFile,
+        *,
+        trusted_proxies: Collection[str] = (),
+        clock=time.monotonic,
+    ) -> None:
+        self._credentials_source = credentials
         self._trusted = frozenset(str(p).strip() for p in trusted_proxies if str(p).strip())
         self._clock = clock
         self._failures: dict[str, deque[float]] = {}
@@ -105,11 +266,9 @@ class BasicAuth:
         # instead of queueing in the shared thread pool.
         self._slots = threading.BoundedSemaphore(_MAX_CONCURRENT_VERIFICATIONS)
 
-    def _derive(self, password: bytes) -> bytes:
-        return hashlib.scrypt(
-            password, salt=self._salt, n=self._n, r=self._r, p=self._p,
-            dklen=len(self._key), maxmem=_SCRYPT_MAXMEM,
-        )
+    @property
+    def needs_setup(self) -> bool:
+        return self._credentials_source.needs_setup
 
     def client_id(self, request: Request) -> str:
         peer = request.client.host if request.client else "unknown"
@@ -142,8 +301,8 @@ class BasicAuth:
                 self._failures.pop(client, None)
                 return
             if client not in self._failures and len(self._failures) >= _MAX_TRACKED_CLIENTS:
-                # Drop expired entries first, then the entry that is closest
-                # to expiring; locked-out clients stay as long as possible.
+                # Drop expired entries first, then the entry closest to
+                # expiring; locked-out clients stay as long as possible.
                 for key in [k for k, v in self._failures.items() if not v or now - v[-1] > FAILURE_WINDOW_SECONDS]:
                     del self._failures[key]
                 if len(self._failures) >= _MAX_TRACKED_CLIENTS:
@@ -163,33 +322,47 @@ class BasicAuth:
         user, sep, password = decoded.partition(b":")
         return (user, password) if sep else None
 
-    def _matches(self, user: bytes, password: bytes) -> bool:
-        key = self._derive(password)
-        # Both comparisons always run: no early exit on a wrong user name.
-        user_ok = hmac.compare_digest(user, self._username)
-        key_ok = hmac.compare_digest(key, self._key)
-        return user_ok and key_ok
-
-    def __call__(self, request: Request) -> None:
+    def _guard(self, request: Request) -> tuple[str, float]:
+        """Refuse locked-out clients; returns the client bucket and the time."""
         now = self._clock()
         client = self.client_id(request)
         wait = self._locked_out(client, now)
         if wait is not None:
             raise HTTPException(
                 status_code=429,
-                detail="ログインに失敗した回数が多すぎます。しばらくしてからやり直してください",
+                detail="失敗した回数が多すぎます。しばらくしてからやり直してください",
                 headers={"Retry-After": str(wait)},
             )
+        return client, now
+
+    def _take_slot(self) -> None:
+        if not self._slots.acquire(blocking=False):
+            raise HTTPException(
+                status_code=429,
+                detail="処理が混み合っています。少し待ってからやり直してください",
+                headers={"Retry-After": "1"},
+            )
+
+    def __call__(self, request: Request) -> None:
+        if self.needs_setup:
+            allowed = (
+                (request.method == "GET" and request.url.path in SETUP_GET_PATHS)
+                or (request.method == "POST" and request.url.path == SETUP_POST_PATH)
+            )
+            if allowed:
+                return
+            raise HTTPException(status_code=403, detail="初期設定が済んでいません。/admin を開いて設定してください")
+        client, now = self._guard(request)
         credentials = self._credentials(request.headers.get("authorization", ""))
         if credentials is not None:
-            if not self._slots.acquire(blocking=False):
-                raise HTTPException(
-                    status_code=429,
-                    detail="ログインの処理が混み合っています。少し待ってからやり直してください",
-                    headers={"Retry-After": "1"},
-                )
             try:
-                ok = self._matches(*credentials)
+                verifier = self._credentials_source.verifier()
+            except ValueError as exc:
+                LOG.error("operator console credentials unusable: %s", exc)
+                raise HTTPException(status_code=503, detail="認証情報を読み込めません") from exc
+            self._take_slot()
+            try:
+                ok = verifier.matches(*credentials)
             finally:
                 self._slots.release()
             self._record(client, now, ok)
@@ -204,23 +377,35 @@ class BasicAuth:
             headers={"WWW-Authenticate": f'Basic realm="{REALM}", charset="UTF-8"'},
         )
 
-
-def _bucket(address: str) -> str:
-    """One throttle bucket per client; an IPv6 /64 is one bucket."""
-    try:
-        parsed = ipaddress.ip_address(address.split("%", 1)[0])
-    except ValueError:
-        return address[:64]
-    if parsed.version == 6:
-        return str(ipaddress.ip_network(f"{parsed}/64", strict=False).network_address)
-    return str(parsed)
+    def set_up(self, request: Request, code: object, username: object, password: object) -> None:
+        """First-run setup. Wrong codes count against the client like wrong passwords."""
+        source = self._credentials_source
+        if not isinstance(source, CredentialsFile) or not source.needs_setup:
+            raise HTTPException(status_code=409, detail="すでに設定済みです")
+        client, now = self._guard(request)
+        if not isinstance(code, str):
+            raise HTTPException(status_code=400, detail="セットアップコードを入力してください")
+        self._take_slot()
+        try:
+            try:
+                ok = source.set_up(code, username, password)  # type: ignore[arg-type]
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except FileExistsError as exc:
+                raise HTTPException(status_code=409, detail="すでに設定済みです") from exc
+        finally:
+            self._slots.release()
+        self._record(client, now, ok)
+        if not ok:
+            LOG.warning("operator console setup code rejected from %r", client)
+            raise HTTPException(status_code=403, detail="セットアップコードが違います")
 
 
 def main() -> int:
     """Print a password hash for ``[admin_ui] password_hash``."""
     password = getpass.getpass("Password: ")
-    if len(password) < _MIN_PASSWORD_LENGTH:
-        print(f"The password must have at least {_MIN_PASSWORD_LENGTH} characters.", file=sys.stderr)
+    if len(password) < MIN_PASSWORD_LENGTH:
+        print(f"The password must have at least {MIN_PASSWORD_LENGTH} characters.", file=sys.stderr)
         return 1
     if getpass.getpass("Again: ") != password:
         print("The passwords differ.", file=sys.stderr)

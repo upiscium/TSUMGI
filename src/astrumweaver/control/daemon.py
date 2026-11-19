@@ -112,18 +112,28 @@ def build_app(config_path: str):
     admin_auth = None
     admin_user = admin_section.get("username")
     admin_hash = admin_section.get("password_hash")
+    admin_file = admin_section.get("credentials_file")
     if (admin_user is None) != (admin_hash is None):
         raise RuntimeError("admin_ui.username and admin_ui.password_hash must be set together")
-    if admin_user is not None:
-        if not isinstance(admin_user, str) or not isinstance(admin_hash, str):
+    if admin_user is not None and admin_file is not None:
+        raise RuntimeError("admin_ui: use either username + password_hash or credentials_file, not both")
+    if admin_user is not None or admin_file is not None:
+        if admin_file is not None and (not isinstance(admin_file, str) or not admin_file.strip()):
+            raise RuntimeError("admin_ui.credentials_file must be a path")
+        if admin_user is not None and (not isinstance(admin_user, str) or not isinstance(admin_hash, str)):
             raise RuntimeError("admin_ui.username and admin_ui.password_hash must be text")
-        from .admin_auth import BasicAuth
+        from .admin_auth import BasicAuth, CredentialsFile, StaticCredentials
 
         proxies = admin_section.get("trusted_proxies", [])
         if not isinstance(proxies, list) or not all(isinstance(p, str) for p in proxies):
             raise RuntimeError("admin_ui.trusted_proxies must be a list of addresses")
         try:
-            admin_auth = BasicAuth(admin_user, admin_hash, trusted_proxies=proxies)
+            if admin_section.get("enabled", False):  # a disabled console writes no setup code
+                source = (
+                    CredentialsFile(admin_file) if admin_file is not None
+                    else StaticCredentials(admin_user, admin_hash)
+                )
+                admin_auth = BasicAuth(source, trusted_proxies=proxies)
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
     profile_names: dict[str, str] = {}

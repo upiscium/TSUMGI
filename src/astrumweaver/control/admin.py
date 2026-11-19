@@ -230,7 +230,12 @@ def create_admin_router(
     @router.get("", include_in_schema=False)
     @router.get("/", include_in_schema=False)
     async def index() -> Response:
-        return _page("index.html", "text/html; charset=utf-8")
+        setup = auth is not None and getattr(auth, "needs_setup", False)
+        return _page("setup.html" if setup else "index.html", "text/html; charset=utf-8")
+
+    @router.get("/setup.js", include_in_schema=False)
+    async def setup_script() -> Response:
+        return _page("setup.js", "text/javascript; charset=utf-8")
 
     @router.get("/app.js", include_in_schema=False)
     async def script() -> Response:
@@ -248,24 +253,45 @@ def create_admin_router(
             headers={"Cache-Control": "no-store"},
         )
 
-    @router.post("/api/model-check")
-    async def model_check(request: Request) -> JSONResponse:
-        # Basic credentials ride along on same-site requests automatically, so this
-        # rule is the CSRF defence for the POST: do not relax it.
-        # A JSON content type forces a CORS preflight from other origins, so a
-        # page on another site cannot trigger this from an operator's browser.
+    async def _json_body(request: Request) -> tuple[Any, JSONResponse | None]:
+        # Basic credentials ride along on same-site requests automatically, so a
+        # JSON content type (which forces a CORS preflight from other origins) is
+        # the CSRF defence for every POST: do not relax it.
         if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
-            return _error(415, "Content-Type は application/json にしてください")
+            return None, _error(415, "Content-Type は application/json にしてください")
         declared = request.headers.get("content-length", "")
         if declared.isdigit() and int(declared) > MAX_REQUEST_BYTES:
-            return _error(413, "リクエストが大きすぎます")
+            return None, _error(413, "リクエストが大きすぎます")
         raw = await request.body()
         if len(raw) > MAX_REQUEST_BYTES:
-            return _error(413, "リクエストが大きすぎます")
+            return None, _error(413, "リクエストが大きすぎます")
         try:
-            body = await request.json()
+            return await request.json(), None
         except ValueError:
-            return _error(400, "本文は JSON にしてください")
+            return None, _error(400, "本文は JSON にしてください")
+
+    @router.post("/api/setup")
+    async def setup(request: Request) -> JSONResponse:
+        if auth is None or not hasattr(auth, "set_up"):
+            return _error(404, "この設定では初期設定は使えません")
+        body, failure = await _json_body(request)
+        if failure is not None:
+            return failure
+        if not isinstance(body, dict):
+            return _error(400, "本文は JSON のオブジェクトにしてください")
+        try:
+            await asyncio.to_thread(auth.set_up, request, body.get("code"), body.get("username"), body.get("password"))
+        except HTTPException as exc:
+            return JSONResponse(
+                {"error": exc.detail}, status_code=exc.status_code, headers={**(exc.headers or {}), "Cache-Control": "no-store"}
+            )
+        return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/model-check")
+    async def model_check(request: Request) -> JSONResponse:
+        body, failure = await _json_body(request)
+        if failure is not None:
+            return failure
         url = body.get("url") if isinstance(body, dict) else None
         if not isinstance(url, str):
             return _error(400, '本文は {"url": "<Hugging Face の URL>"} の形にしてください')

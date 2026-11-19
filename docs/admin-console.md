@@ -70,6 +70,30 @@ with a hash it cannot run. After 5 wrong attempts within 5 minutes a client
 gets 429 until the window passes (an IPv6 /64 counts as one client). Failures
 are logged, and at most two password checks run at once.
 
+### First-run setup (no hash in the config)
+
+Instead of a hash, give Control a file to keep the credentials in:
+
+```toml
+[admin_ui]
+enabled = true
+credentials_file = "/var/lib/astrumweaver-control/admin-credentials.json"
+trusted_proxies = ["10.12.1.1"]
+```
+
+While the file does not exist, `/admin` shows only a setup page, and every other
+console path answers 403. Control writes a one-time setup code to its log
+(`journalctl -u astrumweaver-control`) and to `<file>.setup-code` (mode 0600).
+Open `/admin`, enter the code, a user name and a password (12 characters or more).
+The hash goes into the file (mode 0600), the code is deleted, and the normal
+login applies from then on. Wrong codes count against the same lockout as wrong
+passwords. The code survives a restart until the setup is done.
+
+The code is what stops a stranger from claiming the console first, so keep it
+out of chat and tickets. To reset the password, delete the credentials file and
+restart Control: a new code is written. Use `credentials_file` or
+`username` + `password_hash`, not both.
+
 `trusted_proxies` lists the peer addresses allowed to name the real client in
 `X-Forwarded-For` (the rightmost entry is used). From any other peer the header
 is ignored. Without it, every request behind a proxy looks like the proxy and
