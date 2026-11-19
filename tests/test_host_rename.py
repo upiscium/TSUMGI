@@ -149,6 +149,7 @@ def test_no_start_leaves_the_new_unit_stopped(host, tmp_path):
 
 def test_pinned_identities_block_the_migration_without_touching_anything(host, tmp_path):
     write(host, "etc/astrumweaver/runtime-deployment.json", json.dumps({"executable": STORE + "/bin/astrumweaver-llama-server"}))
+    write(host, "etc/astrumweaver/q/worker.toml", "[runtime]\nmanifest = \"/etc/astrumweaver/runtime-deployment.json\"\n")
     plan = migration(host).plan()
     assert plan.repin and any("re-pin" in b for b in plan.blockers)
     run = Recorder()
@@ -157,6 +158,7 @@ def test_pinned_identities_block_the_migration_without_touching_anything(host, t
     assert run.calls == [] and (host / "etc/astrumweaver").exists()
     write(host, "etc/astrumweaver/runtime-deployment.json", "{}")
     write(host, "etc/astrumweaver/serving-deployment.json", '{"operation_schema": "astrumweaver-decisions-v1"}')
+    write(host, "etc/astrumweaver/q/worker.toml", "[x]\nserving = \"/etc/astrumweaver/serving-deployment.json\"\n")
     with pytest.raises(MigrationError, match="re-pin"):
         migration(host, runner=run).apply(tmp_path / "b2")
 
@@ -234,6 +236,7 @@ def test_cli_plan_and_blocked_exit_codes(host, capsys):
     args = ["plan", "--role", "worker", "--profile", "tsumgi-v030-installer", "--root", str(host), "--helpers-from", str(helpers)]
     assert main(args) == 0 and "rewrite" in capsys.readouterr().out
     write(host, "etc/astrumweaver/serving-deployment.json", '{"operation_schema": "astrumweaver-decisions-v1"}')
+    write(host, "etc/astrumweaver/q/worker.toml", "[x]\nserving = \"/etc/astrumweaver/serving-deployment.json\"\n")
     assert main(args) == 3
     assert main(["rollback", "--backup-dir", str(host.parent / "none")]) == 2
 
@@ -380,12 +383,12 @@ def test_other_extensions_are_rewritten_too(host, tmp_path):
     assert (host / "etc/tsumgi/extra.yaml").read_text() == "path: /etc/tsumgi/x\n"
 
 
-def test_symlinks_that_will_dangle_are_reported(host):
+def test_symlinks_that_cannot_be_retargeted_are_reported(host):
     (host / "usr/local/bin").mkdir(parents=True)
-    (host / "usr/local/bin/strata").symlink_to("/opt/astrumweaver/strata/bin/strata")
-    (host / "var/lib/astrumweaver/link").symlink_to("/opt/astrumweaver/strata")
-    warnings = migration(host).plan().warnings
-    assert sum("will dangle" in w for w in warnings) == 2
+    (host / "usr/local/bin/strata").symlink_to("../../../opt/astrumweaver/strata/bin/strata")  # relative
+    (host / "var/lib/astrumweaver/link").symlink_to("/nix/store/" + "c" * 32 + "-astrumweaver-thing")  # store path
+    plan = migration(host).plan()
+    assert sum("cannot be retargeted" in w for w in plan.warnings) == 2 and not plan.symlinks
 
 
 def test_the_other_role_on_the_same_host_blocks(host):
@@ -496,3 +499,163 @@ def test_old_helpers_with_subdirectories_and_dotfiles_are_replaced_and_restored(
     migration(host, runner=Recorder()).apply(tmp_path / "b")
     names = sorted(p.name for p in (host / "usr/local/libexec/tsumgi").iterdir())
     assert names == ["gpu-preflight"]
+
+
+# ---- findings from the stage 5 plan on real hosts ------------------------------------------
+
+
+def _full_snapshot(root: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for p in sorted(root.rglob("*")):
+        rel = p.relative_to(root).as_posix()
+        if p.is_symlink():
+            out[rel] = "-> " + os.readlink(p)
+        elif p.is_file():
+            out[rel] = p.read_text()
+        else:
+            out[rel] = "<dir>"
+    return out
+
+
+def add_strata_links(host: Path) -> None:
+    write(host, "opt/astrumweaver/strata/data/terminal/0.1/bin/strata", "binary")
+    (host / "opt/astrumweaver/strata/data/terminal/current").symlink_to("/opt/astrumweaver/strata/data/terminal/0.1")
+    (host / "opt/astrumweaver/strata/bin").mkdir(exist_ok=True)
+    for stale in (host / "opt/astrumweaver/strata/bin/strata",):
+        if stale.exists():
+            stale.unlink()
+    (host / "opt/astrumweaver/strata/bin/strata").symlink_to("/opt/astrumweaver/strata/data/terminal/current/bin/strata")
+
+
+def add_profile(host: Path) -> None:
+    prof = host / "nix/var/nix/profiles"
+    prof.mkdir(parents=True, exist_ok=True)
+    (prof / "astrumweaver-runtime-qwen38-3-link").symlink_to("/nix/store/" + "b" * 32 + "-profile")
+    (prof / "astrumweaver-runtime-qwen38").symlink_to("astrumweaver-runtime-qwen38-3-link")
+    (host / "usr/local/bin").mkdir(parents=True, exist_ok=True)
+    (host / "usr/local/bin/llama-server").symlink_to("/nix/var/nix/profiles/astrumweaver-runtime-qwen38/bin/llama-server")
+
+
+def test_absolute_links_into_moved_trees_and_profiles_are_retargeted(host, tmp_path):
+    add_strata_links(host)
+    add_profile(host)
+    plan = migration(host).plan()
+    assert len(plan.symlinks) == 3 and len(plan.profiles) == 2 and not plan.blockers
+    migration(host, runner=Recorder()).apply(tmp_path / "b")
+    link = host / "opt/tsumgi/strata/bin/strata"
+    assert os.readlink(link) == "/opt/tsumgi/strata/data/terminal/current/bin/strata"
+    assert os.readlink(host / "opt/tsumgi/strata/data/terminal/current") == "/opt/tsumgi/strata/data/terminal/0.1"
+    assert os.readlink(host / "usr/local/bin/llama-server") == "/nix/var/nix/profiles/tsumgi-runtime-qwen38/bin/llama-server"
+    prof = host / "nix/var/nix/profiles"
+    assert os.readlink(prof / "tsumgi-runtime-qwen38") == "tsumgi-runtime-qwen38-3-link"
+    assert os.readlink(prof / "tsumgi-runtime-qwen38-3-link").startswith("/nix/store/")
+    assert not (prof / "astrumweaver-runtime-qwen38").is_symlink()
+
+
+def test_rollback_restores_links_and_profiles_exactly(host, tmp_path):
+    add_strata_links(host)
+    add_profile(host)
+    env, _ = _stubs(tmp_path)
+    before = _full_snapshot(host)
+    backup = tmp_path / "backup"
+    migration(host, runner=Recorder()).apply(backup)
+    assert _full_snapshot(host) != before
+    done = _run_script(backup / "rollback.sh", env)
+    assert done.returncode == 0, done.stderr
+    assert _full_snapshot(host) == before
+    assert _run_script(backup / "rollback.sh", env).returncode == 0
+    assert _full_snapshot(host) == before
+
+
+def test_an_existing_new_profile_name_blocks(host):
+    add_profile(host)
+    (host / "nix/var/nix/profiles/tsumgi-runtime-qwen38").symlink_to("x")
+    assert any("tsumgi-runtime-qwen38" in b for b in migration(host).plan().blockers)
+
+
+def test_rollback_copies_are_neither_rewritten_nor_checked(host, tmp_path):
+    write(host, "etc/astrumweaver/rollback/70.conf.old", "ExecStart=/x/bin/astrumweaver-worker\n")
+    write(host, "etc/astrumweaver/rollback/pinned.json", '{"p": "' + STORE + '/bin/x"}')
+    plan = migration(host).plan()
+    assert not plan.blockers and not any("rollback" in p.relative_to(host).parts for p in plan.rewrites)
+    migration(host, runner=Recorder()).apply(tmp_path / "b")
+    assert (host / "etc/tsumgi/rollback/70.conf.old").read_text() == "ExecStart=/x/bin/astrumweaver-worker\n"
+
+
+def test_a_pinned_file_that_nothing_refers_to_only_warns(host, tmp_path):
+    write(host, "etc/astrumweaver/tsumgi-rc1-runtime.json", json.dumps({"executable": STORE + "/bin/x"}))
+    plan = migration(host).plan()
+    assert not plan.blockers and any("nothing refers to it" in w for w in plan.warnings)
+    migration(host, runner=Recorder()).apply(tmp_path / "b")
+    assert STORE in (host / "etc/tsumgi/tsumgi-rc1-runtime.json").read_text()
+
+
+def test_a_pinned_file_that_the_config_refers_to_blocks(host):
+    write(host, "etc/astrumweaver/p/runtime.json", json.dumps({"executable": STORE + "/bin/x"}))
+    assert any("re-pin" in b and "runtime.json" in b for b in migration(host).plan().blockers)
+
+
+def test_a_reset_base_exec_start_does_not_count_as_a_reference(host, tmp_path):
+    write(host, "etc/astrumweaver/tsumgi-rc1-runtime.json", json.dumps({"executable": STORE + "/bin/x"}))
+    unit = host / "etc/systemd/system/astrumweaver-worker.service"
+    unit.write_text(unit.read_text() + "ExecStart=/x/bin/astrumweaver-worker --runtime-manifest /etc/astrumweaver/tsumgi-rc1-runtime.json\n")
+    plan = migration(host).plan()  # the drop-in already resets ExecStart
+    assert not plan.blockers and any("nothing refers to it" in w for w in plan.warnings)
+
+
+def test_an_unreset_base_exec_start_still_counts_as_a_reference(host):
+    write(host, "etc/astrumweaver/tsumgi-rc1-runtime.json", json.dumps({"executable": STORE + "/bin/x"}))
+    (host / "etc/systemd/system/astrumweaver-worker.service.d/70-strata.conf").write_text(
+        "[Service]\nExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight /etc/astrumweaver/gpu-uuids\n")
+    unit = host / "etc/systemd/system/astrumweaver-worker.service"
+    unit.write_text(unit.read_text() + "ExecStart=/x/bin/astrumweaver-worker --runtime-manifest /etc/astrumweaver/tsumgi-rc1-runtime.json\n")
+    assert any("tsumgi-rc1-runtime.json" in b for b in migration(host).plan().blockers)
+
+
+def test_the_backup_keeps_the_owner_so_a_rollback_restores_it(host, tmp_path, monkeypatch):
+    """Found on a real host: root:group 0640 files came back root:root and the old Worker could not read them."""
+    calls: list[tuple[str, int, int]] = []
+    real_chown = os.chown
+
+    def spy(path, uid, gid, *a, **k):
+        calls.append((str(path), uid, gid))
+        return real_chown(path, uid, gid, *a, **k)
+
+    monkeypatch.setattr(os, "chown", spy)
+    worker_toml = host / "etc/astrumweaver/p/worker.toml"
+    info = worker_toml.stat()
+    migration(host, runner=Recorder()).apply(tmp_path / "b")
+    backed_up = [c for c in calls if c[0].endswith("files/etc/astrumweaver/p/worker.toml")]
+    assert backed_up == [(str(tmp_path / "b/files/etc/astrumweaver/p/worker.toml"), info.st_uid, info.st_gid)]
+    # every backed-up file, units included, had its owner set
+    assert len(calls) >= len(list((tmp_path / "b/files").rglob("*.*"))) - 2
+    # and the rollback restores with cp -p, which uses that owner
+    assert "cp -p" in (tmp_path / "b/rollback.sh").read_text()
+
+
+def test_allow_pinned_lets_the_operator_move_a_stale_referenced_file(host, tmp_path):
+    write(host, "etc/astrumweaver/runtime-deployment.json", json.dumps({"executable": STORE + "/bin/x"}))
+    write(host, "etc/astrumweaver/stale-worker.toml", '[runtime]\nmanifest = "/etc/astrumweaver/runtime-deployment.json"\n')
+    assert any("runtime-deployment.json" in b for b in migration(host).plan().blockers)
+    allowed = migration(host, allow_pinned=["/etc/astrumweaver/runtime-deployment.json"])
+    plan = allowed.plan()
+    assert not plan.blockers and any("allowed by the operator" in w for w in plan.warnings)
+    allowed.run = Recorder()
+    allowed.apply(tmp_path / "b")
+    assert STORE in (host / "etc/tsumgi/runtime-deployment.json").read_text()
+
+
+def test_allow_pinned_never_covers_a_unit_file(host):
+    unit = host / "etc/systemd/system/astrumweaver-worker.service"
+    unit.write_text(unit.read_text() + f"ExecStart={STORE}/bin/x\n")
+    path = "/etc/systemd/system/astrumweaver-worker.service"
+    assert migration(host, allow_pinned=[path]).plan().blockers
+
+
+def test_cli_allow_pinned_flag(host, capsys):
+    helpers = host.parent / (host.name + "-helpers")
+    write(host, "etc/astrumweaver/runtime-deployment.json", json.dumps({"executable": STORE + "/bin/x"}))
+    write(host, "etc/astrumweaver/stale.toml", 'm = "/etc/astrumweaver/runtime-deployment.json"\n')
+    base = ["plan", "--role", "worker", "--profile", "tsumgi-v030-installer", "--root", str(host), "--helpers-from", str(helpers)]
+    assert main(base) == 3
+    assert main(base + ["--allow-pinned", "/etc/astrumweaver/runtime-deployment.json"]) == 0
