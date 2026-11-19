@@ -134,6 +134,13 @@ def build_app(config_path: str):
                     else StaticCredentials(admin_user, admin_hash)
                 )
                 admin_auth = BasicAuth(source, trusted_proxies=proxies)
+                if not proxies:
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "admin_ui.trusted_proxies is empty: behind a reverse proxy every client shares "
+                        "one login lockout, so set it to the proxy address"
+                    )
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
     profile_names: dict[str, str] = {}

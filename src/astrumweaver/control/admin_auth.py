@@ -33,6 +33,7 @@ import time
 from collections import deque
 from collections.abc import Collection
 from pathlib import Path
+from stat import S_ISREG
 
 from fastapi import HTTPException, Request
 
@@ -93,12 +94,20 @@ def check_username(username: object) -> str:
         or ":" in username or any(ord(c) < 32 or ord(c) == 127 for c in username)
     ):
         raise ValueError("ユーザー名は 1〜64 文字で、':' と制御文字は使えません")
+    try:
+        username.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("ユーザー名に使えない文字が含まれています") from None
     return username
 
 
 def check_password(password: object) -> str:
     if not isinstance(password, str) or not MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH:
         raise ValueError(f"パスワードは {MIN_PASSWORD_LENGTH}〜{MAX_PASSWORD_LENGTH} 文字にしてください")
+    try:
+        password.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("パスワードに使えない文字が含まれています") from None
     return password
 
 
@@ -140,6 +149,52 @@ class StaticCredentials:
         return self._verifier
 
 
+def _write_private(directory: Path, text: str) -> Path:
+    """A new 0600 file next to the target, never following a planted name."""
+    import tempfile
+
+    fd, name = tempfile.mkstemp(dir=directory, prefix=".admin-", suffix=".tmp")  # O_EXCL, 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
+    return Path(name)
+
+
+def _publish(tmp: Path, target: Path) -> None:
+    """Atomically create ``target`` from ``tmp`` (``FileExistsError`` if it exists)."""
+    try:
+        try:
+            os.link(tmp, target)
+        except OSError as exc:
+            if isinstance(exc, FileExistsError):
+                raise
+            # No hard links on this file system: create the target exclusively.
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(tmp.read_text(encoding="utf-8"))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_code(path: Path) -> str:
+    """The setup code, only from a regular file we own that others cannot read."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return ""
+    with os.fdopen(fd, "r", encoding="utf-8") as handle:
+        stat = os.fstat(handle.fileno())
+        if not S_ISREG(stat.st_mode) or stat.st_uid != os.geteuid() or stat.st_mode & 0o077:
+            LOG.error("operator console: ignoring %s (not a private regular file we own)", path)
+            return ""
+        return handle.read().strip()
+
+
 class CredentialsFile:
     """Credentials in a file that the setup page writes once.
 
@@ -165,18 +220,18 @@ class CredentialsFile:
 
     def _announce_code(self) -> None:
         with self._lock:
-            try:
-                code = self.code_path.read_text(encoding="utf-8").strip()
-            except OSError:
-                code = ""
+            code = _read_code(self.code_path)
             if not code:
                 raw = secrets.token_hex(10)
                 code = "-".join(raw[i:i + 4] for i in range(0, 20, 4))
-                tmp = self.code_path.with_name(self.code_path.name + ".tmp")
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    handle.write(code + "\n")
-                os.replace(tmp, self.code_path)
+                tmp = _write_private(self.path.parent, code + "\n")
+                try:
+                    _publish(tmp, self.code_path)
+                except FileExistsError:
+                    # Another process (or a stale file we refuse to read) got there first.
+                    code = _read_code(self.code_path)
+                    if not code:
+                        raise ValueError(f"{self.code_path} exists but is not usable; remove it") from None
         LOG.warning(
             "operator console: no password is set yet. Open /admin and enter the setup code %s "
             "(also in %s).", code, self.code_path,
@@ -207,22 +262,15 @@ class CredentialsFile:
         with self._lock:
             if self.path.exists():
                 raise FileExistsError(self.path)
-            try:
-                expected = self.code_path.read_text(encoding="utf-8").strip()
-            except OSError:
-                return False
+            expected = _read_code(self.code_path)
             if not expected or not hmac.compare_digest(code.strip().encode(), expected.encode()):
                 return False
             document = json.dumps({"username": username, "password_hash": hash_password(password)})
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(document)
+            _publish(_write_private(self.path.parent, document), self.path)
             try:
-                os.link(tmp, self.path)  # atomic create: fails if it already exists
-            finally:
-                os.unlink(tmp)
-            self.code_path.unlink(missing_ok=True)
+                self.code_path.unlink(missing_ok=True)
+            except OSError as exc:  # the password is set; do not fail the request
+                LOG.error("operator console: could not remove the setup code file: %s", exc)
         LOG.warning("operator console: password set up for user %r; the setup code is now void", username)
         return True
 
@@ -393,6 +441,9 @@ class BasicAuth:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except FileExistsError as exc:
                 raise HTTPException(status_code=409, detail="すでに設定済みです") from exc
+            except OSError as exc:
+                LOG.error("operator console setup could not write the credentials: %s", exc)
+                raise HTTPException(status_code=500, detail="認証情報を保存できません。Control のログを確認してください") from exc
         finally:
             self._slots.release()
         self._record(client, now, ok)

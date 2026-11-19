@@ -94,6 +94,10 @@ out of chat and tickets. To reset the password, delete the credentials file and
 restart Control: a new code is written. Use `credentials_file` or
 `username` + `password_hash`, not both.
 
+**Set `trusted_proxies` in any proxied setup.** Without it all clients share one
+lockout, so a stranger could lock the operator out of the setup page or the
+login by sending wrong attempts. Control logs a warning when it is empty.
+
 `trusted_proxies` lists the peer addresses allowed to name the real client in
 `X-Forwarded-For` (the rightmost entry is used). From any other peer the header
 is ignored. Without it, every request behind a proxy looks like the proxy and

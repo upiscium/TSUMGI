@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import os
+from pathlib import Path
 
 import httpx
 import pytest
@@ -413,3 +415,97 @@ def test_daemon_refuses_both_credential_sources_and_a_bad_path(tmp_path, monkeyp
         build_app(_config(tmp_path, 'credentials_file = ""\n'))
     with pytest.raises(RuntimeError):
         build_app(_config(tmp_path, f'credentials_file = "{tmp_path}/nodir/c.json"\n'))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["//admin", "/admin/../admin/api/workers", "/admin/api/workers/", "/admin/api/workers?x=/admin"])
+@pytest.mark.parametrize("method", ["GET", "HEAD", "OPTIONS", "PUT"])
+async def test_setup_mode_path_variants_never_reach_data(tmp_path, method, path):
+    client, _, _ = make_setup(tmp_path)
+    async with client:
+        response = await client.request(method, path)
+        assert response.status_code in (307, 308, 403, 404, 405), (method, path, response.status_code)
+        assert b"workers" not in response.content or response.status_code != 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["\\ud800", "pa\\udfffssword long enough"])
+async def test_lone_surrogates_are_a_400_not_a_broken_credentials_file(tmp_path, bad):
+    client, store, _ = make_setup(tmp_path)
+    async with client:
+        for field in ("username", "password"):
+            body = {"code": code_of(store), "username": "ops", "password": "a long enough password"}
+            raw = '{"code": "%s", "username": %s, "password": %s}' % (
+                body["code"],
+                '"%s"' % bad if field == "username" else '"ops"',
+                '"%s"' % bad if field == "password" else '"a long enough password"',
+            )
+            response = await client.post("/admin/api/setup", content=raw, headers={"content-type": "application/json"})
+            assert response.status_code == 400 and not store.path.exists(), (field, response.status_code)
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_credentials_file_never_opens_the_console(tmp_path):
+    client, store, auth = make_setup(tmp_path)
+    async with client:
+        await post_setup(client, code=code_of(store), **SETUP)
+        store.path.unlink()
+        assert auth.needs_setup
+        # No code file any more, so nobody can set a new password until a restart writes one.
+        assert (await post_setup(client, code="anything", **SETUP)).status_code == 403
+        assert (await client.get("/admin/api/workers")).status_code == 403
+    assert code_of(CredentialsFile(store.path))  # a restart announces a fresh code
+
+
+def test_a_second_process_reuses_the_published_code_and_leaves_no_temp_files(tmp_path):
+    first = CredentialsFile(tmp_path / "c.json")
+    second = CredentialsFile(tmp_path / "c.json")
+    assert code_of(first) == code_of(second)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["c.json.setup-code"]
+
+
+def test_untrusted_code_files_are_ignored(tmp_path):
+    (tmp_path / "real").write_text("secret\n")
+    (tmp_path / "c.json.setup-code").symlink_to(tmp_path / "real")
+    with pytest.raises(ValueError, match="not usable"):
+        CredentialsFile(tmp_path / "c.json")
+    (tmp_path / "c.json.setup-code").unlink()
+    (tmp_path / "c.json.setup-code").write_text("planted-by-a-reader\n")
+    (tmp_path / "c.json.setup-code").chmod(0o644)  # readable by others: refused
+    with pytest.raises(ValueError, match="not usable"):
+        CredentialsFile(tmp_path / "c.json")
+
+
+@pytest.mark.asyncio
+async def test_setup_without_hard_links_and_a_failing_cleanup_still_succeed(tmp_path, monkeypatch):
+    import astrumweaver.control.admin_auth as mod
+
+    client, store, _ = make_setup(tmp_path)
+    real_link, real_unlink = os.link, Path.unlink
+
+    def no_links(src, dst, **kw):
+        raise PermissionError("hard links not supported")
+
+    def flaky_unlink(self, *a, **kw):
+        if self.name.endswith(".setup-code"):
+            raise PermissionError("read-only")
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(mod.os, "link", no_links)
+    monkeypatch.setattr(mod.Path, "unlink", flaky_unlink)
+    async with client:
+        assert (await post_setup(client, code=code_of(store), **SETUP)).status_code == 200
+    assert store.path.stat().st_mode & 0o777 == 0o600
+    assert CredentialsFile(store.path).needs_setup is False
+
+
+@pytest.mark.asyncio
+async def test_setup_throttle_buckets_follow_trusted_forwarded_clients(tmp_path):
+    client, store, _ = make_setup(tmp_path, trusted=("127.0.0.1",))
+    async with client:
+        for _ in range(MAX_FAILURES):
+            await client.post("/admin/api/setup", json={"code": "bad", **SETUP}, headers={"x-forwarded-for": "1.1.1.1"})
+        blocked = await client.post("/admin/api/setup", json={"code": code_of(store), **SETUP}, headers={"x-forwarded-for": "1.1.1.1"})
+        assert blocked.status_code == 429
+        ok = await client.post("/admin/api/setup", json={"code": code_of(store), **SETUP}, headers={"x-forwarded-for": "2.2.2.2"})
+        assert ok.status_code == 200
