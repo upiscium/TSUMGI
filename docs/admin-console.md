@@ -15,9 +15,8 @@ Worker's state and ask the Hugging Face API about a model, so treat it like an
 internal dashboard:
 
 - It is **off** unless the Control config enables it.
-- Do not expose `/admin` on a public listener. If a reverse proxy fronts
-  Control, route only `/v1/` to the outside, and keep `/admin` on the
-  internal network.
+- Without a password, do not expose `/admin` on a public listener: route only
+  `/v1/` to the outside. With one, expose it only over HTTPS.
 - Optional `allowed_hosts` (below) rejects requests whose `Host` header is not
   on the list. That blocks a DNS-rebinding page, which could otherwise read
   the console through an operator's browser.
