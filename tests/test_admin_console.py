@@ -468,3 +468,35 @@ async def test_allowed_hosts_blocks_other_host_headers():
     open_app = app_for(repo)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=open_app), base_url="http://x") as client:
         assert (await client.get("/admin/api/workers", headers={"host": "anything"})).status_code == 200
+
+
+def test_worker_without_accelerator_records_still_lists_telemetry_gpus():
+    repo = InMemoryControlRepository()
+    spec = WorkerSpec(
+        worker_id="deneb",
+        worker_class="gpu-single",
+        resources=ResourceShape(gpu_count=1, total_vram_mb=11264, max_single_gpu_vram_mb=11264),
+        gpu_uuids=(GPU,),
+        capabilities=frozenset({"llm.chat"}),
+    )
+    telemetry = snapshot()
+    telemetry["gpus"][0].update(name="NVIDIA GeForce GTX 1080 Ti", memory_total_mb=11264.0)
+    repo.register_worker(WorkerRegistration(spec=spec, metadata={TELEMETRY_METADATA_KEY: telemetry}))
+    gpus = worker_status(repo.get_worker("deneb"), utc_now(), None)["gpus"]
+    assert len(gpus) == 1
+    assert gpus[0]["uuid"] == GPU and gpus[0]["name"] == "NVIDIA GeForce GTX 1080 Ti"
+    assert gpus[0]["memory_total_mb"] == 11264.0 and gpus[0]["memory_used_mb"] == 10741.0
+
+
+def test_worker_without_accelerators_or_telemetry_keeps_unknown_gpu_values():
+    repo = InMemoryControlRepository()
+    spec = WorkerSpec(
+        worker_id="vega",
+        worker_class="gpu-single",
+        resources=ResourceShape(gpu_count=1, total_vram_mb=11264, max_single_gpu_vram_mb=11264),
+        gpu_uuids=(GPU,),
+        capabilities=frozenset({"llm.chat"}),
+    )
+    repo.register_worker(WorkerRegistration(spec=spec))
+    gpus = worker_status(repo.get_worker("vega"), utc_now(), None)["gpus"]
+    assert [g["uuid"] for g in gpus] == [GPU] and gpus[0]["memory_used_mb"] is None
