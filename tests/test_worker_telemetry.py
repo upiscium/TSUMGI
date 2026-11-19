@@ -107,7 +107,7 @@ def test_collect_records_failures_instead_of_raising(tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_refreshes_until_stopped_and_survives_errors(tmp_path, monkeypatch):
-    telemetry = WorkerTelemetry(interval_seconds=0.01)
+    telemetry = WorkerTelemetry(interval_seconds=0.01, initial_delay_seconds=0)
     calls = []
 
     def collect():
@@ -124,6 +124,34 @@ async def test_run_refreshes_until_stopped_and_survives_errors(tmp_path, monkeyp
     stop.set()
     await asyncio.wait_for(task, 1)
     assert telemetry.latest()["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_first_collection_waits_for_the_initial_delay(monkeypatch):
+    telemetry = WorkerTelemetry(interval_seconds=0.01, initial_delay_seconds=0.2)
+    calls = []
+    monkeypatch.setattr(telemetry, "collect", lambda: calls.append(1) or {"schema": TELEMETRY_SCHEMA})
+    stop = asyncio.Event()
+    task = asyncio.create_task(telemetry.run(stop))
+    await asyncio.sleep(0.1)
+    assert calls == [] and telemetry.latest() is None
+    while not calls:
+        await asyncio.sleep(0.01)
+    stop.set()
+    await asyncio.wait_for(task, 1)
+    # A stop request during the delay ends the task without collecting.
+    early = WorkerTelemetry(initial_delay_seconds=30)
+    monkeypatch.setattr(early, "collect", lambda: pytest.fail("collected during the delay"))
+    stop = asyncio.Event()
+    task = asyncio.create_task(early.run(stop))
+    await asyncio.sleep(0.01)
+    stop.set()
+    await asyncio.wait_for(task, 1)
+
+
+def test_negative_initial_delay_is_rejected():
+    with pytest.raises(ValueError):
+        WorkerTelemetry(initial_delay_seconds=-1)
 
 
 WORKER_TOKEN = "worker-secret"

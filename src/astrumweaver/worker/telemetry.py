@@ -24,7 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-TELEMETRY_METADATA_KEY = "telemetry"
+from ..transport import TELEMETRY_METADATA_KEY
+
 TELEMETRY_SCHEMA = "worker-telemetry-v1"
 
 _GPU_FIELDS = (
@@ -36,6 +37,7 @@ _GPU_FIELDS = (
     "temperature.gpu",
     "power.draw",
 )
+DEFAULT_INITIAL_DELAY_SECONDS = 5.0
 _LOG = logging.getLogger(__name__)
 
 
@@ -112,6 +114,7 @@ class WorkerTelemetry:
         gpu_uuids: Sequence[str] = (),
         runtime: Mapping[str, Any] | None = None,
         interval_seconds: float = 30.0,
+        initial_delay_seconds: float = DEFAULT_INITIAL_DELAY_SECONDS,
         nvidia_smi: str = "nvidia-smi",
         command_timeout_seconds: float = 5.0,
         meminfo_path: str = "/proc/meminfo",
@@ -119,6 +122,9 @@ class WorkerTelemetry:
     ) -> None:
         if not interval_seconds > 0:
             raise ValueError("telemetry interval must be positive")
+        if not initial_delay_seconds >= 0:
+            raise ValueError("telemetry initial delay must not be negative")
+        self.initial_delay_seconds = float(initial_delay_seconds)
         self.gpu_uuids = tuple(gpu_uuids)
         self.runtime = dict(runtime or {})
         self.interval_seconds = float(interval_seconds)
@@ -151,7 +157,15 @@ class WorkerTelemetry:
         return snapshot
 
     async def run(self, stop: asyncio.Event) -> None:
-        """Refresh until ``stop`` is set. Never raises on collection failure."""
+        """Refresh until ``stop`` is set. Never raises on collection failure.
+
+        The first collection waits ``initial_delay_seconds``. Starting
+        ``nvidia-smi`` stalls the process briefly, and doing that while the
+        Worker registers and claims its first Job would only add jitter to
+        startup for a value nobody needs in the first seconds.
+        """
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=self.initial_delay_seconds)
         while not stop.is_set():
             started = time.monotonic()
             try:

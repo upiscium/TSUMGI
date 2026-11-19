@@ -225,4 +225,9 @@ __all__ = [
     "worker_heartbeat_from_dict",
     "worker_record_to_dict",
     "worker_registration_from_dict",
+    "TELEMETRY_METADATA_KEY",
 ]
+
+# Heartbeat metadata key under which a Worker reports its live telemetry
+# snapshot (GPU memory, host resources, runtime summary).
+TELEMETRY_METADATA_KEY = "telemetry"
