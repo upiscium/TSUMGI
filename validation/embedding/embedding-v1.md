@@ -6,7 +6,7 @@ This file is intentionally redacted. It contains no gateway URL, credential, fix
 | --- | --- |
 | Evidence version | embedding-serving-v1 |
 | Date (UTC) | 2026-10-07 |
-| AstrumWeaver revision | b31954e206085043f849dbc39849b92f35249e9c |
+| TSUMGI revision | b31954e206085043f849dbc39849b92f35249e9c |
 | Logical profile | notes-embed-v1 |
 | Logical profile revision | sha256:139d2ac3fd0959757891b616619afdf691733b54ea2122968681e15447d1b86d |
 | Deployment revision | sha256:e06394542d0a33d5baa818850051489bc410b8e50c0a6b768734f83ef5917b3c |

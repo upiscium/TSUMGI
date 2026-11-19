@@ -244,8 +244,8 @@ class EmbeddingGatewayService:
 def _space_object(profile: EmbeddingGatewayProfile) -> dict[str, object]:
     return {
         "id": profile.profile_id,
-        "object": "astrumweaver.embedding_space",
-        "x_astrumweaver": {
+        "object": "tsumgi.embedding_space",
+        "x_tsumgi": {
             "embedding_space_id": profile.embedding_space_id,
             "profile_revision": profile.resolved.profile_revision,
             "deployment_revision": profile.resolved.deployment.revision,

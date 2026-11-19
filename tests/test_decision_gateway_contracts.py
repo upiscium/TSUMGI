@@ -296,8 +296,8 @@ def test_normalized_response_maps_scores_and_abstains_without_failure():
         "status": "uncalibrated",
         "reference_sha256": None,
     }
-    assert accepted["x_astrumweaver"]["mode"] == "shadow"
-    assert accepted["x_astrumweaver"]["authority"] == "recommendation-only"
+    assert accepted["x_tsumgi"]["mode"] == "shadow"
+    assert accepted["x_tsumgi"]["authority"] == "recommendation-only"
 
     abstained = normalize_decision_response(
         provider_response((0.4, 0.35, 0.25)),

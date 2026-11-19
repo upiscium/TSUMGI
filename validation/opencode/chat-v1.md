@@ -6,7 +6,7 @@ This file is intentionally redacted. It contains no gateway URL, credential, pro
 | --- | --- |
 | Evidence version | opencode-chat-v1 |
 | Date (UTC) | 2026-10-06 |
-| AstrumWeaver revision | 35fb7295bb8802c63df5b66da006563ce2fa255a |
+| TSUMGI revision | 35fb7295bb8802c63df5b66da006563ce2fa255a |
 | OpenCode version | 1.18.30 |
 | OpenCode package manifest SHA-1 | c7c467037d109b457884484af81d4518527816c5 |
 | OpenCode lockfile SHA-1 | efe01bf957f3e825d822997161aed6cb3efe3728 |

@@ -233,7 +233,7 @@ async def test_decision_profiles_expose_semantics_without_authority():
     assert response.status_code == 200
     item = response.json()["data"][0]
     assert item["id"] == "decision-local-v1"
-    extension = item["x_astrumweaver"]
+    extension = item["x_tsumgi"]
     assert extension["score_kind"] == DECISION_SCORE_KIND
     assert extension["calibration_status"] == "uncalibrated"
     assert extension["mode"] == "shadow"
@@ -271,8 +271,8 @@ async def test_decision_request_uses_durable_binding_and_ordered_scores():
         "retry",
         "escalate",
     ]
-    assert body["x_astrumweaver"]["authority"] == "recommendation-only"
-    timing = body["x_astrumweaver"]["timing"]
+    assert body["x_tsumgi"]["authority"] == "recommendation-only"
+    timing = body["x_tsumgi"]["timing"]
     assert timing["queue_wait_ms"] >= 0
     assert timing["execution_ms"] >= 0
     assert timing["durable_job_ms"] >= 0

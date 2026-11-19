@@ -6,7 +6,7 @@ This file is intentionally redacted. It contains no gateway URL, credential, fix
 | --- | --- |
 | Evidence version | decision-shadow-v1 |
 | Date (UTC) | 2026-10-07 |
-| AstrumWeaver revision | fd412bee45a8c3f1c2487d4878137f7348d4c868 |
+| TSUMGI revision | fd412bee45a8c3f1c2487d4878137f7348d4c868 |
 | Logical profile | decision-local-v1 |
 | Logical profile revision | sha256:c2e9f7d2d48628b51010e6b49c9b933527f6428fd082de392b24917ac75ec8c4 |
 | Deployment revision | sha256:161f66812221c030e3afcbdb7613097eda20b86a95abd140c00d867854c92a3b |

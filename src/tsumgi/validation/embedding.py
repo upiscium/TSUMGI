@@ -33,7 +33,7 @@ class EmbeddingAcceptanceError(RuntimeError):
 class EmbeddingAcceptanceEvidence:
     evidence_version: str
     date_utc: str
-    astrumweaver_revision: str
+    tsumgi_revision: str
     profile_id: str
     profile_revision: str
     deployment_revision: str
@@ -242,7 +242,7 @@ class EmbeddingAcceptanceRunner:
         serving_contract_revision: str,
         embedding_space_id: str,
         incompatible_space_id: str,
-        astrumweaver_revision: str,
+        tsumgi_revision: str,
         fixture: Path,
         minimum_margin: float = 0.10,
         timeout_seconds: float = 120.0,
@@ -264,8 +264,8 @@ class EmbeddingAcceptanceRunner:
             raise ValueError(
                 "incompatible_space_id must differ from the accepted space"
             )
-        if REVISION_PATTERN.fullmatch(astrumweaver_revision) is None:
-            raise ValueError("astrumweaver_revision is invalid")
+        if REVISION_PATTERN.fullmatch(tsumgi_revision) is None:
+            raise ValueError("tsumgi_revision is invalid")
         if (
             not math.isfinite(minimum_margin)
             or minimum_margin <= 0
@@ -283,7 +283,7 @@ class EmbeddingAcceptanceRunner:
         self.serving_contract_revision = serving_contract_revision
         self.embedding_space_id = embedding_space_id
         self.incompatible_space_id = incompatible_space_id
-        self.astrumweaver_revision = astrumweaver_revision
+        self.tsumgi_revision = tsumgi_revision
         self.fixture = _load_fixture(fixture)
         self.minimum_margin = float(minimum_margin)
         self.timeout_seconds = float(timeout_seconds)
@@ -337,7 +337,7 @@ class EmbeddingAcceptanceRunner:
             raise EmbeddingAcceptanceError(
                 "embedding acceptance profile is not uniquely configured"
             )
-        extension = matches[0].get("x_astrumweaver")
+        extension = matches[0].get("x_tsumgi")
         if not isinstance(extension, Mapping):
             raise EmbeddingAcceptanceError(
                 "embedding gateway omitted immutable space metadata"
@@ -394,13 +394,13 @@ class EmbeddingAcceptanceRunner:
                     "model": self.profile_id,
                     "input": inputs,
                     "encoding_format": "float",
-                    "x_astrumweaver_input_type": input_type,
-                    "x_astrumweaver_embedding_space_id": self.embedding_space_id,
+                    "x_tsumgi_input_type": input_type,
+                    "x_tsumgi_embedding_space_id": self.embedding_space_id,
                 },
             ),
             f"{input_type} batch",
         )
-        extension = body.get("x_astrumweaver")
+        extension = body.get("x_tsumgi")
         if (
             not isinstance(extension, Mapping)
             or extension.get("embedding_space_id") != self.embedding_space_id
@@ -437,8 +437,8 @@ class EmbeddingAcceptanceRunner:
                     "model": self.profile_id,
                     "input": [self.fixture.documents[0][1]],
                     "encoding_format": "float",
-                    "x_astrumweaver_input_type": "document",
-                    "x_astrumweaver_embedding_space_id": self.incompatible_space_id,
+                    "x_tsumgi_input_type": "document",
+                    "x_tsumgi_embedding_space_id": self.incompatible_space_id,
                 },
             )
             if negative.status_code != 409:
@@ -493,7 +493,7 @@ class EmbeddingAcceptanceRunner:
         return EmbeddingAcceptanceEvidence(
             evidence_version="embedding-serving-v1",
             date_utc=datetime.now(UTC).date().isoformat(),
-            astrumweaver_revision=self.astrumweaver_revision,
+            tsumgi_revision=self.tsumgi_revision,
             profile_id=self.profile_id,
             profile_revision=self.profile_revision,
             deployment_revision=self.deployment_revision,
@@ -531,7 +531,7 @@ def render_embedding_acceptance_markdown(
     fields = [
         ("Evidence version", evidence.evidence_version),
         ("Date (UTC)", evidence.date_utc),
-        ("AstrumWeaver revision", evidence.astrumweaver_revision),
+        ("TSUMGI revision", evidence.tsumgi_revision),
         ("Logical profile", evidence.profile_id),
         ("Logical profile revision", evidence.profile_revision),
         ("Deployment revision", evidence.deployment_revision),
@@ -631,7 +631,7 @@ def main() -> None:
             serving_contract_revision=args.serving_contract_revision,
             embedding_space_id=args.embedding_space_id,
             incompatible_space_id=args.incompatible_space_id,
-            astrumweaver_revision=args.revision,
+            tsumgi_revision=args.revision,
             fixture=args.fixture,
             minimum_margin=args.minimum_margin,
             timeout_seconds=args.timeout_seconds,

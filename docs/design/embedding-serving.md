@@ -13,7 +13,7 @@ The public edge surface is a documented subset of `POST /v1/embeddings`:
 - `model` is a configured logical serving profile ID;
 - `input` is one string or a non-empty array of strings;
 - `encoding_format` is omitted or exactly `float`;
-- `x_astrumweaver_embedding_space_id` is required and must exactly match the
+- `x_tsumgi_embedding_space_id` is required and must exactly match the
   configured immutable space before admission;
 - token-array input, base64 output, arbitrary dimensions and undocumented fields
   fail closed;

@@ -94,7 +94,7 @@ class DecisionGatewayService:
                 record.result.outputs,
                 compiled=compiled,
             )
-            extension = response["x_astrumweaver"]
+            extension = response["x_tsumgi"]
             timing: dict[str, float] = {}
             if record.started_at is not None:
                 timing["queue_wait_ms"] = max(
@@ -276,8 +276,8 @@ def _profile_object(profile: DecisionGatewayProfile) -> dict[str, object]:
     semantics = profile.semantics
     return {
         "id": profile.profile_id,
-        "object": "astrumweaver.decision_profile",
-        "x_astrumweaver": {
+        "object": "tsumgi.decision_profile",
+        "x_tsumgi": {
             "profile_revision": profile.resolved.profile_revision,
             "deployment_revision": profile.resolved.deployment.revision,
             "serving_contract_revision": profile.resolved.contract.revision,

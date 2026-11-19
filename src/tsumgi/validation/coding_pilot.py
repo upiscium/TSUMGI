@@ -103,7 +103,7 @@ def _optional_metric(value: object, name: str) -> float | None:
 
 @dataclass(frozen=True, slots=True)
 class CodingPilotScope:
-    astrumweaver_revision: str
+    tsumgi_revision: str
     opencode_version: str
     provider_adapter: str
     runtime_revision: str
@@ -123,7 +123,7 @@ class CodingPilotScope:
     def from_dict(cls, value: object) -> "CodingPilotScope":
         data = _mapping(value, "scope")
         fields = {
-            "astrumweaver_revision",
+            "tsumgi_revision",
             "opencode_version",
             "provider_adapter",
             "runtime_revision",
@@ -140,9 +140,9 @@ class CodingPilotScope:
             "concurrency",
         }
         _exact_keys(data, required=fields, name="scope")
-        revision = data["astrumweaver_revision"]
+        revision = data["tsumgi_revision"]
         if not isinstance(revision, str) or not REVISION_PATTERN.fullmatch(revision):
-            raise CodingPilotError("scope.astrumweaver_revision is invalid")
+            raise CodingPilotError("scope.tsumgi_revision is invalid")
         runtime_revision = data["runtime_revision"]
         if (
             not isinstance(runtime_revision, str)
@@ -160,7 +160,7 @@ class CodingPilotScope:
         if concurrency != 1:
             raise CodingPilotError("coding pilot v1 requires concurrency=1")
         return cls(
-            astrumweaver_revision=revision,
+            tsumgi_revision=revision,
             opencode_version=opencode,
             provider_adapter=adapter,
             runtime_revision=runtime_revision,
@@ -556,7 +556,7 @@ def render_coding_pilot_markdown(evidence: CodingPilotEvidence) -> str:
     scope = evidence.scope
     scope_rows = [
         ("Evidence version", evidence.evidence_version),
-        ("AstrumWeaver revision", scope.astrumweaver_revision),
+        ("TSUMGI revision", scope.tsumgi_revision),
         ("OpenCode version", scope.opencode_version),
         ("Provider adapter", scope.provider_adapter),
         ("Runtime revision", scope.runtime_revision),

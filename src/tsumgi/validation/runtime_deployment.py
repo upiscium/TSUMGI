@@ -324,7 +324,7 @@ class SystemdRuntimeDeploymentHost:
 class RuntimeDeploymentAcceptanceEvidence:
     evidence_version: str
     date_utc: str
-    astrumweaver_revision: str
+    tsumgi_revision: str
     deployment_path: str
     outcome: str
     host_gpu_count: int
@@ -728,7 +728,7 @@ class RuntimeDeploymentAcceptanceRunner:
         return RuntimeDeploymentAcceptanceEvidence(
             evidence_version="runtime-deployment-v2",
             date_utc=datetime.now(UTC).date().isoformat(),
-            astrumweaver_revision=self.revision,
+            tsumgi_revision=self.revision,
             deployment_path=self.deployment_path,
             outcome="ENFORCED_SUBSET",
             host_gpu_count=len(host_map),
@@ -790,7 +790,7 @@ class RuntimeDeploymentAcceptanceRunner:
         return RuntimeDeploymentAcceptanceEvidence(
             evidence_version="runtime-deployment-v2",
             date_utc=datetime.now(UTC).date().isoformat(),
-            astrumweaver_revision=self.revision,
+            tsumgi_revision=self.revision,
             deployment_path=self.deployment_path,
             outcome="FAIL_CLOSED",
             host_gpu_count=len(host_map),
@@ -820,7 +820,7 @@ def render_runtime_deployment_markdown(
     fields = [
         ("Evidence version", evidence.evidence_version),
         ("Date (UTC)", evidence.date_utc),
-        ("AstrumWeaver revision", evidence.astrumweaver_revision),
+        ("TSUMGI revision", evidence.tsumgi_revision),
         ("Deployment path", evidence.deployment_path),
         ("Outcome", evidence.outcome),
         ("Host-visible GPU count", str(evidence.host_gpu_count)),

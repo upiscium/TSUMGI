@@ -199,7 +199,7 @@ class ChatGatewayProfile:
             "object": "model",
             "created": self.created,
             "owned_by": self.owned_by,
-            "x_astrumweaver": {
+            "x_tsumgi": {
                 "profile_revision": self.resolved.profile_revision,
                 "deployment_revision": self.resolved.deployment.revision,
                 "serving_contract_revision": self.resolved.contract.revision,

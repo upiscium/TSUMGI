@@ -149,7 +149,7 @@ class HTTPAcceptanceControl:
 class HardwareAcceptanceEvidence:
     evidence_version: str
     date_utc: str
-    astrumweaver_revision: str
+    tsumgi_revision: str
     deployment_path: str
     profile_class: str
     gpu_count: int
@@ -375,7 +375,7 @@ class HardwareAcceptanceRunner:
         return HardwareAcceptanceEvidence(
             evidence_version="v0.1",
             date_utc=datetime.now(UTC).date().isoformat(),
-            astrumweaver_revision=self.revision,
+            tsumgi_revision=self.revision,
             deployment_path=self.deployment_path,
             profile_class=self.profile_class,
             gpu_count=len(self.expected_gpu_uuids),
@@ -402,7 +402,7 @@ def render_markdown(evidence: HardwareAcceptanceEvidence) -> str:
     fields = [
         ("Evidence version", evidence.evidence_version),
         ("Date (UTC)", evidence.date_utc),
-        ("AstrumWeaver revision", evidence.astrumweaver_revision),
+        ("TSUMGI revision", evidence.tsumgi_revision),
         ("Deployment path", evidence.deployment_path),
         ("Profile class", evidence.profile_class),
         ("GPU count", str(evidence.gpu_count)),

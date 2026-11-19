@@ -35,8 +35,8 @@ PINNED_OPENAI_COMPATIBLE_ERROR_BLOB = (
 _PROVIDER_ID = "tsumgi-acceptance"
 _PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-_PLAIN_MARKER = "ASTRUMWEAVER_CHAT_OK"
-_TOOL_MARKER = "ASTRUMWEAVER_TOOL_OK"
+_PLAIN_MARKER = "TSUMGI_CHAT_OK"
+_TOOL_MARKER = "TSUMGI_TOOL_OK"
 _TOOL_FILENAME = "acceptance.txt"
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -51,7 +51,7 @@ class OpenCodeChatAcceptanceError(RuntimeError):
 class OpenCodeChatAcceptanceEvidence:
     evidence_version: str
     date_utc: str
-    astrumweaver_revision: str
+    tsumgi_revision: str
     opencode_version: str
     opencode_package_manifest_sha1: str
     opencode_lock_sha1: str
@@ -172,7 +172,7 @@ class OpenCodeChatAcceptanceRunner:
         client_token: str,
         profile_id: str,
         profile_revision: str,
-        astrumweaver_revision: str,
+        tsumgi_revision: str,
         deployment_revision: str,
         serving_contract_revision: str,
         context_tokens: int,
@@ -190,8 +190,8 @@ class OpenCodeChatAcceptanceRunner:
             raise ValueError("profile_id is invalid")
         if not _DIGEST.fullmatch(profile_revision):
             raise ValueError("profile_revision is invalid")
-        if not REVISION_PATTERN.fullmatch(astrumweaver_revision):
-            raise ValueError("astrumweaver_revision is invalid")
+        if not REVISION_PATTERN.fullmatch(tsumgi_revision):
+            raise ValueError("tsumgi_revision is invalid")
         if not _DIGEST.fullmatch(deployment_revision):
             raise ValueError("deployment_revision is invalid")
         if not _DIGEST.fullmatch(serving_contract_revision):
@@ -208,7 +208,7 @@ class OpenCodeChatAcceptanceRunner:
         self.client_token = client_token
         self.profile_id = profile_id
         self.profile_revision = profile_revision
-        self.astrumweaver_revision = astrumweaver_revision
+        self.tsumgi_revision = tsumgi_revision
         self.deployment_revision = deployment_revision
         self.serving_contract_revision = serving_contract_revision
         self.context_tokens = context
@@ -264,7 +264,7 @@ class OpenCodeChatAcceptanceRunner:
             raise OpenCodeChatAcceptanceError(
                 "TSUMGI acceptance profile is not uniquely configured"
             )
-        extension = models[0].get("x_astrumweaver")
+        extension = models[0].get("x_tsumgi")
         if not isinstance(extension, Mapping):
             raise OpenCodeChatAcceptanceError(
                 "TSUMGI gateway omitted bound profile identity"
@@ -476,7 +476,7 @@ class OpenCodeChatAcceptanceRunner:
                 )
 
             plain_events = self._run_prompt(
-                "Reply with exactly ASTRUMWEAVER_CHAT_OK and no other text.",
+                "Reply with exactly TSUMGI_CHAT_OK and no other text.",
                 workdir=workdir,
                 env=env,
                 label="plain-chat smoke",
@@ -487,13 +487,13 @@ class OpenCodeChatAcceptanceRunner:
                 )
 
             (workdir / _TOOL_FILENAME).write_text(
-                "The acceptance marker is ASTRUMWEAVER_TOOL_OK.\n",
+                "The acceptance marker is TSUMGI_TOOL_OK.\n",
                 encoding="utf-8",
             )
             tool_events = self._run_prompt(
                 "Use the read tool to read acceptance.txt in the current "
                 "directory. After the tool completes, reply with exactly "
-                "ASTRUMWEAVER_TOOL_OK and no other text.",
+                "TSUMGI_TOOL_OK and no other text.",
                 workdir=workdir,
                 env=env,
                 label="tool round-trip smoke",
@@ -510,7 +510,7 @@ class OpenCodeChatAcceptanceRunner:
         return OpenCodeChatAcceptanceEvidence(
             evidence_version="opencode-chat-v1",
             date_utc=datetime.now(UTC).date().isoformat(),
-            astrumweaver_revision=self.astrumweaver_revision,
+            tsumgi_revision=self.tsumgi_revision,
             opencode_version=PINNED_OPENCODE_VERSION,
             opencode_package_manifest_sha1=PINNED_OPENCODE_PACKAGE_BLOB,
             opencode_lock_sha1=PINNED_OPENCODE_LOCK_BLOB,
@@ -542,7 +542,7 @@ def render_opencode_chat_markdown(
     fields = [
         ("Evidence version", evidence.evidence_version),
         ("Date (UTC)", evidence.date_utc),
-        ("AstrumWeaver revision", evidence.astrumweaver_revision),
+        ("TSUMGI revision", evidence.tsumgi_revision),
         ("OpenCode version", evidence.opencode_version),
         (
             "OpenCode package manifest SHA-1",
@@ -649,7 +649,7 @@ def main() -> None:
             client_token=client_token,
             profile_id=args.profile_id,
             profile_revision=args.profile_revision,
-            astrumweaver_revision=args.revision,
+            tsumgi_revision=args.revision,
             deployment_revision=args.deployment_revision,
             serving_contract_revision=args.serving_contract_revision,
             context_tokens=args.context_tokens,

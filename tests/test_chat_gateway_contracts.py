@@ -112,7 +112,7 @@ def test_catalog_round_trip_and_models_expose_profile_binding_metadata():
                 "object": "model",
                 "created": 1,
                 "owned_by": "tsumgi",
-                "x_astrumweaver": {
+                "x_tsumgi": {
                     "profile_revision": loaded.resolved.profile_revision,
                     "deployment_revision": loaded.resolved.deployment.revision,
                     "serving_contract_revision": loaded.resolved.contract.revision,

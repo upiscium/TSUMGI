@@ -472,8 +472,8 @@ does not present these fields as standard OpenAI model metadata.
 
 The first `POST /v1/embeddings` subset accepts one string or a non-empty
 array of strings, `encoding_format = "float"` (or omission), the required
-`x_astrumweaver_input_type` value `query` or `document`, and the required
-`x_astrumweaver_embedding_space_id` pin. The supplied space ID must exactly
+`x_tsumgi_input_type` value `query` or `document`, and the required
+`x_tsumgi_embedding_space_id` pin. The supplied space ID must exactly
 match the configured profile or the request fails before admission with
 `409 embedding_space_mismatch`. Token-array input, base64 encoding,
 caller-selected dimensions, mixed input policies and unknown fields fail closed.

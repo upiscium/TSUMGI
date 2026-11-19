@@ -211,7 +211,7 @@ See [Decision shadow acceptance](../decision-shadow-acceptance.md).
 ## Observed real shadow acceptance
 
 The first real native OpenJev shadow run completed on 2026-10-07 against
-AstrumWeaver revision
+TSUMGI revision
 `fd412bee45a8c3f1c2487d4878137f7348d4c868`.
 
 The live deployment/profile/contract/semantics identity was preflighted before
