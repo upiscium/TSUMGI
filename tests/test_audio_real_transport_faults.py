@@ -70,12 +70,13 @@ class _TrackedUpload:
 
 
 @contextmanager
-def _live_control(app):
+def _live_control(app, *, capture_access=False):
     """Only bind an ephemeral 127.0.0.1 socket; release it after the test."""
     server = uvicorn.Server(
         uvicorn.Config(
             app, host="127.0.0.1", port=0, lifespan="off",
-            log_level="critical", access_log=False, http="h11",
+            http="h11", access_log=capture_access,
+            **({"log_config": None} if capture_access else {"log_level": "critical"}),
         )
     )
     thread = Thread(target=server.run, daemon=True, name="tsumgi-audio-http-test")

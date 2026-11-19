@@ -17,6 +17,7 @@ from tsumgi.control import daemon
 from tsumgi.control.auth import ClientAuthMode
 from tsumgi.gateway.audio import AudioProfileCatalog
 from test_audio_voice_api import make_profile
+from test_audio_artifact_authority_postgres import isolated_database
 
 
 TOKEN = "dedicated-audio-test-token"
@@ -110,6 +111,79 @@ def env(tmp_path, monkeypatch):
 
 def _no_spools(env):
     assert all(not list(root.iterdir()) for root in env.roots)
+
+
+def _stage_until_killed(config, ready, hold):
+    from datetime import UTC, datetime
+    import os
+
+    from fastapi.testclient import TestClient
+    from tsumgi.control import PostgresControlRepository
+    from test_audio_artifact_authority import setup_claim
+    from test_audio_input_channel import WAV
+    from test_audio_output_channel import output_url, worker_headers
+
+    with TestClient(daemon.build_app(str(config))) as client:
+        repo = PostgresControlRepository(os.environ["TSUMGI_DATABASE_URL"])
+        claim = setup_claim(repo, datetime.now(UTC))
+        for route, auth in (
+            ("/v1/audio/inputs", {"Authorization": "Bearer control-test-token"}),
+            (output_url(claim), {**worker_headers(claim), "authorization": "Bearer worker-test-token"}),
+        ):
+            result = client.post(route, headers={**auth, "content-type": "audio/wav"}, content=WAV)
+            assert result.status_code == 201
+        ready.set()
+        hold.wait(30)
+
+
+@pytest.mark.parametrize("busy_root", ["input_spool", "output_spool"])
+def test_standard_control_excludes_live_owner_and_recovers_after_crash(
+    env, isolated_database, tmp_path, monkeypatch, busy_root,
+):
+    import multiprocessing
+    from tsumgi.control import PostgresControlRepository
+    from test_audio_input_channel import WAV
+
+    monkeypatch.setenv("TSUMGI_DATABASE_URL", isolated_database)
+    monkeypatch.setattr(daemon, "PostgresControlRepository", PostgresControlRepository)
+    env.config.write_text(_toml({"audio_gateway": env.policy}))
+    ctx = multiprocessing.get_context("spawn")
+    ready, hold = ctx.Event(), ctx.Event()
+    child = ctx.Process(target=_stage_until_killed, args=(env.config, ready, hold))
+    child.start()
+    try:
+        assert ready.wait(15), "Control did not stage both WAVs"
+        files = [list(root.glob("*/*")) for root in env.roots]
+        assert all(len(paths) == 1 and paths[0].read_bytes() == WAV for paths in files)
+        rival = deepcopy(env.policy)
+        free = tmp_path / "rival-free"
+        free.mkdir(mode=0o700)
+        rival["output_spool" if busy_root == "input_spool" else "input_spool"]["root"] = str(free)
+        with pytest.raises(RuntimeError, match="audio_gateway configuration is invalid"):
+            env.build(rival)
+        assert not list(free.iterdir())
+        assert child.is_alive() and all(paths[0].read_bytes() == WAV for paths in files)
+    finally:
+        if child.is_alive():
+            child.kill()
+        child.join(10)
+        assert child.exitcode is not None
+        child.close()
+    restarted = env.build()
+    assert "/v1/audio/inputs" in restarted.openapi()["paths"]
+    assert all(not paths[0].parent.exists() for paths in files)
+
+
+def test_standard_control_leaves_legacy_spool_intact(env):
+    from tsumgi.audio import ArtifactSpool
+    from test_audio_input_channel import WAV
+
+    # An old/unlocked owner cannot be proven dead just because flock succeeds.
+    legacy = ArtifactSpool(env.roots[0], max_bytes=256, ttl_seconds=60)
+    receipt = legacy.stage(WAV, scope="legacy")
+    app = env.build()
+    assert "/v1/audio/inputs" in app.openapi()["paths"]
+    assert legacy.read(receipt["artifact_id"], scope="legacy") == WAV
 
 
 def _invalid(env):
@@ -508,8 +582,30 @@ def test_router_construction_failure_rolls_back_both_spools(env, monkeypatch):
     def fail_after_allocation(*args, **kwargs):
         raise ValueError("private-data router failure")
 
-    monkeypatch.setattr(audio_config, "create_audio_speech_router", fail_after_allocation)
-    _invalid(env)
+    with monkeypatch.context() as patch:
+        patch.setattr(audio_config, "create_audio_speech_router", fail_after_allocation)
+        _invalid(env)
+    assert "/v1/audio/speech" in env.build().openapi()["paths"]
+
+
+def test_rollback_refuses_nonempty_directory_and_releases_both_locks(env, monkeypatch):
+    # Retain a reference so refcount/GC cannot release the fd for rollback.
+    retained = []
+    def fail(catalog, repo, channel, **kwargs):
+        retained.append(channel)
+        directory, = env.roots[1].iterdir()
+        (directory / "unexpected").write_bytes(b"leave intact")
+        raise ValueError("router construction failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(audio_config, "create_audio_speech_router", fail)
+        with pytest.raises(RuntimeError, match="startup cleanup requires inspection"):
+            env.build()
+    unexpected, = env.roots[1].glob("*/unexpected")
+    assert unexpected.read_bytes() == b"leave intact"
+    assert "/v1/audio/speech" in env.build().openapi()["paths"]
+    assert unexpected.read_bytes() == b"leave intact"
+    assert retained
 
 
 def test_later_non_audio_gateway_failure_rolls_back_audio_spools(env):

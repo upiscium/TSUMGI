@@ -66,9 +66,9 @@ deliberately separate.
 | Bounded quotas, TTL, reaper, stale/failed cleanup | **Verified in test scope** for per-file and aggregate quotas; expiry and abandoned output reaping; failed unlink retains quota. Input is reclaimed at TTL; it is not guaranteed to be immediately deleted at every malformed admission request. |
 | Upload interruption | **Verified on test-owned loopback TCP.** `test_audio_real_transport_faults.py` starts a real localhost Uvicorn HTTP/1.1 server, sends part of a declared WAV body over a socket, then closes the peer; ASGI observes `http.disconnect` and no bytes, receipt or quota remain. A fresh full upload succeeds afterward. This does not establish behavior behind an external load balancer, TLS proxy or production Gateway. |
 | Filesystem faults | **Partially verified.** Partial `os.write` followed by injected `ENOSPC` leaves no visible output receipt or quota charge, and healthy retry can stage. Physical disk/power failure is **not** tested. |
-| Post-crash orphan cleanup | **Verified for exclusive-root Spool lifecycle.** A separately hard-exited Spool process leaves a file that a new owner can reclaim. Simulated state loss refuses to restore private bytes from durable Job metadata. Full Control process restart with live job recovery is **not** tested. |
+| Post-crash orphan cleanup | **Verified for an explicitly exclusive root.** `test_audio_control_restart.py` hard-exits a process hosting the Control ASGI app after staging output for a running PostgreSQL Job, confirms the WAV remains on disk, then constructs a fresh app/repository after the old process has exited. Explicit cold recovery removes the old directory. The Job remains RUNNING, the old receipt cannot complete it, and no output can be downloaded. This is not an installed daemon restart, automatic Job resumption, or general service recovery. |
 | Commit-response uncertainty | **Verified on test-owned localhost protocol proxy and real PostgreSQL.** `test_audio_real_transport_faults.py` suppresses the backend's successful `CommandComplete COMMIT` and following `ReadyForQuery` over a real TCP connection, then closes the client socket. A separate direct connection to the same isolated database (Unix socket locally, TCP in CI) independently finds exactly one committed Job; the caller raises `StorageUnavailable`, but its original input receipt is retained and can be read by the current Worker **without replay**, and identical replay creates no duplicate. This is a deterministic loopback response-loss test, not a general proof for arbitrary network partitions. |
-| AC-AUDIO-06 no binary in persistent JSON/logs/metrics | **Narrowly verified, not universally proven.** Audio endpoints persist only opaque ref metadata; tests compare Job payload/result against raw test WAV. Generic JSON Job payloads outside the opted-in contract and downstream text/transcripts remain caller-dependent. Log/metric/backups-wide binary and sensitive-data absence has **not** been exhaustively audited. |
+| AC-AUDIO-06 no binary in persistent JSON/logs/metrics | **Verified on specific surfaces.** The PostgreSQL tests compare Job payload/result against the test WAV. `test_audio_artifact_observability.py` separately transfers distinct input/output PCM16 WAVs over loopback, confirms Uvicorn emitted access records for the transfers, and checks captured logs, stdout/stderr and the authenticated Job JSON (including nonempty result metrics) for raw and Base64 WAV/sample bytes. A second test cancels a Job after Control receives the first chunk of a Worker retransmission. The upload returns 409 and an authenticated GET for the previously staged receipt returns 404; neither error body nor the captured logs contain the WAV or either transmitted chunk, raw or Base64-encoded. These tests do not cover third-party exporters, reverse proxies, native engine logs, backups or all failure paths. |
 
 ## Operational invariants and known limits
 
@@ -85,6 +85,10 @@ deliberately separate.
   and their scope/receipt maps are process-local. After restart, a Job may
   retain a reference whose WAV is no longer readable. Correct behavior is to
   fail closed; this is not a promise of durable data availability.
+- **Live TTL maintenance:** local expiry runs before database-dependent Job
+  recovery. `test_audio_maintenance.py` checks physical input-file removal
+  when either database maintenance or the output reaper raises. A blocked
+  thread or a local filesystem that refuses deletion can still delay cleanup.
 - **Concurrency and atomicity:** Job commit and file staging are not one
   PostgreSQL/filesystem transaction. Idempotency protects identical admission
   retries and ambiguous response handling while local state survives.
@@ -100,6 +104,59 @@ deliberately separate.
   model-quality assertions are part of this MVI.
 
 ## Final decision gate
+
+### Review boundary at `6c81ebbf` plus working-tree changes
+
+The #174 production diff covers live maintenance in `control/api.py` and
+exclusive root ownership and startup recovery in `audio/artifact_spool.py` and
+`control/audio_gateway_config.py`. `test_audio_gateway_daemon.py` exercises the
+standard configuration across process boundaries.
+Its review also includes this inventory, the loopback server helper in
+`test_audio_real_transport_faults.py` and the three new tests
+`test_audio_{maintenance,control_restart,artifact_observability}.py`.
+It neither imports nor requires the #178 scorer (`validation/audio_stt_178.py`),
+its unit tests or its evaluation guide. The #181 trial checklist is separate.
+
+| #174 acceptance condition | Result in the recorded local run |
+| --- | --- |
+| AC-AUDIO-05: only the current authorized Worker/attempt/epoch can transfer media; invalid or interrupted transfers cannot publish | Passed the artifact authority suites (memory and PostgreSQL), input/output channel negatives and real TCP interruption. Cancellation during retransmission returns 409 and the GET for the actual staged receipt returns 404. |
+| AC-AUDIO-06: bounded, integrity-checked references rather than raw audio in durable records or public diagnostics | Passed PostgreSQL Job and disk readback, digest/size/quota tests and the two observability cases above. Covers the tested Control surfaces, not all external logs/backups. |
+| Admission and publication: failed admission cleanup, ambiguous COMMIT, retry without double-visible output | Passed `test_postgres_input_admission_and_failure_cleanup`, `test_real_postgres_commit_ack_lost_after_successful_commit`, and the output-channel idempotent retry and previous-attempt reclamation tests. Visibility requires durable success; there is no atomic filesystem/DB transaction. |
+| TTL and crash cleanup | Live TTL under independent failures passed. Standard enabled Control startup now reclaims abandoned managed input/output WAVs after acquiring their respective root locks. |
+
+**Startup boundary:** On local Linux storage the enabled Control acquires a
+nonblocking exclusive `flock` on each validated root directory inode before
+scanning it, and retains that lock for the lifetime of its spool. A busy
+root rejects the competing startup. The kernel releases the lock on process
+death. A restarted Control reclaims only its managed `control-spool-v2-*`
+namespace; it never restores lost receipts. `test_audio_gateway_daemon.py`
+starts a separate process using `daemon.build_app`, stages input and output
+via HTTP endpoints, and tests contention on each root, then kills the owner
+and checks that standard startup removes both old directories.
+
+**Upgrade/rollback:** legacy `artifact-spool-*` directories do not attest that
+their owner participated in this locking protocol. They are deliberately left
+alone even when the lock is available; plan an offline inspection of legacy
+bytes after stopping all prior owners. Do not rename or replace root paths
+while Control is running. This is not cross-host locking or secure erasure.
+
+### Regression evidence (shared suite, not a per-issue test count)
+
+Local regression run (2026-11-19): `audio/acceptance-backlog`, based on
+`6c81ebbf` with the uncommitted maintenance, restart, observability and STT
+scorer changes present. Against a dedicated PostgreSQL 17.11 instance on a
+private Unix socket (explicit `host`, `port=55464`, `dbname=postgres`, and
+test-cluster owner `user` in `TSUMGI_TEST_DATABASE_URL`), ran:
+
+```sh
+PYTHONPATH=src python -m pytest -q -rs tests/test_audio*.py tests/test_voicevox*.py tests/test_style_bert*.py
+```
+
+After adding the standard startup and legacy compatibility cases:
+**1854 passed, 0 failed, 0 skipped in 26.01 s**. One Starlette
+TestClient/httpx deprecation warning. This includes the PostgreSQL COMMIT
+response-loss test and the in-flight cancellation/privacy test; it is not
+evidence of real model inference or installed-service qualification.
 
 A maintainer must explicitly decide whether the **remaining partially
 verified items** above are acceptable documented MVI constraints or require

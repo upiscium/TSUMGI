@@ -14,6 +14,7 @@ import re
 import secrets
 import stat
 import time
+import weakref
 
 
 class ArtifactSpool:
@@ -28,11 +29,17 @@ class ArtifactSpool:
 
     def __init__(self, root, *, max_bytes, ttl_seconds, clock=time.monotonic,
                  max_total_bytes=None, max_artifacts=None,
-                 recover_on_startup=False):
+                 recover_on_startup=False, exclusive_root=False):
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
             raise ValueError("max_bytes must be a positive integer")
         if type(recover_on_startup) is not bool:
             raise ValueError("recover_on_startup must be boolean")
+        if type(exclusive_root) is not bool:
+            raise ValueError("exclusive_root must be boolean")
+        # Never infer a legacy owner's death from the absence of a lock:
+        # older binaries and standalone spools did not participate in flock.
+        self._prefix = "control-spool-v2-" if exclusive_root else "artifact-spool-"
+        self._release_owner = None
         for name, value in (("max_total_bytes", max_total_bytes),
                             ("max_artifacts", max_artifacts)):
             if value is not None and (type(value) is not int or value <= 0):
@@ -69,11 +76,19 @@ class ArtifactSpool:
             created_name = None
             try:
                 self._root_identity = self._identity(os.fstat(root_fd))
+                if exclusive_root:
+                    import fcntl
+
+                    # Lock the checked directory inode, not an unlinkable lock
+                    # file. A dup holds the same kernel lock until the last
+                    # spool user is gone, even after ASGI lifespan teardown.
+                    fcntl.flock(root_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self._release_owner = weakref.finalize(self, os.close, os.dup(root_fd))
                 if recover_on_startup:
                     self._reclaim_crashed_directories(root_fd)
                 # Random temporary names, with a bounded exclusive-creation retry.
                 for _ in range(16):
-                    name = "artifact-spool-" + secrets.token_hex(16)
+                    name = self._prefix + secrets.token_hex(16)
                     try:
                         os.mkdir(name, 0o700, dir_fd=root_fd)
                         created_name = name
@@ -90,6 +105,8 @@ class ArtifactSpool:
                 finally:
                     os.close(directory_fd)
             except BaseException as exc:
+                if self._release_owner is not None:
+                    self._release_owner()  # root_fd still holds the lock during rollback
                 if created_name is not None:
                     # Only reclaim this constructor's own still-empty directory.
                     # rmdir never follows a replaced symlink or deletes contents.
@@ -171,7 +188,7 @@ class ArtifactSpool:
         if len(names) > 256:
             raise ValueError("too many spool startup recovery entries")
         for name in names:
-            if not re.fullmatch(r"artifact-spool-[0-9a-f]{32}", name):
+            if not re.fullmatch(self._prefix + r"[0-9a-f]{32}", name):
                 continue
             try:
                 info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
@@ -186,7 +203,11 @@ class ArtifactSpool:
                 if self._identity(os.fstat(fd)) != self._identity(info):
                     continue
                 files = os.listdir(fd)
-                if len(files) > 512:
+                if self._release_owner is not None and len(files) > max(512, self._max_artifacts or 0):
+                    # A lowered quota or unexpected contents require operator
+                    # inspection; do not quietly continue over capacity.
+                    raise ValueError("too many entries in managed spool")
+                if self._release_owner is None and len(files) > 512:
                     continue
                 safe = True
                 for artifact_id in files:
@@ -214,6 +235,8 @@ class ArtifactSpool:
         # a write failure is not a client-supplied validation error.
         fd = None
         try:
+            if self._release_owner is not None and not self._release_owner.alive:
+                raise ValueError("spool ownership released")
             root_fd = self._open_root()
             try:
                 if self._identity(os.fstat(root_fd)) != self._root_identity:
