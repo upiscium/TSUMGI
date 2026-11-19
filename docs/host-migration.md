@@ -22,9 +22,12 @@ plan and [naming.md](naming.md) for the names.
 4. **Helpers.** If `/usr/local/libexec/astrumweaver` exists, pass
    `--helpers-from DIR` with the new build's `libexec` directory. The old helpers
    (including dotfiles and subdirectories) are replaced, not edited.
-5. Read the warnings. Scripts outside the tool (for example
+5. **Nix profiles** named `astrumweaver-*` (and their generation links) are renamed to `tsumgi-*`, because rewritten configs refer to them by name.
+6. Read the warnings. Scripts outside the tool (for example
    `/usr/local/sbin/tsumgi-gpu-mode`), other units that mention the old unit
    names, and symlinks that point at old paths are only reported.
+
+Earlier rollback copies under `/etc/astrumweaver/rollback` are moved but never rewritten or checked. A file that carries a pinned identity but that no unit or config refers to is a leftover: it only warns and is moved unchanged.
 
 `plan` also refuses when: both roles are installed on the host; a target name
 already exists; a previous run was interrupted (a new name exists without the
@@ -87,5 +90,5 @@ first.
 - **Strata and other state under `/opt`.** The directory is renamed, not copied
   (same file system). Files inside it that store absolute paths are not
   rewritten; check after the move.
-- Anything under `/var/lib` or `/opt` is moved but never read or rewritten.
+- Anything under `/var/lib` or `/opt` is moved but never read or rewritten. Absolute symlinks there (and in `/usr/local/bin`, `/usr/local/sbin`) that name the old paths are retargeted; others are only reported.
 - `/opt/astrumweaver-gpu-*` evidence logs from old acceptance runs stay as they are.

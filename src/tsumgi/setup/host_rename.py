@@ -112,6 +112,8 @@ class Plan:
     collisions: list[Path] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     homes: dict[str, str] = field(default_factory=dict)
+    profiles: list[tuple[Path, Path, str]] = field(default_factory=list)  # Nix profile links: old, new, old link target
+    symlinks: list[tuple[Path, str, str]] = field(default_factory=list)  # path (old location), old target, new target
 
     @property
     def blockers(self) -> list[str]:
@@ -126,6 +128,8 @@ class Plan:
         lines += [f"user  {a} -> {b}" for a, b in self.users]
         lines += [f"group {a} -> {b}" for a, b in self.groups]
         lines += [f"move  {rel(a)} -> {rel(b)}" for a, b in self.moves]
+        lines += [f"profile {rel(a)} -> {rel(b)}" for a, b, _ in self.profiles]
+        lines += [f"retarget {rel(p)}: {o} -> {n}" for p, o, n in self.symlinks]
         lines += [f"rewrite {rel(p)}" for p in self.rewrites]
         for warning in self.warnings:
             lines.append(f"warning: {warning}")
@@ -278,11 +282,40 @@ class HostMigration:
             if old == self.root / LIBEXEC_OLD or old.parent != self.root / "etc":
                 continue
             for path in sorted(old.rglob("*")):
+                # Earlier rollback copies describe the old build; they stay as they were.
+                if "rollback" in path.relative_to(old).parts[:-1]:
+                    continue
                 if path.is_file() and not path.is_symlink():
                     self._classify(plan, path, rewrite=True)
+        self._demote_unreferenced_pins(plan)
+        self._plan_profiles(plan)
         self._scan_outside(plan)
         self._scan_symlinks(plan)
         return plan
+
+    def _demote_unreferenced_pins(self, plan: Plan) -> None:
+        """A pinned file that no unit or config points at is a leftover: warn, do not block."""
+        blob = "\n".join(filter(None, (_read_text(p) for p in plan.unit_files + plan.rewrites)))
+        keep: list[Path] = []
+        for path in plan.repin:
+            logical = "/" + path.relative_to(self.root).as_posix() if path.is_relative_to(self.root) else str(path)
+            if path in plan.unit_files or logical in blob:
+                keep.append(path)
+            else:
+                plan.warnings.append(f"{logical} carries the old name but nothing refers to it; it is moved unchanged")
+        plan.repin = keep
+
+    def _plan_profiles(self, plan: Plan) -> None:
+        base = self.root / "nix/var/nix/profiles"
+        if not base.is_dir():
+            return
+        for path in sorted(base.iterdir()):
+            if not path.name.startswith(OLD + "-") or not path.is_symlink():
+                continue
+            new = base / (NEW + path.name[len(OLD):])
+            if new.exists() or new.is_symlink():
+                plan.collisions.append(new)
+            plan.profiles.append((path, new, os.readlink(path)))
 
     def _classify(self, plan: Plan, path: Path, *, rewrite: bool) -> None:
         text = _read_text(path)
@@ -310,9 +343,10 @@ class HostMigration:
                     plan.warnings.append(f"{label}/{path.name} mentions the old names; update it by hand")
 
     def _scan_symlinks(self, plan: Plan) -> None:
+        """Absolute links that name the old paths are retargeted; others are reported."""
         seen = 0
         roots = [old for old, _ in plan.moves] + [self.root / "usr/local/bin", self.root / "usr/local/sbin"]
-        found: list[str] = []
+        report: list[str] = []
         for base in roots:
             if not base.exists():
                 continue
@@ -320,17 +354,23 @@ class HostMigration:
                 for name in dirnames + filenames:
                     seen += 1
                     path = Path(dirpath) / name
-                    if path.is_symlink():
-                        target = os.readlink(path)
-                        if OLD in target.lower():
-                            found.append(f"{path} -> {target}")
+                    if not path.is_symlink():
+                        continue
+                    target = os.readlink(path)
+                    if OLD not in target.lower():
+                        continue
+                    new_target = rename_text(target)
+                    if target.startswith("/") and new_target != target and not target.startswith("/nix/store/"):
+                        plan.symlinks.append((path, target, new_target))
+                    else:
+                        report.append(f"{path} -> {target}")
                 if seen > MAX_SYMLINK_SCAN:
                     plan.warnings.append("symlink scan stopped early (very large tree)")
                     break
-        for item in found[:10]:
-            plan.warnings.append(f"symlink will dangle after the move: {item}")
-        if len(found) > 10:
-            plan.warnings.append(f"... and {len(found) - 10} more symlinks that point at old paths")
+        for item in report[:10]:
+            plan.warnings.append(f"symlink will dangle after the move and cannot be retargeted: {item}")
+        if len(report) > 10:
+            plan.warnings.append(f"... and {len(report) - 10} more symlinks that point at old paths")
 
     # ---- apply ----------------------------------------------------------------
 
@@ -394,6 +434,17 @@ class HostMigration:
             os.rename(old, new)
             if old == self.root / LIBEXEC_OLD:
                 self._install_helpers(new)
+        for old_link, new_link, _ in plan.profiles:
+            os.rename(old_link, new_link)
+            target = os.readlink(new_link)
+            if OLD in target:  # the profile link points at its own generation link by name
+                new_link.unlink()
+                os.symlink(rename_text(target), new_link)
+        for link, old_target, new_target in plan.symlinks:
+            current = self._after_moves(link, plan)
+            if current.is_symlink() and os.readlink(current) == old_target:
+                current.unlink()
+                os.symlink(new_target, current)
         for path in plan.rewrites:
             current = self._after_moves(path, plan)
             if current.exists():
@@ -501,6 +552,12 @@ class HostMigration:
             lines.append(
                 f"if [ -e {n} ] && [ ! -e {o} ]; then mv {n} {o} || fail 'could not move '{n}' back'; "
                 f"elif [ ! -e {o} ]; then fail 'neither '{o}' nor '{n}' exists'; fi")
+        for old_link, new_link, old_target in reversed(plan.profiles):
+            lines.append(f"rm -f {q(str(new_link))} && ln -sfn {q(old_target)} {q(str(old_link))} || fail 'profile {old_link.name}'")
+        for link, old_target, _ in plan.symlinks:
+            lines.append(
+                f"if [ -d {q(str(link.parent))} ]; then ln -sfn {q(old_target)} {q(str(link))} || fail 'symlink {link.name}'; "
+                f"else fail 'directory missing: '{q(str(link.parent))}; fi")
         for old, new in reversed(plan.users):
             system(f"if id {q(new)} >/dev/null 2>&1; then usermod -l {q(old)} {q(new)} || fail 'usermod {new}'; fi")
             home = plan.homes.get(old)
