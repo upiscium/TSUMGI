@@ -98,6 +98,7 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 - Existing development machines may later participate as drainable/borrowable workers without reprovisioning.
 
 ## Documentation
+- [Operator console](docs/admin-console.md) — read-only Worker status and Hugging Face model checks (off by default, no authentication).
 - [v0.2.1 release notes](docs/releases/v0.2.1.md) — Control PostgreSQL connection pooling.
 - [v0.2.0 GA release notes](docs/releases/v0.2.0.md) and [historical RC2](docs/releases/v0.2.0-rc.2.md) / [RC1](docs/releases/v0.2.0-rc.1.md) notes — Qwen3.6 serving runtimes, OpenCode-ready streaming, and the breaking Bonsai 2 removal.
 - [v0.1.3 GA release notes](docs/releases/v0.1.3.md) and [historical RC2](docs/releases/v0.1.3-rc.2.md) / [RC1](docs/releases/v0.1.3-rc.1.md) notes — reviewed Chat compatibility and fail-closed audio Worker scope.

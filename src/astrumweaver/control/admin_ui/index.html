@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TSUMGI Console</title>
+  <link rel="stylesheet" href="/admin/app.css">
+</head>
+<body>
+  <header class="top">
+    <h1>TSUMGI Console</h1>
+    <span id="updated" class="muted" role="status">読み込み中…</span>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" id="tab-workers" aria-controls="view-workers" aria-selected="true">Worker の状態</button>
+    <button role="tab" id="tab-model" aria-controls="view-model" aria-selected="false">モデルの検証</button>
+  </nav>
+
+  <main>
+    <section id="view-workers" role="tabpanel" aria-labelledby="tab-workers">
+      <p id="workers-error" class="banner error" hidden></p>
+      <div id="summary" class="summary"></div>
+      <div id="workers" class="cards"></div>
+    </section>
+
+    <section id="view-model" role="tabpanel" aria-labelledby="tab-model" hidden>
+      <form id="check-form" class="card">
+        <label for="hf-url">Hugging Face の URL</label>
+        <p class="muted">
+          モデルのページ、<code>/blob/…/ファイル.gguf</code> の URL、または <code>owner/repo</code> を入力します。
+          公開リポジトリの GGUF のみ対応します。重みのダウンロードや Worker の変更は行いません。
+        </p>
+        <div class="row">
+          <input id="hf-url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+                 placeholder="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF" required>
+          <button type="submit" id="check-button">検証する</button>
+        </div>
+      </form>
+      <p id="check-error" class="banner error" hidden></p>
+      <div id="check-result"></div>
+    </section>
+  </main>
+
+  <footer class="muted">認証なしの管理画面です。内部ネットワークからのみ到達できるようにしてください。</footer>
+  <script src="/admin/app.js"></script>
+</body>
+</html>

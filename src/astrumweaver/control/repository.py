@@ -97,6 +97,8 @@ class ControlRepository(Protocol):
 
     def get_worker(self, worker_id: str) -> WorkerRecord: ...
 
+    def list_workers(self) -> list[WorkerRecord]: ...
+
     def set_worker_state(
         self,
         worker_id: str,
@@ -446,6 +448,11 @@ class InMemoryControlRepository:
                 return self._workers[worker_id]
             except KeyError as exc:
                 raise NotFoundError(f"worker not found: {worker_id}") from exc
+
+    def list_workers(self) -> list[WorkerRecord]:
+        """Every registered Worker (any state), ordered by id."""
+        with self._lock:
+            return sorted(self._workers.values(), key=lambda record: record.worker_id)
 
     def set_worker_state(
         self,

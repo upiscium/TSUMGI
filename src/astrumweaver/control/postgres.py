@@ -776,6 +776,12 @@ class PostgresControlRepository:
             raise NotFoundError(f"worker not found: {worker_id}")
         return self._worker(row)
 
+    def list_workers(self) -> list[WorkerRecord]:
+        """Every registered Worker (any state), ordered by id."""
+        with self._connection() as connection:
+            rows = connection.execute("SELECT * FROM workers ORDER BY id").fetchall()
+        return [self._worker(row) for row in rows]
+
     def set_worker_state(
         self,
         worker_id: str,
