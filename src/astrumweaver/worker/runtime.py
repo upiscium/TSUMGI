@@ -44,6 +44,7 @@ from ..gpu_mapping import (
 )
 from .client import ClaimedJob, ControlClient, ControlTransportError
 from .event_coalescing import CoalescingJobEventSink
+from .telemetry import TELEMETRY_METADATA_KEY, WorkerTelemetry
 from .supervision import RuntimeHealthSupervisor, RuntimeUnavailable
 
 
@@ -397,6 +398,7 @@ class WorkerRuntime:
         recovery_retry_interval_seconds: float = 30.0,
         runtime_supervisor: RuntimeHealthSupervisor | None = None,
         serving: WorkerServingAdvertisement | None = None,
+        telemetry: WorkerTelemetry | None = None,
     ) -> None:
         if max_concurrency != 1:
             raise ValueError("v1 WorkerRuntime currently requires max_concurrency=1")
@@ -419,6 +421,8 @@ class WorkerRuntime:
         if spec.capabilities & _AUDIO_CAPABILITIES and serving is None:
             raise ValueError("audio Worker requires a current serving advertisement")
         self.serving = serving
+        # Optional live host/GPU snapshot attached to heartbeats.
+        self.telemetry = telemetry
         self.poll_interval_seconds = poll_interval_seconds
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self.recovery_retry_interval_seconds = recovery_retry_interval_seconds
@@ -582,6 +586,7 @@ class WorkerRuntime:
             and self._control_state is not WorkerState.OFFLINE
             else None
         )
+        snapshot = None if self.telemetry is None else self.telemetry.latest()
         try:
             record = await self.client.heartbeat(
                 self.spec.worker_id,
@@ -592,6 +597,9 @@ class WorkerRuntime:
                     None
                     if self.serving is None
                     else self.serving.runtime_instance.epoch
+                ),
+                metadata=(
+                    None if snapshot is None else {TELEMETRY_METADATA_KEY: snapshot}
                 ),
             )
             self._acknowledge_control(record, sent_at=sent_at)
