@@ -49,6 +49,28 @@ async def test_admin_console_mounts_when_enabled(tmp_path, monkeypatch):
         assert response.status_code == 200 and response.headers["content-type"].startswith(kind), path
 
 
+@pytest.mark.asyncio
+async def test_allowed_hosts_from_the_config_are_enforced(tmp_path, monkeypatch):
+    base_environment(monkeypatch)
+    path = write_config(tmp_path, admin="true")
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write('allowed_hosts = ["control.lan"]\n')
+    app = build_app(path)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://x") as client:
+        assert (await client.get("/admin", headers={"host": "control.lan:9000"})).status_code == 200
+        assert (await client.get("/admin", headers={"host": "evil.example"})).status_code == 403
+
+
+@pytest.mark.parametrize("value", ['"control.lan"', "[1, 2]", "true"])
+def test_allowed_hosts_must_be_a_list_of_strings(tmp_path, monkeypatch, value):
+    base_environment(monkeypatch)
+    path = write_config(tmp_path, admin="true")
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(f"allowed_hosts = {value}\n")
+    with pytest.raises(RuntimeError, match="allowed_hosts"):
+        build_app(path)
+
+
 @pytest.mark.parametrize("value", ['"yes"', "1"])
 def test_admin_ui_enabled_must_be_boolean(tmp_path, monkeypatch, value):
     base_environment(monkeypatch)

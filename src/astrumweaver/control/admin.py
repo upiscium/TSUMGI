@@ -5,21 +5,27 @@ network and is off unless ``[admin_ui] enabled = true``. Keep it off any
 public listener (for example by not proxying ``/admin`` outside the LAN).
 It can only read Worker state and ask the Hugging Face API about a model;
 it never changes Workers, Jobs or deployments.
+
+Everything a Worker reports is untrusted display data. ``worker_status``
+copies only known fields and normalizes their types, so one Worker with
+odd telemetry cannot break the list, the page, or the model check.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+import math
+from collections.abc import Collection, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ..transport import TELEMETRY_METADATA_KEY
-from .model_check import HuggingFaceClient, ModelCheckError, check_model
+from .model_check import HuggingFaceClient, ModelCheckError, UpstreamError, check_model
 from .models import WorkerRecord, utc_now
 from .repository import ControlRepository
 
@@ -30,6 +36,25 @@ _CSP = (
 )
 # Telemetry older than this is shown as stale rather than as a live value.
 TELEMETRY_STALE_SECONDS = 120.0
+MAX_REQUEST_BYTES = 4096
+MODEL_CHECK_TIMEOUT_SECONDS = 30.0
+_HOST_FIELDS = (
+    "cpu_count", "load_1m", "load_5m", "memory_total_mb", "memory_available_mb",
+    "disk_total_mb", "disk_free_mb",
+)
+_MAX_TEXT = 200
+_MAX_ERRORS = 5
+
+
+def _num(value: Any) -> int | float | None:
+    """A finite number, or None. Booleans, strings and NaN/inf are not numbers."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _text(value: Any, limit: int = _MAX_TEXT) -> str | None:
+    return value[:limit] if isinstance(value, str) and value else None
 
 
 def _age_seconds(then: datetime, now: datetime) -> float:
@@ -52,13 +77,16 @@ def worker_status(
     profile_names: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """One Worker as the console shows it. Missing facts stay ``None``."""
-    telemetry = record.metadata.get(TELEMETRY_METADATA_KEY)
-    telemetry = telemetry if isinstance(telemetry, Mapping) else {}
+    raw = record.metadata.get(TELEMETRY_METADATA_KEY)
+    telemetry: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
     collected = _parse_time(telemetry.get("collected_at"))
     telemetry_age = None if collected is None else _age_seconds(collected, now)
-    live_gpus = {
-        g.get("uuid"): g for g in telemetry.get("gpus", []) if isinstance(g, Mapping)
-    }
+
+    live_gpus: dict[str, Mapping[str, Any]] = {}
+    reported = telemetry.get("gpus")
+    for gpu in reported if isinstance(reported, list) else ():
+        if isinstance(gpu, Mapping) and isinstance(gpu.get("uuid"), str):
+            live_gpus[gpu["uuid"]] = gpu
     gpus = []
     for accelerator in record.spec.accelerators:
         live = live_gpus.get(accelerator.uuid, {})
@@ -66,12 +94,25 @@ def worker_status(
             "uuid": accelerator.uuid,
             "name": accelerator.device_class,
             "memory_total_mb": accelerator.memory_mb,
-            "memory_used_mb": live.get("memory_used_mb"),
-            "utilization_percent": live.get("utilization_percent"),
-            "temperature_c": live.get("temperature_c"),
-            "power_w": live.get("power_w"),
+            "memory_used_mb": _num(live.get("memory_used_mb")),
+            "utilization_percent": _num(live.get("utilization_percent")),
+            "temperature_c": _num(live.get("temperature_c")),
+            "power_w": _num(live.get("power_w")),
         })
-    runtime = telemetry.get("runtime") if isinstance(telemetry.get("runtime"), Mapping) else {}
+
+    raw_runtime = telemetry.get("runtime")
+    runtime: Mapping[str, Any] = raw_runtime if isinstance(raw_runtime, Mapping) else {}
+    context = _num(runtime.get("context_tokens"))
+    raw_host = telemetry.get("host")
+    host = None
+    if isinstance(raw_host, Mapping):
+        host = {key: _num(raw_host.get(key)) for key in _HOST_FIELDS}
+    raw_errors = telemetry.get("errors")
+    errors = [
+        text for text in (_text(e) for e in (raw_errors if isinstance(raw_errors, list) else ()))
+        if text
+    ][:_MAX_ERRORS]
+
     serving = record.serving
     deployment_revision = None if serving is None else serving.deployment_revision
     contexts = (
@@ -93,15 +134,15 @@ def worker_status(
         "capabilities": sorted(record.spec.capabilities),
         "profile": (profile_names or {}).get(deployment_revision or ""),
         "deployment_revision": deployment_revision,
-        "context_tokens": runtime.get("context_tokens") or (contexts[-1] if contexts else None),
-        "backend": runtime.get("provider_id"),
-        "model": runtime.get("model"),
-        "served_model_name": runtime.get("served_model_name"),
+        "context_tokens": int(context) if context else (contexts[-1] if contexts else None),
+        "backend": _text(runtime.get("provider_id"), 64),
+        "model": _text(runtime.get("model")),
+        "served_model_name": _text(runtime.get("served_model_name")),
         "gpus": gpus,
-        "host": telemetry.get("host") if isinstance(telemetry.get("host"), Mapping) else None,
+        "host": host,
         "telemetry_age_s": None if telemetry_age is None else round(telemetry_age, 1),
         "telemetry_stale": telemetry_age is None or telemetry_age > TELEMETRY_STALE_SECONDS,
-        "telemetry_errors": telemetry.get("errors") or [],
+        "telemetry_errors": errors,
     }
 
 
@@ -122,13 +163,34 @@ def fit_inputs(statuses: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return inputs
 
 
+def _request_host(request: Request) -> str:
+    host = request.headers.get("host", "").strip().lower()
+    if host.startswith("["):  # [::1]:9000
+        return host[1:].split("]", 1)[0]
+    return host.split(":", 1)[0]
+
+
 def create_admin_router(
     repository: ControlRepository,
     *,
     profile_names: Mapping[str, str] | None = None,
     hf_client: HuggingFaceClient | None = None,
+    allowed_hosts: Collection[str] | None = None,
 ) -> APIRouter:
-    router = APIRouter(prefix="/admin")
+    """The console routes.
+
+    ``allowed_hosts`` optionally restricts the ``Host`` header, which blocks
+    DNS-rebinding pages from reading the console through a browser. Empty or
+    ``None`` means any host (the console is then protected by the network
+    alone).
+    """
+    hosts = frozenset(h.strip().lower() for h in (allowed_hosts or ()) if h and h.strip())
+
+    def check_host(request: Request) -> None:
+        if hosts and _request_host(request) not in hosts:
+            raise HTTPException(status_code=403, detail="この Host 名では管理画面を開けません")
+
+    router = APIRouter(prefix="/admin", dependencies=[Depends(check_host)])
     client = hf_client or HuggingFaceClient()
 
     def _statuses() -> list[dict[str, Any]]:
@@ -157,8 +219,6 @@ def create_admin_router(
 
     @router.get("/api/workers")
     async def workers() -> JSONResponse:
-        import asyncio
-
         statuses = await asyncio.to_thread(_statuses)
         return JSONResponse(
             {"generated_at": utc_now().isoformat(), "workers": statuses},
@@ -167,12 +227,16 @@ def create_admin_router(
 
     @router.post("/api/model-check")
     async def model_check(request: Request) -> JSONResponse:
-        import asyncio
-
         # A JSON content type forces a CORS preflight from other origins, so a
         # page on another site cannot trigger this from an operator's browser.
         if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
             return _error(415, "Content-Type は application/json にしてください")
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > MAX_REQUEST_BYTES:
+            return _error(413, "リクエストが大きすぎます")
+        raw = await request.body()
+        if len(raw) > MAX_REQUEST_BYTES:
+            return _error(413, "リクエストが大きすぎます")
         try:
             body = await request.json()
         except ValueError:
@@ -182,9 +246,12 @@ def create_admin_router(
             return _error(400, '本文は {"url": "<Hugging Face の URL>"} の形にしてください')
         statuses = await asyncio.to_thread(_statuses)
         try:
-            result = await check_model(url, fit_inputs(statuses), client)
+            async with asyncio.timeout(MODEL_CHECK_TIMEOUT_SECONDS):
+                result = await check_model(url, fit_inputs(statuses), client)
         except ModelCheckError as exc:
             return _error(400, str(exc))
+        except UpstreamError as exc:
+            return _error(502, str(exc))
         except (httpx.HTTPError, TimeoutError):
             return _error(502, "Hugging Face に接続できません。しばらくしてから再試行してください")
         return JSONResponse(result, headers={"Cache-Control": "no-store"})

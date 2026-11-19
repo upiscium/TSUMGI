@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -46,7 +47,8 @@ def _number(raw: str) -> float | None:
         value = float(raw.strip())
     except ValueError:  # "[N/A]", "[Not Supported]"
         return None
-    return value
+    # "nan"/"inf" parse as floats but are not JSON and not a reading.
+    return value if math.isfinite(value) else None
 
 
 def parse_nvidia_smi(output: str, gpu_uuids: Sequence[str]) -> list[dict[str, Any]]:
@@ -55,9 +57,12 @@ def parse_nvidia_smi(output: str, gpu_uuids: Sequence[str]) -> list[dict[str, An
     rows: dict[str, dict[str, Any]] = {}
     for line in output.splitlines():
         cells = [cell.strip() for cell in line.split(",")]
-        if len(cells) != len(_GPU_FIELDS):
+        if len(cells) < len(_GPU_FIELDS):
             continue
-        uuid, name, total, used, util, temp, power = cells
+        # The UUID is first and the five readings are last; a name may itself
+        # contain commas, so everything in between is the name.
+        uuid, total, used, util, temp, power = cells[0], *cells[-5:]
+        name = ", ".join(cells[1:-5])
         if wanted and uuid not in wanted:
             continue
         rows[uuid] = {

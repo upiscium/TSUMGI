@@ -17,11 +17,12 @@ another host.
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 
@@ -32,6 +33,7 @@ _REVISION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
 _FILE_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._()+=@\[\]/-]{0,299}$")
 _SHARD = re.compile(r"^(?P<stem>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 MAX_TREE_PAGES = 5
@@ -44,6 +46,10 @@ PASS, WARN, FAIL = "pass", "warn", "fail"
 
 class ModelCheckError(ValueError):
     """The input is not a usable Hugging Face reference (client error)."""
+
+
+class UpstreamError(RuntimeError):
+    """Hugging Face is unavailable or answered unexpectedly (not the caller's fault)."""
 
 
 @dataclass(frozen=True)
@@ -61,12 +67,17 @@ def parse_hf_reference(value: str) -> HfReference:
     if len(text) > 500 or any(ord(ch) < 32 for ch in text):
         raise ModelCheckError("入力が長すぎるか、制御文字を含んでいます")
     if "://" in text:
-        parts = urlsplit(text)
+        try:
+            parts = urlsplit(text)
+            hostname, port = parts.hostname or "", parts.port
+            username, password = parts.username, parts.password
+        except ValueError:  # bad port, unbalanced [ ], unicode that normalizes to a delimiter
+            raise ModelCheckError("URL を解釈できません") from None
         if parts.scheme != "https":
             raise ModelCheckError("https の URL のみ使えます")
-        if (parts.hostname or "") not in _HOSTS or parts.port not in (None, 443):
+        if hostname not in _HOSTS or port not in (None, 443):
             raise ModelCheckError("huggingface.co の URL のみ使えます")
-        if parts.username or parts.password:
+        if username or password:
             raise ModelCheckError("URL に認証情報を含めることはできません")
         segments = [s for s in parts.path.split("/") if s]
     else:
@@ -83,7 +94,7 @@ def parse_hf_reference(value: str) -> HfReference:
             raise ModelCheckError("/tree/<rev>、/blob/<rev>/<ファイル>、/resolve/<rev>/<ファイル> のいずれかの形式にしてください")
         revision = rest[1]
         if not _REVISION.fullmatch(revision) or ".." in revision:
-            raise ModelCheckError("リビジョンが正しくありません")
+            raise ModelCheckError("リビジョンが正しくありません（/ を含むブランチ名は、コミットのハッシュで指定してください）")
         if len(rest) > 2:
             if rest[0] == "tree":
                 raise ModelCheckError("/tree/ の URL ではファイルを指定できません。/blob/ か /resolve/ を使ってください")
@@ -108,14 +119,21 @@ def _check(checks: list[dict[str, str]], check_id: str, status: str, message: st
     checks.append({"id": check_id, "status": status, "message": message})
 
 
+def _count(value: Any) -> int:
+    """A non-negative integer from untrusted JSON, else 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value) if math.isfinite(value) and value > 0 else 0
+
+
 def estimate_fit(
     weights_mb: float, workers: Sequence[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
     """Rough verdict per Worker. An estimate, never a guarantee."""
     results: list[dict[str, Any]] = []
     for worker in workers:
-        vram = worker.get("vram_total_mb")
-        ram = worker.get("ram_total_mb")
+        vram = _count(worker.get("vram_total_mb"))
+        ram = _count(worker.get("ram_total_mb")) or None
         entry: dict[str, Any] = {
             "worker_id": worker.get("worker_id"),
             "backend": worker.get("backend"),
@@ -199,33 +217,48 @@ class HuggingFaceClient:
             raise ModelCheckError("Hugging Face の応答を解釈できません") from exc
 
 
-async def _list_tree(client: HuggingFaceClient, repo_id: str, revision: str) -> list[dict[str, Any]]:
-    """All files of a revision (follows the API's cursor pagination)."""
+def _raise_for_status(status: int) -> None:
+    """Turn an unexpected Hugging Face status into the right error class."""
+    if 300 <= status < 400:
+        raise ModelCheckError("リポジトリが移動または改名されています。新しい URL で試してください")
+    raise UpstreamError(f"Hugging Face がエラーを返しました（ステータス {status}）")
+
+
+async def _list_tree(client: HuggingFaceClient, repo_id: str, revision: str) -> tuple[list[dict[str, Any]], bool]:
+    """All files of a revision (follows the API's cursor pagination).
+
+    Returns the files and whether the list was cut at ``MAX_TREE_PAGES``.
+    """
     files: list[dict[str, Any]] = []
     path = f"/api/models/{repo_id}/tree/{quote(revision, safe='')}"
     params: dict[str, str] | None = {"recursive": "true"}
     for _ in range(MAX_TREE_PAGES):
         status, data, headers = await client.get_json(path, params)
-        if status != 200 or not isinstance(data, list):
-            raise ModelCheckError(f"ファイル一覧を取得できません（Hugging Face のステータス {status}）")
+        if status != 200:
+            _raise_for_status(status)
+        if not isinstance(data, list):
+            raise UpstreamError("Hugging Face のファイル一覧の形式が想定と違います")
         for item in data:
-            if isinstance(item, dict) and item.get("type") == "file":
-                lfs = item.get("lfs") if isinstance(item.get("lfs"), dict) else {}
-                sha = lfs.get("oid") if isinstance(lfs.get("oid"), str) else None
-                files.append({
-                    "path": str(item.get("path")),
-                    "size_bytes": int(lfs.get("size") or item.get("size") or 0),
-                    "sha256": sha if sha and _SHA256.fullmatch(sha) else None,
-                })
-        link = headers.get("link", "")
-        next_url = re.search(r'<([^>]+)>;\s*rel="next"', link)
-        if not next_url:
-            return files
-        cursor = re.search(r"[?&]cursor=([^&]+)", next_url.group(1))
-        if not cursor:
-            return files
-        params = {"recursive": "true", "cursor": cursor.group(1)}
-    return files
+            if not isinstance(item, dict) or item.get("type") != "file":
+                continue
+            file_path = item.get("path")  # not `path`: that is the request path
+            if not isinstance(file_path, str) or not file_path:
+                continue
+            lfs = item.get("lfs") if isinstance(item.get("lfs"), dict) else {}
+            sha = lfs.get("oid")
+            files.append({
+                "path": file_path,
+                "size_bytes": _count(lfs.get("size")) or _count(item.get("size")),
+                "sha256": sha if isinstance(sha, str) and _SHA256.fullmatch(sha) else None,
+            })
+        next_url = re.search(r'<([^>]+)>;\s*rel="next"', headers.get("link", ""))
+        cursor = re.search(r"[?&]cursor=([^&>]+)", next_url.group(1)) if next_url else None
+        if cursor is None:
+            return files, False
+        # The cursor in the header is already percent-encoded; httpx encodes
+        # query parameters again, so decode it once first.
+        params = {"recursive": "true", "cursor": unquote(cursor.group(1))}
+    return files, True
 
 
 async def check_model(
@@ -250,10 +283,12 @@ async def check_model(
         _check(checks, "reachable", FAIL, "リポジトリが見つからないか、非公開、またはアクセス申請が必要です")
         result["ok"] = False
         return result
-    if status != 200 or not isinstance(info, dict):
-        raise ModelCheckError(f"Hugging Face がエラーを返しました（ステータス {status}）")
+    if status != 200:
+        _raise_for_status(status)
+    if not isinstance(info, dict):
+        raise UpstreamError("Hugging Face の応答の形式が想定と違います")
     _check(checks, "reachable", PASS, f"{ref.repo_id} を確認しました")
-    sha = info.get("sha") if isinstance(info.get("sha"), str) else None
+    sha = info.get("sha") if isinstance(info.get("sha"), str) and _COMMIT.fullmatch(info["sha"]) else None
     result["revision"] = revision
     result["commit"] = sha
     if info.get("private") or info.get("gated"):
@@ -275,9 +310,12 @@ async def check_model(
         _check(checks, "commit", FAIL, "コミットを特定できないため、ファイルを固定できません")
         result["ok"] = False
         return result
-    tree = await _list_tree(client, ref.repo_id, sha)
+    tree, truncated = await _list_tree(client, ref.repo_id, sha)
     ggufs = [f for f in tree if f["path"].lower().endswith(".gguf")]
     result["files"] = ggufs
+    result["truncated"] = truncated
+    if truncated:
+        _check(checks, "listing", WARN, f"ファイルが多いため、先頭の {MAX_TREE_PAGES} ページ分で一覧を打ち切りました。一部のファイルが見えていない可能性があります")
     if not ggufs:
         _check(checks, "format", FAIL, "GGUF ファイルがありません。現在対応しているバックエンドは GGUF のみ読み込めます")
         result["ok"] = False

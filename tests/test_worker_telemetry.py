@@ -42,6 +42,14 @@ def test_parse_nvidia_smi_keeps_configured_gpus_in_configured_order():
     assert [g["uuid"] for g in parse_nvidia_smi(SMI, [B])] == [B]
 
 
+def test_parse_nvidia_smi_handles_commas_in_names_and_non_finite_readings():
+    gpus = parse_nvidia_smi(f"{A}, NVIDIA GeForce RTX 3060, Laptop GPU, 6144, 100, nan, inf, [Not Supported]\n", [A])
+    assert gpus[0]["name"] == "NVIDIA GeForce RTX 3060, Laptop GPU"
+    assert gpus[0]["memory_total_mb"] == 6144.0 and gpus[0]["memory_used_mb"] == 100.0
+    assert gpus[0]["utilization_percent"] is None and gpus[0]["temperature_c"] is None and gpus[0]["power_w"] is None
+    assert parse_nvidia_smi("too, few, cells\n", []) == []
+
+
 def test_parse_meminfo_reports_mib():
     mem = parse_meminfo("MemTotal:       33554432 kB\nMemAvailable:   16777216 kB\nHugePages_Total: 0\n")
     assert mem["MemTotal"] == 32768 and mem["MemAvailable"] == 16384

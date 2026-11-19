@@ -106,6 +106,9 @@ def build_app(config_path: str):
     admin_section = dict(config.get("admin_ui") or {})
     if type(admin_section.get("enabled", False)) is not bool:
         raise RuntimeError("admin_ui.enabled must be boolean")
+    admin_hosts = admin_section.get("allowed_hosts", [])
+    if not isinstance(admin_hosts, list) or not all(isinstance(h, str) for h in admin_hosts):
+        raise RuntimeError("admin_ui.allowed_hosts must be a list of host names")
     profile_names: dict[str, str] = {}
     try:
         app = create_app(
@@ -214,7 +217,9 @@ def build_app(config_path: str):
             from .admin import create_admin_router
 
             app.include_router(
-                create_admin_router(repository, profile_names=profile_names)
+                create_admin_router(
+                    repository, profile_names=profile_names, allowed_hosts=admin_hosts
+                )
             )
         return app
     except Exception:

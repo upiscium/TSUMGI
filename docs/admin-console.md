@@ -16,6 +16,9 @@ internal dashboard:
 - Do not expose `/admin` on a public listener. If a reverse proxy fronts
   Control, route only `/v1/` to the outside, and keep `/admin` on the
   internal network.
+- Optional `allowed_hosts` (below) rejects requests whose `Host` header is not
+  on the list. That blocks a DNS-rebinding page, which could otherwise read
+  the console through an operator's browser.
 - The page sends a strict `Content-Security-Policy` (scripts and styles from
   Control itself only), and everything it shows is inserted as text, never as
   HTML.
@@ -33,6 +36,15 @@ enabled = true
 ```
 
 Then open `http://<control>:9000/admin`. The setting must be a TOML boolean.
+
+```toml
+[admin_ui]
+enabled = true
+allowed_hosts = ["control.example.lan", "10.12.2.13"]   # optional
+```
+
+`allowed_hosts` lists the host names (without port) the console may be opened
+under. Leave it out to accept any `Host` header.
 
 ## Worker status
 
@@ -84,8 +96,14 @@ Limits, on purpose:
 - Only GGUF is supported, because the current backends load GGUF.
 - Private and gated repositories are rejected.
 - No weights are downloaded and nothing is deployed.
-- Responses above 5 MiB are refused, and at most two Hugging Face requests run
-  at once.
+- Responses above 5 MiB are refused, at most two Hugging Face requests run at
+  once, and one check gives up after 30 s. Request bodies above 4 KiB are
+  refused.
+- A listing is cut after 5 pages of files and the result says so.
+- A URL that names a branch containing `/` is ambiguous (`/blob/feature/x/m.gguf`),
+  so give the commit hash as the revision instead.
+- Hugging Face errors are reported as 502 (429 and 5xx) or 400 (a renamed
+  repository answers with a redirect, which is not followed).
 
 ## API
 
