@@ -109,6 +109,17 @@ def build_app(config_path: str):
     admin_hosts = admin_section.get("allowed_hosts", [])
     if not isinstance(admin_hosts, list) or not all(isinstance(h, str) for h in admin_hosts):
         raise RuntimeError("admin_ui.allowed_hosts must be a list of host names")
+    admin_auth = None
+    admin_user = admin_section.get("username")
+    admin_hash = admin_section.get("password_hash")
+    if (admin_user is None) != (admin_hash is None):
+        raise RuntimeError("admin_ui.username and admin_ui.password_hash must be set together")
+    if admin_user is not None:
+        if not isinstance(admin_user, str) or not isinstance(admin_hash, str):
+            raise RuntimeError("admin_ui.username and admin_ui.password_hash must be text")
+        from .admin_auth import BasicAuth
+
+        admin_auth = BasicAuth(admin_user, admin_hash)
     profile_names: dict[str, str] = {}
     try:
         app = create_app(
@@ -213,12 +224,16 @@ def build_app(config_path: str):
         for router in audio_routers:
             app.include_router(router)
         if admin_section.get("enabled", False):
-            # No authentication: see control/admin.py. Off unless asked for.
+            # Basic authentication when username and password_hash are set;
+            # without them there is none (see control/admin.py). Off unless asked for.
             from .admin import create_admin_router
 
             app.include_router(
                 create_admin_router(
-                    repository, profile_names=profile_names, allowed_hosts=admin_hosts
+                    repository,
+                    profile_names=profile_names,
+                    allowed_hosts=admin_hosts,
+                    auth=admin_auth,
                 )
             )
         return app

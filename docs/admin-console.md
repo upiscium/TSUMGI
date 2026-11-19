@@ -6,10 +6,12 @@ is running and checks a Hugging Face model URL before anyone deploys it.
 It never changes a Worker, a Job or a deployment. Swapping a model stays a
 manual, reviewed operation.
 
-## Security: no authentication
+## Security: password (HTTP Basic)
 
-**The console has no login.** Anyone who can reach `/admin` can read every
-Worker's state and ask the Hugging Face API about a model. Treat it like an
+With `username` and `password_hash` set (below), every `/admin` route asks for
+HTTP Basic credentials, so the console can sit behind a public HTTPS proxy.
+Without them **there is no login**: anyone who can reach `/admin` can read every
+Worker's state and ask the Hugging Face API about a model, so treat it like an
 internal dashboard:
 
 - It is **off** unless the Control config enables it.
@@ -45,6 +47,29 @@ allowed_hosts = ["control.example.lan", "10.12.2.13"]   # optional
 
 `allowed_hosts` lists the host names (without port) the console may be opened
 under. Leave it out to accept any `Host` header.
+
+## Password
+
+Make a hash (at least 12 characters; the password itself is never stored):
+
+```sh
+python -m astrumweaver.control.admin_auth
+```
+
+Put the printed line in the Control config:
+
+```toml
+[admin_ui]
+enabled = true
+username = "ops"
+password_hash = "scrypt$16384$8$1$...$..."
+```
+
+Both keys are required together, and Control refuses to start with only one or
+with an unusable hash. After 5 wrong attempts within 5 minutes a client gets
+429 until the window passes (the nearest proxy's forwarded address identifies
+the client). Failures are logged. Use it only over HTTPS: Basic credentials
+are not encrypted. Pair it with `allowed_hosts` when exposing the console.
 
 ## Worker status
 

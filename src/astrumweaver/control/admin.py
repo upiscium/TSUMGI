@@ -1,8 +1,9 @@
 """Operator console: read-only Worker status and Hugging Face model checks.
 
-There is NO authentication here. The console is meant for an internal
-network and is off unless ``[admin_ui] enabled = true``. Keep it off any
-public listener (for example by not proxying ``/admin`` outside the LAN).
+The console is off unless ``[admin_ui] enabled = true``. With
+``username`` and ``password_hash`` configured it requires HTTP Basic
+authentication on every route (see ``admin_auth``); without them it has NO
+authentication and must stay on an internal network.
 It can only read Worker state and ask the Hugging Face API about a model;
 it never changes Workers, Jobs or deployments.
 
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -193,6 +194,7 @@ def create_admin_router(
     profile_names: Mapping[str, str] | None = None,
     hf_client: HuggingFaceClient | None = None,
     allowed_hosts: Collection[str] | None = None,
+    auth: Callable[[Request], None] | None = None,
 ) -> APIRouter:
     """The console routes.
 
@@ -207,7 +209,11 @@ def create_admin_router(
         if hosts and _request_host(request) not in hosts:
             raise HTTPException(status_code=403, detail="この Host 名では管理画面を開けません")
 
-    router = APIRouter(prefix="/admin", dependencies=[Depends(check_host)])
+    # The Host check runs first; authentication covers every route, pages included.
+    dependencies = [Depends(check_host)]
+    if auth is not None:
+        dependencies.append(Depends(auth))
+    router = APIRouter(prefix="/admin", dependencies=dependencies)
     client = hf_client or HuggingFaceClient()
 
     def _statuses() -> list[dict[str, Any]]:
