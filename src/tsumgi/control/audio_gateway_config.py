@@ -117,7 +117,7 @@ class _SpoolConfig:
         return ArtifactSpool(
             self.root, max_bytes=max_bytes, ttl_seconds=self.ttl_seconds,
             max_total_bytes=self.max_total_bytes, max_artifacts=self.max_artifacts,
-            recover_on_startup=False,
+            recover_on_startup=True, exclusive_root=True,
         )
 
 
@@ -150,6 +150,9 @@ def _discard_new_empty_spools(*spools: ArtifactSpool | None) -> None:
                 os.close(root_fd)
         except (OSError, ValueError, AttributeError):
             failed = True
+        finally:
+            if spool._release_owner is not None:
+                spool._release_owner()
     if failed:
         raise RuntimeError("audio_gateway startup cleanup requires inspection") from None
 

@@ -164,15 +164,21 @@ def create_app(
     async def maintenance_loop() -> None:
         while True:
             await asyncio.sleep(maintenance_interval_seconds)
+            # Local TTLs do not depend on a successful Job lookup. Reap each
+            # spool independently before entering any DB-dependent recovery.
+            for channel in (audio_output_channel, audio_input_channel):
+                if channel is not None:
+                    try:
+                        await asyncio.to_thread(channel.reap_expired)
+                    except Exception:
+                        # Failed deletion stays charged; retry next interval.
+                        continue
             try:
                 await asyncio.to_thread(repository.expire_stale_workers)
                 await asyncio.to_thread(repository.expire_deadline_jobs)
                 await asyncio.to_thread(repository.recover_expired_jobs)
                 if audio_output_channel is not None:
-                    await asyncio.to_thread(audio_output_channel.reap_expired)
                     await asyncio.to_thread(audio_output_channel.reap_abandoned)
-                if audio_input_channel is not None:
-                    await asyncio.to_thread(audio_input_channel.reap_expired)
             except Exception:
                 # Repository/API calls still expose current storage failures.
                 # Maintenance must not terminate the server process.
