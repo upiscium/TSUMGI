@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import timedelta
@@ -470,6 +471,12 @@ async def test_real_owned_child_exit_reaches_worker_readiness_gate():
 async def test_managed_daemon_quarantines_without_restart_and_shutdown_joins_tasks(monkeypatch):
     from astrumweaver.worker import daemon
 
+    # The health probe below times out after 0.1 s. In the full suite a
+    # generation-2 collection pauses the loop for about that long (measured
+    # at 109 ms with ~13k objects), and a probe that overlaps it quarantines
+    # the runtime before the first job starts. Collect now so none is due
+    # during startup.
+    gc.collect()
     repo = InMemoryControlRepository()
     managed = Managed(Executor(gate=asyncio.Event()))
     handlers = {}
