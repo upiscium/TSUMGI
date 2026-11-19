@@ -176,3 +176,63 @@ and altair config; offline digest checks. Nothing was changed on any host.
 4. The database rename (`ALTER DATABASE ... RENAME`) needs every connection
    closed: Control stopped, and no other client. It is the last step on the
    Control host.
+
+## Stage 5 results (2026-11-19, live rehearsal on one lent host)
+
+Host: canopus (a 64K Strata replica), lent with `tsumgi-gpu-mode development`; the
+other three replicas kept serving. Control and every other host were not touched;
+on them only the read-only `plan` was run.
+
+### What worked
+
+- `plan`, `apply` and `rollback` ran for real (`usermod`, `groupmod`, `systemctl`,
+  directory renames, profile and symlink retargeting). uid 999 and the group ids
+  stayed; the 24 GB Strata directory was renamed, not copied.
+- A **mixed-version window works**: the migrated Worker (new build, `tsumgi` names,
+  config under `/etc/tsumgi`) joined the old Control, loaded its model in about
+  70 s, and took its share of streaming requests (2 of 8, evenly with the three
+  old-name replicas).
+- The rollback took 5.6 s and restored everything. A second round trip compared
+  mode, owner, type and link target of 55 entries before and after: identical.
+- The lent host returned to production in about 120 s.
+
+### What the rehearsal found (all fixed in the tool, each with a test)
+
+1. Strata's absolute symlinks (`bin/strata`, `data/terminal/current`) would have
+   dangled after the move: now retargeted and restored by the rollback.
+2. polaris's live config names a Nix profile `astrumweaver-runtime-qwen38`: such
+   profiles and their generation links are now renamed too.
+3. Earlier rollback copies under `/etc/astrumweaver/rollback` were being rewritten:
+   now moved untouched. A leftover pinned file that nothing refers to warns instead
+   of blocking; a base unit `ExecStart` that a drop-in resets is not a reference;
+   `--allow-pinned` lets the operator name a stale file that something still
+   mentions.
+4. **The rollback restored files as `root:root`** (the backup lost the owner and
+   `cp -p` applied it), so the old Worker, which reads its config through the
+   `astrumweaver-config` group, crash-looped with `PermissionError` until the
+   owners were corrected by hand. The backup now keeps the owner; verified with
+   the second live round trip. The unit tests run as an ordinary user and could not
+   have found this: a rollback needs a live check on every host class.
+
+### Read-only `plan` on the other hosts
+
+| Host | Result |
+| --- | --- |
+| polaris, vega | clean (warnings about old rollback scripts in `/usr/local/sbin` only) |
+| spica | blocked by a stale `runtime-deployment.json` that a stale config names: needs `--allow-pinned` after checking it is unused (same for sirius, deneb as they turn out) |
+| altair | blocked, as designed: `runtime-deployment.json` and `serving-deployment.json` must be re-pinned (decision) |
+| tsumgi-control | blocked, as designed: the decision catalog must be re-pinned |
+
+### Still open before the cutover (stage 7)
+
+- **Re-pin altair and the Control decision catalog** with the new build: not
+  rehearsed. It changes altair's decision contract revision.
+- **Control and the database** were not rehearsed live (Control is the single
+  entry point). The ordering is in `docs/host-migration.md`; a transient new-build
+  Control against a copy of the database is the next check.
+- `/usr/local/sbin` scripts (`tsumgi-gpu-mode`, the `tsumgi-rollback-*` family,
+  `astrumweaver-install-llama-cpp-pascal`) still name the old units and binaries
+  and must be updated by hand per host; `tsumgi-gpu-mode` stops working on a
+  migrated host until it is.
+- Strata's own files under `/opt` were not checked for stored absolute paths
+  beyond what a live start proved (the engine loaded and served).

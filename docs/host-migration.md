@@ -19,6 +19,9 @@ plan and [naming.md](naming.md) for the names.
    `astrumweaver-decisions-v1`. Regenerate those files with the new build (the
    decision runtime deployment, the serving declaration and the Control decision
    catalog) and replace them first. The tool never edits them.
+   A leftover that something still names (a stale config next to the live one) is not
+   guessed at: pass `--allow-pinned /etc/astrumweaver/FILE` for each file you have
+   checked is unused; it is then moved unchanged. Unit files cannot be allowed.
 4. **Helpers.** If `/usr/local/libexec/astrumweaver` exists, pass
    `--helpers-from DIR` with the new build's `libexec` directory. The old helpers
    (including dotfiles and subdirectories) are replaced, not edited.

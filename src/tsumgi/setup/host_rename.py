@@ -186,7 +186,7 @@ MAX_SYMLINK_SCAN = 300_000
 class HostMigration:
     def __init__(self, root: Path, role: str, profile: str, *, helpers_from: Path | None = None,
                  runner: Runner = run_command, clock: Callable[[], float] = time.time,
-                 live: bool | None = None) -> None:
+                 live: bool | None = None, allow_pinned: Sequence[str] = ()) -> None:
         if role not in UNITS:
             raise MigrationError(f"role must be one of {sorted(UNITS)}")
         if not re.fullmatch(r"[A-Za-z0-9._+-]+", profile) or "/" in profile:
@@ -198,6 +198,9 @@ class HostMigration:
         self.role = role
         self.profile = profile
         self.helpers_from = Path(os.path.abspath(helpers_from)) if helpers_from else None
+        # Files the operator states are unused although something still names them;
+        # they are moved unchanged, never rewritten.
+        self.allow_pinned = {str(a) for a in allow_pinned}
         self.run = runner
         self.clock = clock
 
@@ -299,7 +302,9 @@ class HostMigration:
         keep: list[Path] = []
         for path in plan.repin:
             logical = "/" + path.relative_to(self.root).as_posix() if path.is_relative_to(self.root) else str(path)
-            if path in plan.unit_files or logical in blob:
+            if logical in self.allow_pinned and path not in plan.unit_files:
+                plan.warnings.append(f"{logical} carries the old name; allowed by the operator, moved unchanged")
+            elif path in plan.unit_files or logical in blob:
                 keep.append(path)
             else:
                 plan.warnings.append(f"{logical} carries the old name but nothing refers to it; it is moved unchanged")
@@ -636,6 +641,9 @@ def _parser() -> argparse.ArgumentParser:
         p.add_argument("--profile", required=True, help="new Nix profile name, e.g. tsumgi-v030-installer")
         p.add_argument("--root", default="/", help="host root (for rehearsal on a copy)")
         p.add_argument("--helpers-from", help="directory with the new build's libexec helpers")
+        p.add_argument("--allow-pinned", action="append", default=[], metavar="PATH",
+                       help="a file that carries the old identity but is unused (for example a stale config): "
+                            "it is moved unchanged instead of blocking; repeatable")
         if name == "apply":
             p.add_argument("--backup-dir", required=True)
             p.add_argument("--no-start", action="store_true")
@@ -658,6 +666,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         migration = HostMigration(
             Path(args.root), args.role, args.profile,
             helpers_from=Path(args.helpers_from) if args.helpers_from else None,
+            allow_pinned=args.allow_pinned,
             runner=run_command if Path(os.path.realpath(args.root)) == Path("/") else _rehearsal_runner,
         )
         if args.command == "plan":

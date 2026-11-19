@@ -631,3 +631,31 @@ def test_the_backup_keeps_the_owner_so_a_rollback_restores_it(host, tmp_path, mo
     assert len(calls) >= len(list((tmp_path / "b/files").rglob("*.*"))) - 2
     # and the rollback restores with cp -p, which uses that owner
     assert "cp -p" in (tmp_path / "b/rollback.sh").read_text()
+
+
+def test_allow_pinned_lets_the_operator_move_a_stale_referenced_file(host, tmp_path):
+    write(host, "etc/astrumweaver/runtime-deployment.json", json.dumps({"executable": STORE + "/bin/x"}))
+    write(host, "etc/astrumweaver/stale-worker.toml", '[runtime]\nmanifest = "/etc/astrumweaver/runtime-deployment.json"\n')
+    assert any("runtime-deployment.json" in b for b in migration(host).plan().blockers)
+    allowed = migration(host, allow_pinned=["/etc/astrumweaver/runtime-deployment.json"])
+    plan = allowed.plan()
+    assert not plan.blockers and any("allowed by the operator" in w for w in plan.warnings)
+    allowed.run = Recorder()
+    allowed.apply(tmp_path / "b")
+    assert STORE in (host / "etc/tsumgi/runtime-deployment.json").read_text()
+
+
+def test_allow_pinned_never_covers_a_unit_file(host):
+    unit = host / "etc/systemd/system/astrumweaver-worker.service"
+    unit.write_text(unit.read_text() + f"ExecStart={STORE}/bin/x\n")
+    path = "/etc/systemd/system/astrumweaver-worker.service"
+    assert migration(host, allow_pinned=[path]).plan().blockers
+
+
+def test_cli_allow_pinned_flag(host, capsys):
+    helpers = host.parent / (host.name + "-helpers")
+    write(host, "etc/astrumweaver/runtime-deployment.json", json.dumps({"executable": STORE + "/bin/x"}))
+    write(host, "etc/astrumweaver/stale.toml", 'm = "/etc/astrumweaver/runtime-deployment.json"\n')
+    base = ["plan", "--role", "worker", "--profile", "tsumgi-v030-installer", "--root", str(host), "--helpers-from", str(helpers)]
+    assert main(base) == 3
+    assert main(base + ["--allow-pinned", "/etc/astrumweaver/runtime-deployment.json"]) == 0
