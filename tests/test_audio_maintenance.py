@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository
-from astrumweaver.control.api import create_app
+from tsumgi.control import InMemoryControlRepository
+from tsumgi.control.api import create_app
 from test_audio_input_channel import WAV, make_channel
 from test_audio_output_channel import new_env
 

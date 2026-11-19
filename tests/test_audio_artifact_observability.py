@@ -8,8 +8,8 @@ from threading import Event
 import httpx
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository
-from astrumweaver.control.api import create_app
+from tsumgi.control import InMemoryControlRepository
+from tsumgi.control.api import create_app
 from test_audio_artifact_authority import setup_claim
 from test_audio_artifact_fault_acceptance import new_input, new_output
 from test_audio_input_channel import pcm16_wav

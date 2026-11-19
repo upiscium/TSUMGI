@@ -6,9 +6,9 @@ import os
 
 from fastapi.testclient import TestClient
 
-from astrumweaver.audio import ArtifactSpool, AudioOutputChannel
-from astrumweaver.control import JobStatus, PostgresControlRepository
-from astrumweaver.control.api import create_app
+from tsumgi.audio import ArtifactSpool, AudioOutputChannel
+from tsumgi.control import JobStatus, PostgresControlRepository
+from tsumgi.control.api import create_app
 from test_audio_artifact_authority import setup_claim
 from test_audio_artifact_authority_postgres import isolated_database
 from test_audio_output_channel import (

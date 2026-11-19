@@ -146,7 +146,7 @@ Local regression run (2026-11-19): `audio/acceptance-backlog`, based on
 `6c81ebbf` with the uncommitted maintenance, restart, observability and STT
 scorer changes present. Against a dedicated PostgreSQL 17.11 instance on a
 private Unix socket (explicit `host`, `port=55464`, `dbname=postgres`, and
-test-cluster owner `user` in `ASTRUMWEAVER_TEST_DATABASE_URL`), ran:
+test-cluster owner `user` in `TSUMGI_TEST_DATABASE_URL`), ran:
 
 ```sh
 PYTHONPATH=src python -m pytest -q -rs tests/test_audio*.py tests/test_voicevox*.py tests/test_style_bert*.py

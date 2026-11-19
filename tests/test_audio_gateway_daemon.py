@@ -118,13 +118,13 @@ def _stage_until_killed(config, ready, hold):
     import os
 
     from fastapi.testclient import TestClient
-    from astrumweaver.control import PostgresControlRepository
+    from tsumgi.control import PostgresControlRepository
     from test_audio_artifact_authority import setup_claim
     from test_audio_input_channel import WAV
     from test_audio_output_channel import output_url, worker_headers
 
     with TestClient(daemon.build_app(str(config))) as client:
-        repo = PostgresControlRepository(os.environ["ASTRUMWEAVER_DATABASE_URL"])
+        repo = PostgresControlRepository(os.environ["TSUMGI_DATABASE_URL"])
         claim = setup_claim(repo, datetime.now(UTC))
         for route, auth in (
             ("/v1/audio/inputs", {"Authorization": "Bearer control-test-token"}),
@@ -141,10 +141,10 @@ def test_standard_control_excludes_live_owner_and_recovers_after_crash(
     env, isolated_database, tmp_path, monkeypatch, busy_root,
 ):
     import multiprocessing
-    from astrumweaver.control import PostgresControlRepository
+    from tsumgi.control import PostgresControlRepository
     from test_audio_input_channel import WAV
 
-    monkeypatch.setenv("ASTRUMWEAVER_DATABASE_URL", isolated_database)
+    monkeypatch.setenv("TSUMGI_DATABASE_URL", isolated_database)
     monkeypatch.setattr(daemon, "PostgresControlRepository", PostgresControlRepository)
     env.config.write_text(_toml({"audio_gateway": env.policy}))
     ctx = multiprocessing.get_context("spawn")
@@ -175,7 +175,7 @@ def test_standard_control_excludes_live_owner_and_recovers_after_crash(
 
 
 def test_standard_control_leaves_legacy_spool_intact(env):
-    from astrumweaver.audio import ArtifactSpool
+    from tsumgi.audio import ArtifactSpool
     from test_audio_input_channel import WAV
 
     # An old/unlocked owner cannot be proven dead just because flock succeeds.
