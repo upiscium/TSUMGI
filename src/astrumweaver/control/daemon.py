@@ -109,6 +109,40 @@ def build_app(config_path: str):
     admin_hosts = admin_section.get("allowed_hosts", [])
     if not isinstance(admin_hosts, list) or not all(isinstance(h, str) for h in admin_hosts):
         raise RuntimeError("admin_ui.allowed_hosts must be a list of host names")
+    admin_auth = None
+    admin_user = admin_section.get("username")
+    admin_hash = admin_section.get("password_hash")
+    admin_file = admin_section.get("credentials_file")
+    if (admin_user is None) != (admin_hash is None):
+        raise RuntimeError("admin_ui.username and admin_ui.password_hash must be set together")
+    if admin_user is not None and admin_file is not None:
+        raise RuntimeError("admin_ui: use either username + password_hash or credentials_file, not both")
+    if admin_user is not None or admin_file is not None:
+        if admin_file is not None and (not isinstance(admin_file, str) or not admin_file.strip()):
+            raise RuntimeError("admin_ui.credentials_file must be a path")
+        if admin_user is not None and (not isinstance(admin_user, str) or not isinstance(admin_hash, str)):
+            raise RuntimeError("admin_ui.username and admin_ui.password_hash must be text")
+        from .admin_auth import BasicAuth, CredentialsFile, StaticCredentials
+
+        proxies = admin_section.get("trusted_proxies", [])
+        if not isinstance(proxies, list) or not all(isinstance(p, str) for p in proxies):
+            raise RuntimeError("admin_ui.trusted_proxies must be a list of addresses")
+        try:
+            if admin_section.get("enabled", False):  # a disabled console writes no setup code
+                source = (
+                    CredentialsFile(admin_file) if admin_file is not None
+                    else StaticCredentials(admin_user, admin_hash)
+                )
+                admin_auth = BasicAuth(source, trusted_proxies=proxies)
+                if not proxies:
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "admin_ui.trusted_proxies is empty: behind a reverse proxy every client shares "
+                        "one login lockout, so set it to the proxy address"
+                    )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
     profile_names: dict[str, str] = {}
     try:
         app = create_app(
@@ -213,12 +247,16 @@ def build_app(config_path: str):
         for router in audio_routers:
             app.include_router(router)
         if admin_section.get("enabled", False):
-            # No authentication: see control/admin.py. Off unless asked for.
+            # Basic authentication when username and password_hash are set;
+            # without them there is none (see control/admin.py). Off unless asked for.
             from .admin import create_admin_router
 
             app.include_router(
                 create_admin_router(
-                    repository, profile_names=profile_names, allowed_hosts=admin_hosts
+                    repository,
+                    profile_names=profile_names,
+                    allowed_hosts=admin_hosts,
+                    auth=admin_auth,
                 )
             )
         return app

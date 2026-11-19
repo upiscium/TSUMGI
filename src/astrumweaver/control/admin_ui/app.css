@@ -74,3 +74,6 @@ ol.plan { padding-left: 1.4em; } ol.plan li { margin: 4px 0; overflow-wrap: anyw
   td:empty { display: none; }
   .nowrap { white-space: normal; }
 }
+#setup-form { max-width: 480px; margin: 0 auto; }
+#setup-form label { display: block; margin-top: 12px; font-weight: 600; }
+#setup-form input { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }

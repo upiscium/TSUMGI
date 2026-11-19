@@ -6,16 +6,17 @@ is running and checks a Hugging Face model URL before anyone deploys it.
 It never changes a Worker, a Job or a deployment. Swapping a model stays a
 manual, reviewed operation.
 
-## Security: no authentication
+## Security: password (HTTP Basic)
 
-**The console has no login.** Anyone who can reach `/admin` can read every
-Worker's state and ask the Hugging Face API about a model. Treat it like an
+With `username` and `password_hash` set (below), every `/admin` route asks for
+HTTP Basic credentials, so the console can sit behind a public HTTPS proxy.
+Without them **there is no login**: anyone who can reach `/admin` can read every
+Worker's state and ask the Hugging Face API about a model, so treat it like an
 internal dashboard:
 
 - It is **off** unless the Control config enables it.
-- Do not expose `/admin` on a public listener. If a reverse proxy fronts
-  Control, route only `/v1/` to the outside, and keep `/admin` on the
-  internal network.
+- Without a password, do not expose `/admin` on a public listener: route only
+  `/v1/` to the outside. With one, expose it only over HTTPS.
 - Optional `allowed_hosts` (below) rejects requests whose `Host` header is not
   on the list. That blocks a DNS-rebinding page, which could otherwise read
   the console through an operator's browser.
@@ -45,6 +46,64 @@ allowed_hosts = ["control.example.lan", "10.12.2.13"]   # optional
 
 `allowed_hosts` lists the host names (without port) the console may be opened
 under. Leave it out to accept any `Host` header.
+
+## Password
+
+Make a hash (at least 12 characters; the password itself is never stored):
+
+```sh
+python -m astrumweaver.control.admin_auth
+```
+
+Put the printed line in the Control config:
+
+```toml
+[admin_ui]
+enabled = true
+username = "ops"
+password_hash = "scrypt$16384$8$1$...$..."
+trusted_proxies = ["10.12.1.1"]   # the reverse proxy in front of Control
+```
+
+Both keys are required together, and Control refuses to start with only one or
+with a hash it cannot run. After 5 wrong attempts within 5 minutes a client
+gets 429 until the window passes (an IPv6 /64 counts as one client). Failures
+are logged, and at most two password checks run at once.
+
+### First-run setup (no hash in the config)
+
+Instead of a hash, give Control a file to keep the credentials in:
+
+```toml
+[admin_ui]
+enabled = true
+credentials_file = "/var/lib/astrumweaver-control/admin-credentials.json"
+trusted_proxies = ["10.12.1.1"]
+```
+
+While the file does not exist, `/admin` shows only a setup page, and every other
+console path answers 403. Control writes a one-time setup code to its log
+(`journalctl -u astrumweaver-control`) and to `<file>.setup-code` (mode 0600).
+Open `/admin`, enter the code, a user name and a password (12 characters or more).
+The hash goes into the file (mode 0600), the code is deleted, and the normal
+login applies from then on. Wrong codes count against the same lockout as wrong
+passwords. The code survives a restart until the setup is done.
+
+The code is what stops a stranger from claiming the console first, so keep it
+out of chat and tickets. To reset the password, delete the credentials file and
+restart Control: a new code is written. Use `credentials_file` or
+`username` + `password_hash`, not both.
+
+**Set `trusted_proxies` in any proxied setup.** Without it all clients share one
+lockout, so a stranger could lock the operator out of the setup page or the
+login by sending wrong attempts. Control logs a warning when it is empty.
+
+`trusted_proxies` lists the peer addresses allowed to name the real client in
+`X-Forwarded-For` (the rightmost entry is used). From any other peer the header
+is ignored. Without it, every request behind a proxy looks like the proxy and
+shares one lockout, so set it when a proxy fronts Control. Better still, let
+only the proxy reach Control's port. Use it only over HTTPS: Basic credentials
+are not encrypted. Pair it with `allowed_hosts` when exposing the console.
 
 ## Worker status
 
