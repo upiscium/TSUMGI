@@ -61,7 +61,7 @@ function renderWorker(w) {
       meter("VRAM", g.memory_used_mb, g.memory_total_mb, gib))),
     host.memory_total_mb ? meter("RAM", memUsed, host.memory_total_mb, gib, 95) : null,
     host.cpu_count ? el("dl", null,
-      el("dt", null, "CPU"), el("dd", null, `${host.cpu_count} コア · 負荷 ${host.load_1m != null ? host.load_1m.toFixed(2) : "—"}`),
+      el("dt", null, "CPU"), el("dd", null, `${host.cpu_count} コア`),
       el("dt", null, "ディスク空き"), el("dd", null, gib(host.disk_free_mb))) : null,
     w.telemetry_stale
       ? el("div", { class: "stale" }, w.telemetry_age_s == null ? "稼働情報が未取得です" : `稼働情報が古い値です（${ago(w.telemetry_age_s)}）`)

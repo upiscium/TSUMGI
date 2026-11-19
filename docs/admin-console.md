@@ -57,7 +57,7 @@ One card per registered Worker, refreshed every 5 seconds:
 | profile name | the catalog entry whose deployment revision the Worker advertises |
 | GPU name and total VRAM | the registration |
 | VRAM used, GPU utilization, temperature | heartbeat telemetry (`nvidia-smi`) |
-| RAM, CPU count, load, free disk | heartbeat telemetry (the container as the Worker sees it) |
+| RAM, CPU count, free disk | heartbeat telemetry (the container as the Worker sees it) |
 
 ### Worker telemetry
 
@@ -71,8 +71,10 @@ recorded in the snapshot (`errors`) instead of stopping the Worker.
 telemetry_interval_seconds = 30   # 0 turns telemetry off
 ```
 
-Inside an LXC container, memory and CPU describe the container, not the
-Proxmox host. A snapshot older than 120 s is shown as stale. A Worker that
+Inside an LXC container, memory and CPU count describe the container, not the
+Proxmox host. The load average is collected but not shown: on Proxmox three
+containers on one node reported identical values, so it does not tell
+containers apart. A snapshot older than 120 s is shown as stale. A Worker that
 predates telemetry still appears, with the live values marked as unknown.
 
 ## Model check
