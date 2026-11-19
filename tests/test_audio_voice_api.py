@@ -123,7 +123,7 @@ async def test_exact_pinned_voice_mapping_and_public_allowlist(catalog, kind):
     assert response.json() == {
         "object": "list", "model": profile.profile_id,
         "data": [voice.to_dict() for voice in profile.voices],
-        "x_astrumweaver": {
+        "x_tsumgi": {
             "backend_kind": kind, "capability": "audio.synthesize",
             "operation_schema": SPEECH_OPERATION_SCHEMA,
             "profile_revision": profile.resolved.profile_revision,
@@ -254,7 +254,7 @@ async def test_semantic_change_requires_new_pins_and_response_is_detached(catalo
     second = await request(new_app)
     assert second.status_code == 200
     for key in ("profile_revision", "serving_contract_revision", "semantic_revision"):
-        assert first.json()["x_astrumweaver"][key] != second.json()["x_astrumweaver"][key]
+        assert first.json()["x_tsumgi"][key] != second.json()["x_tsumgi"][key]
     assert second.json()["data"][0]["attribution"] == "Revised synthetic attribution"
     detached = first.json()
     detached["data"][0]["speaker_id"] = "client-side-only"

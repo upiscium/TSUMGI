@@ -6,7 +6,7 @@ This file is intentionally redacted. It contains no hostname, IP address, VM/LXC
 | --- | --- |
 | Evidence version | v0.1 |
 | Date (UTC) | 2026-09-29 |
-| AstrumWeaver revision | 7285cf4cb1f026ff3253b18adf7459e7ee616a32 |
+| TSUMGI revision | 7285cf4cb1f026ff3253b18adf7459e7ee616a32 |
 | Deployment path | systemd |
 | Profile class | legacy-single |
 | GPU count | 1 |

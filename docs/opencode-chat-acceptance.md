@@ -60,7 +60,7 @@ the OpenAI-compatible provider still expects an API-key value.
 
 Before OpenCode is started, the runner authenticates to the real
 `GET /v1/models` endpoint and verifies the selected model's namespaced
-`x_astrumweaver` metadata. The live gateway must exactly match the expected
+`x_tsumgi` metadata. The live gateway must exactly match the expected
 logical-profile revision, deployment revision, serving-contract revision,
 chat operation schema, structured-tools feature, total-context limit and
 output-token limit. A mismatch fails before any OpenCode chat request, so the
@@ -70,12 +70,12 @@ The runner then performs two independent real OpenCode `run --format json`
 sessions against the selected logical serving profile.
 
 1. Plain chat requires the final text to be exactly
-   `ASTRUMWEAVER_CHAT_OK`. The OpenCode transport therefore has to consume the
+   `TSUMGI_CHAT_OK`. The OpenCode transport therefore has to consume the
    real TSUMGI SSE stream to completion.
 2. Tool round-trip creates one fixed marker file inside the temporary workdir,
    asks OpenCode to read it with a tool, requires at least one completed
    structured `tool_use` event, and then requires the final model response to
-   be exactly `ASTRUMWEAVER_TOOL_OK`.
+   be exactly `TSUMGI_TOOL_OK`.
 
 The runner deliberately does **not** pass `--auto`,
 `--dangerously-skip-permissions`, or another broad permission bypass. A normal
@@ -86,7 +86,7 @@ The tool input/output, prompts and source marker never enter public evidence.
 
 ## Run
 
-Use the exact AstrumWeaver revision, serving deployment revision and serving
+Use the exact TSUMGI revision, serving deployment revision and serving
 contract revision under test. The OpenCode model limits must equal the selected
 logical profile.
 

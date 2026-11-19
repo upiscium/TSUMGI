@@ -49,7 +49,7 @@ class SuccessfulOpenCode:
                 stdout=json.dumps(
                     {
                         "type": "text",
-                        "part": {"text": "ASTRUMWEAVER_CHAT_OK"},
+                        "part": {"text": "TSUMGI_CHAT_OK"},
                     }
                 )
                 + "\n",
@@ -57,7 +57,7 @@ class SuccessfulOpenCode:
 
         cwd = Path(kwargs["cwd"])
         assert (cwd / "acceptance.txt").read_text(encoding="utf-8") == (
-            "The acceptance marker is ASTRUMWEAVER_TOOL_OK.\n"
+            "The acceptance marker is TSUMGI_TOOL_OK.\n"
         )
         return completed(
             args,
@@ -75,7 +75,7 @@ class SuccessfulOpenCode:
                     json.dumps(
                         {
                             "type": "text",
-                            "part": {"text": "ASTRUMWEAVER_TOOL_OK"},
+                            "part": {"text": "TSUMGI_TOOL_OK"},
                         }
                     ),
                 )
@@ -102,7 +102,7 @@ def gateway_response(
                     "object": "model",
                     "created": 0,
                     "owned_by": "tsumgi",
-                    "x_astrumweaver": {
+                    "x_tsumgi": {
                         "profile_revision": profile_revision,
                         "deployment_revision": deployment_revision,
                         "serving_contract_revision": serving_contract_revision,
@@ -128,7 +128,7 @@ def runner(command_runner, gateway_get=None):
         client_token="private-token",
         profile_id="local-code-v1",
         profile_revision=PROFILE,
-        astrumweaver_revision="deadbeef12345678",
+        tsumgi_revision="deadbeef12345678",
         deployment_revision=DEPLOYMENT,
         serving_contract_revision=CONTRACT,
         context_tokens=5120,
@@ -218,8 +218,8 @@ def test_public_evidence_omits_private_gateway_and_acceptance_payloads():
         "https://gateway.example.invalid/v1",
         "private-token",
         "acceptance.txt",
-        "ASTRUMWEAVER_CHAT_OK",
-        "ASTRUMWEAVER_TOOL_OK",
+        "TSUMGI_CHAT_OK",
+        "TSUMGI_TOOL_OK",
         "/opt/opencode/bin/opencode",
         "/tmp/",
     ):
@@ -290,7 +290,7 @@ def test_gateway_url_rejects_embedded_credentials_and_non_v1_shapes(url):
             client_token="token",
             profile_id="local-code-v1",
             profile_revision=PROFILE,
-            astrumweaver_revision="deadbeef12345678",
+            tsumgi_revision="deadbeef12345678",
             deployment_revision=DEPLOYMENT,
             serving_contract_revision=CONTRACT,
             context_tokens=5120,
@@ -308,9 +308,9 @@ def test_tool_smoke_requires_completed_structured_tool_event():
         if calls == 1:
             return completed(args, stdout="1.18.30\n")
         marker = (
-            "ASTRUMWEAVER_CHAT_OK"
+            "TSUMGI_CHAT_OK"
             if calls == 2
-            else "ASTRUMWEAVER_TOOL_OK"
+            else "TSUMGI_TOOL_OK"
         )
         return completed(
             args,

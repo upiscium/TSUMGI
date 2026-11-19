@@ -43,8 +43,8 @@ _ALLOWED_REQUEST_FIELDS = frozenset(
         "model",
         "input",
         "encoding_format",
-        "x_astrumweaver_input_type",
-        "x_astrumweaver_embedding_space_id",
+        "x_tsumgi_input_type",
+        "x_tsumgi_embedding_space_id",
     }
 )
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -475,11 +475,11 @@ def compile_embedding_request(
             "request model does not match the configured embedding profile",
             status_code=404,
         )
-    requested_space = data.get("x_astrumweaver_embedding_space_id")
+    requested_space = data.get("x_tsumgi_embedding_space_id")
     if not isinstance(requested_space, str) or _DIGEST.fullmatch(requested_space) is None:
         raise EmbeddingGatewayError(
             "invalid_request",
-            "x_astrumweaver_embedding_space_id must be a sha256 digest",
+            "x_tsumgi_embedding_space_id must be a sha256 digest",
         )
     if requested_space != profile.embedding_space_id:
         raise EmbeddingGatewayError(
@@ -494,11 +494,11 @@ def compile_embedding_request(
             "unsupported_encoding",
             "only float embedding output is supported",
         )
-    input_type = data.get("x_astrumweaver_input_type")
+    input_type = data.get("x_tsumgi_input_type")
     if input_type not in {"query", "document"}:
         raise EmbeddingGatewayError(
             "invalid_request",
-            "x_astrumweaver_input_type must be query or document",
+            "x_tsumgi_input_type must be query or document",
         )
 
     raw_input = data.get("input")
@@ -674,7 +674,7 @@ def normalize_embedding_response(
         "data": data,
         "model": profile.profile_id,
         "usage": usage,
-        "x_astrumweaver": {
+        "x_tsumgi": {
             "embedding_space_id": profile.embedding_space_id,
             "profile_revision": profile.resolved.profile_revision,
             "deployment_revision": profile.resolved.deployment.revision,

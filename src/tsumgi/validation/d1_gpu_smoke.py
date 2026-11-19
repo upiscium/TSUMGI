@@ -379,7 +379,7 @@ def run_smoke(*, package: Path, model: Path, evidence: Path, gpu_count: int,
                     walls.append(wall)
                 ordered, _ = _probe(base, CASES[2][0], CASES[2][1], tuple(reversed(CHOICES)))
                 result = {
-                    "schema": "astrumweaver-d1-gpu-smoke-v1",
+                    "schema": "tsumgi-d1-gpu-smoke-v1",
                     "runtime_source_revision": SOURCE_REVISION,
                     "runtime_architecture": "sm" + ("61" if gpu_count == 1 and before[0][1] == "6.1" else "86"),
                     "runtime_binary_sha256": _file_sha256(package / "bin" / "llama-server"),

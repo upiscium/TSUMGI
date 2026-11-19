@@ -7,7 +7,7 @@ This evidence is intentionally metadata-only. It contains no repository name, so
 | Field | Result |
 | --- | --- |
 | Evidence version | coding-pilot-v1 |
-| AstrumWeaver revision | 35fb7295bb8802c63df5b66da006563ce2fa255a |
+| TSUMGI revision | 35fb7295bb8802c63df5b66da006563ce2fa255a |
 | OpenCode version | 1.18.30 |
 | Provider adapter | llama-cpp-chat-v1 |
 | Runtime revision | 6753a033f058fbf778d282556ed9b16c78de7c71 |

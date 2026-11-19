@@ -22,9 +22,10 @@ still uses the old names is moved by the host migration tool (stage 4 of the pla
 not by hand: do not rename units, move directories or change ownership manually.
 Historical release notes under `docs/releases/` keep the old names on purpose.
 
-> Status: the repository source uses the new names from this change on. API and
-> wire names (`x_astrumweaver*`, object types, `astrumweaver-decisions-v1`) change in
-> the following stage, and no production host changes until the cutover in the plan.
+> Status: the repository source uses the new names, including the client-visible
+> wire names (`x_tsumgi`, `x_tsumgi_input_type`, `x_tsumgi_embedding_space_id`, the
+> `tsumgi.decision*` and `tsumgi.embedding_space` object types, `tsumgi-decisions-v1`,
+> `tsumgi_revision`). No production host changes until the cutover in the plan.
 
 ## Source checkouts and references
 

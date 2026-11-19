@@ -66,8 +66,8 @@ def preflight() -> dict:
         "data": [
             {
                 "id": "decision-local-v1",
-                "object": "astrumweaver.decision_profile",
-                "x_astrumweaver": {
+                "object": "tsumgi.decision_profile",
+                "x_tsumgi": {
                     "profile_revision": PROFILE,
                     "deployment_revision": DEPLOYMENT,
                     "serving_contract_revision": CONTRACT,
@@ -118,7 +118,7 @@ def decision_response(request: httpx.Request) -> httpx.Response:
     return httpx.Response(
         200,
         json={
-            "object": "astrumweaver.decision",
+            "object": "tsumgi.decision",
             "profile": "decision-local-v1",
             "choice_id": choice,
             "abstained": abstained,
@@ -132,7 +132,7 @@ def decision_response(request: httpx.Request) -> httpx.Response:
                 "reference_sha256": None,
             },
             "usage": {"input_tokens": 12, "output_tokens": 0},
-            "x_astrumweaver": {
+            "x_tsumgi": {
                 "decision_semantics_id": SEMANTICS,
                 "profile_revision": PROFILE,
                 "deployment_revision": DEPLOYMENT,
@@ -175,7 +175,7 @@ def runner(path: Path, *, custom_transport=None):
         deployment_revision=DEPLOYMENT,
         serving_contract_revision=CONTRACT,
         decision_semantics_id=SEMANTICS,
-        astrumweaver_revision=REVISION,
+        tsumgi_revision=REVISION,
         fixture=fixture(path),
         transport=httpx.MockTransport(
             transport if custom_transport is None else custom_transport
@@ -239,7 +239,7 @@ def test_identity_mismatch_fails_before_shadow_requests(tmp_path):
         calls.append(request.url.path)
         if request.url.path == "/v1/decision-profiles":
             value = preflight()
-            value["data"][0]["x_astrumweaver"]["deployment_revision"] = (
+            value["data"][0]["x_tsumgi"]["deployment_revision"] = (
                 "sha256:" + "f" * 64
             )
             return httpx.Response(200, json=value)
@@ -261,10 +261,10 @@ def test_calibration_promotion_in_live_profile_is_rejected(tmp_path):
     def calibrated(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/decision-profiles":
             value = preflight()
-            value["data"][0]["x_astrumweaver"][
+            value["data"][0]["x_tsumgi"][
                 "calibration_status"
             ] = "calibrated"
-            value["data"][0]["x_astrumweaver"][
+            value["data"][0]["x_tsumgi"][
                 "calibration_reference_sha256"
             ] = "sha256:" + "a" * 64
             return httpx.Response(200, json=value)
@@ -298,6 +298,6 @@ def test_fixture_rejects_unknown_expected_choice(tmp_path):
             deployment_revision=DEPLOYMENT,
             serving_contract_revision=CONTRACT,
             decision_semantics_id=SEMANTICS,
-            astrumweaver_revision=REVISION,
+            tsumgi_revision=REVISION,
             fixture=path,
         )

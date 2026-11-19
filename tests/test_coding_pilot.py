@@ -21,7 +21,7 @@ D6 = "sha256:" + "6" * 64
 
 def scope():
     return {
-        "astrumweaver_revision": "deadbeef12345678",
+        "tsumgi_revision": "deadbeef12345678",
         "opencode_version": "1.18.30",
         "provider_adapter": "llama-cpp-chat-v1",
         "runtime_revision": "cafebabe12345678",

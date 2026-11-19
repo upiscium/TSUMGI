@@ -352,7 +352,7 @@ def test_worker_advertises_only_exact_dual_bundle_model_identity(tmp_path):
                 ServingContract(
                     deployment_revision=ident.revision,
                     capability="decision.system_one",
-                    operation_schema="astrumweaver-decisions-v1",
+                    operation_schema="tsumgi-decisions-v1",
                     validation_evidence_sha256="sha256:" + "f" * 64,
                     semantic_revision="sha256:" + "d" * 64,
                 ),

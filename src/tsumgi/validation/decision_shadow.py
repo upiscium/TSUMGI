@@ -35,7 +35,7 @@ class DecisionAcceptanceError(RuntimeError):
 class DecisionShadowEvidence:
     evidence_version: str
     date_utc: str
-    astrumweaver_revision: str
+    tsumgi_revision: str
     profile_id: str
     profile_revision: str
     deployment_revision: str
@@ -281,7 +281,7 @@ class DecisionShadowAcceptanceRunner:
         deployment_revision: str,
         serving_contract_revision: str,
         decision_semantics_id: str,
-        astrumweaver_revision: str,
+        tsumgi_revision: str,
         fixture: Path,
         timeout_seconds: float = 300.0,
         transport: httpx.BaseTransport | None = None,
@@ -297,8 +297,8 @@ class DecisionShadowAcceptanceRunner:
             ("decision_semantics_id", decision_semantics_id),
         ):
             _require_digest(value, name)
-        if REVISION_PATTERN.fullmatch(astrumweaver_revision) is None:
-            raise ValueError("astrumweaver_revision is invalid")
+        if REVISION_PATTERN.fullmatch(tsumgi_revision) is None:
+            raise ValueError("tsumgi_revision is invalid")
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
 
@@ -309,7 +309,7 @@ class DecisionShadowAcceptanceRunner:
         self.deployment_revision = deployment_revision
         self.serving_contract_revision = serving_contract_revision
         self.decision_semantics_id = decision_semantics_id
-        self.astrumweaver_revision = astrumweaver_revision
+        self.tsumgi_revision = tsumgi_revision
         self.fixture = _load_fixture(fixture)
         self.timeout_seconds = float(timeout_seconds)
         self._transport = transport
@@ -365,7 +365,7 @@ class DecisionShadowAcceptanceRunner:
             raise DecisionAcceptanceError(
                 "decision acceptance profile is not uniquely configured"
             )
-        extension = matches[0].get("x_astrumweaver")
+        extension = matches[0].get("x_tsumgi")
         if not isinstance(extension, Mapping):
             raise DecisionAcceptanceError(
                 "decision gateway omitted semantics metadata"
@@ -487,7 +487,7 @@ class DecisionShadowAcceptanceRunner:
             raise DecisionAcceptanceError(
                 "decision response invented calibration evidence"
             )
-        extension = body.get("x_astrumweaver")
+        extension = body.get("x_tsumgi")
         if not isinstance(extension, Mapping):
             raise DecisionAcceptanceError(
                 "decision response omitted TSUMGI metadata"
@@ -633,7 +633,7 @@ class DecisionShadowAcceptanceRunner:
         return DecisionShadowEvidence(
             evidence_version=_EVIDENCE_SCHEMA,
             date_utc=datetime.now(UTC).date().isoformat(),
-            astrumweaver_revision=self.astrumweaver_revision,
+            tsumgi_revision=self.tsumgi_revision,
             profile_id=self.profile_id,
             profile_revision=self.profile_revision,
             deployment_revision=self.deployment_revision,
@@ -684,7 +684,7 @@ def render_decision_shadow_markdown(
     fields = [
         ("Evidence version", evidence.evidence_version),
         ("Date (UTC)", evidence.date_utc),
-        ("AstrumWeaver revision", evidence.astrumweaver_revision),
+        ("TSUMGI revision", evidence.tsumgi_revision),
         ("Logical profile", evidence.profile_id),
         ("Logical profile revision", evidence.profile_revision),
         ("Deployment revision", evidence.deployment_revision),
@@ -816,7 +816,7 @@ def main() -> None:
             deployment_revision=args.deployment_revision,
             serving_contract_revision=args.serving_contract_revision,
             decision_semantics_id=args.decision_semantics_id,
-            astrumweaver_revision=args.revision,
+            tsumgi_revision=args.revision,
             fixture=args.fixture,
             timeout_seconds=args.timeout_seconds,
         ).run()

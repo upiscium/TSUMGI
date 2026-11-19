@@ -237,7 +237,7 @@ async def test_models_expose_configured_profile_not_runtime_inventory():
                 "object": "model",
                 "created": 0,
                 "owned_by": "tsumgi",
-                "x_astrumweaver": {
+                "x_tsumgi": {
                     "profile_revision": gateway.resolved.profile_revision,
                     "deployment_revision": gateway.resolved.deployment.revision,
                     "serving_contract_revision": gateway.resolved.contract.revision,

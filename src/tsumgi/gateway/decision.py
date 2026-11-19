@@ -23,7 +23,7 @@ from ..serving import (
 
 DECISION_CATALOG_SCHEMA = "decision-gateway-catalog-v1"
 DECISION_JOB_SCHEMA = "decision-job-v1"
-DECISION_OPERATION_SCHEMA = "astrumweaver-decisions-v1"
+DECISION_OPERATION_SCHEMA = "tsumgi-decisions-v1"
 DECISION_SEMANTICS_SCHEMA = "decision-semantics-v1"
 LLAMA_CPP_SYSTEM_ONE_ADAPTER = "llama-cpp-system-one-v1"
 DECISION_SCORE_KIND = "choice_set_probability"
@@ -660,7 +660,7 @@ def normalize_decision_response(
     choice_id = None if abstained else compiled.choices[best_index][0]
     semantics = compiled.profile.semantics
     return {
-        "object": "astrumweaver.decision",
+        "object": "tsumgi.decision",
         "profile": compiled.profile.profile_id,
         "choice_id": choice_id,
         "abstained": abstained,
@@ -678,7 +678,7 @@ def normalize_decision_response(
             "reference_sha256": semantics.calibration_reference_sha256,
         },
         "usage": usage,
-        "x_astrumweaver": {
+        "x_tsumgi": {
             "decision_semantics_id": semantics.decision_semantics_id,
             "profile_revision": compiled.profile.resolved.profile_revision,
             "deployment_revision": compiled.profile.resolved.deployment.revision,

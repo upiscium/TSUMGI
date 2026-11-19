@@ -86,7 +86,7 @@ def _voices_response(profile: AudioGatewayProfile) -> dict[str, object]:
             "license_id": voice.license_id,
             "attribution": voice.attribution,
         } for voice in profile.voices],
-        "x_astrumweaver": {
+        "x_tsumgi": {
             "backend_kind": profile.backend_kind,
             "capability": resolved.profile.capability,
             "operation_schema": resolved.profile.operation_schema,
