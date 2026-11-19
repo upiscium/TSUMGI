@@ -36,6 +36,7 @@ from ..runtime import (
 from .client import ControlClient
 from .health import create_health_app
 from .supervision import RuntimeHealthSupervisor
+from .telemetry import WorkerTelemetry, runtime_summary
 from .runtime import (
     WorkerRuntime,
     load_executor,
@@ -144,6 +145,34 @@ def _build_spec(section: dict[str, Any]) -> WorkerSpec:
         accelerators=accelerators,
         capabilities=capabilities,
         labels=labels,
+    )
+
+
+def _build_telemetry(
+    worker_section: dict[str, Any],
+    spec: WorkerSpec,
+    deployment: RuntimeDeploymentSpec | None,
+) -> WorkerTelemetry | None:
+    """Heartbeat telemetry; ``telemetry_interval_seconds = 0`` disables it."""
+    interval = float(worker_section.get("telemetry_interval_seconds", 30.0))
+    if interval <= 0:
+        return None
+    # Display-only: anything missing from the deployment stays out of the
+    # summary instead of stopping the Worker.
+    runtime = runtime_summary(
+        getattr(deployment, "provider_id", None),
+        getattr(deployment, "provider_config", None),
+        getattr(getattr(getattr(deployment, "demand", None), "model", None), "model_ref", None),
+    )
+    return WorkerTelemetry(
+        gpu_uuids=spec.gpu_uuids,
+        runtime=runtime,
+        interval_seconds=interval,
+        # Same resolution as the GPU preflight.
+        nvidia_smi=os.environ.get(
+            "ASTRUMWEAVER_NVIDIA_SMI",
+            str(worker_section.get("nvidia_smi_command", "nvidia-smi")),
+        ),
     )
 
 
@@ -389,7 +418,9 @@ async def run_worker(
             heartbeat_interval_seconds=float(
                 worker_section.get("heartbeat_interval_seconds", 5.0)
             ),
+            telemetry=_build_telemetry(worker_section, spec, deployment),
         )
+        telemetry_stop = asyncio.Event()
 
         health_config = uvicorn.Config(
             create_health_app(worker_runtime),
@@ -448,6 +479,11 @@ async def run_worker(
             drain_signal_loop(),
             name="astrumweaver-worker-drain-signal",
         )
+        telemetry = getattr(worker_runtime, "telemetry", None)
+        telemetry_task = asyncio.create_task(
+            telemetry.run(telemetry_stop) if telemetry is not None else telemetry_stop.wait(),
+            name="astrumweaver-worker-telemetry",
+        )
 
         try:
             done, _ = await asyncio.wait(
@@ -501,7 +537,8 @@ async def run_worker(
             # sibling health server or a claimed execution alive in-process.
             worker_runtime.request_stop()
             health_server.should_exit = True
-            tasks = (worker_task, health_task, signal_task, drain_task)
+            telemetry_stop.set()
+            tasks = (worker_task, health_task, signal_task, drain_task, telemetry_task)
             for task in tasks:
                 if not task.done():
                     task.cancel()

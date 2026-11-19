@@ -30,6 +30,17 @@ def _load_toml(path: str) -> dict[str, Any]:
         return tomllib.load(handle)
 
 
+def _catalog_profile_names(catalog: object) -> dict[str, str]:
+    """deployment revision -> profile id, for the operator console."""
+    names: dict[str, str] = {}
+    for profile in getattr(catalog, "profiles", ()):
+        try:
+            names[profile.resolved.deployment.revision] = profile.profile_id
+        except AttributeError:
+            continue
+    return names
+
+
 def build_app(config_path: str):
     try:
         config = _load_toml(config_path)
@@ -92,6 +103,13 @@ def build_app(config_path: str):
     audio_input_channel = audio_setup.input_channel if audio_setup is not None else None
     audio_output_channel = audio_setup.output_channel if audio_setup is not None else None
     audio_routers = audio_setup.routers if audio_setup is not None else ()
+    admin_section = dict(config.get("admin_ui") or {})
+    if type(admin_section.get("enabled", False)) is not bool:
+        raise RuntimeError("admin_ui.enabled must be boolean")
+    admin_hosts = admin_section.get("allowed_hosts", [])
+    if not isinstance(admin_hosts, list) or not all(isinstance(h, str) for h in admin_hosts):
+        raise RuntimeError("admin_ui.allowed_hosts must be a list of host names")
+    profile_names: dict[str, str] = {}
     try:
         app = create_app(
             repository,
@@ -113,6 +131,7 @@ def build_app(config_path: str):
                     "chat_gateway.catalog is required when chat gateway is enabled"
                 )
             catalog = load_chat_catalog(catalog_path)
+            profile_names.update(_catalog_profile_names(catalog))
             app.include_router(
                 create_chat_router(
                     repository,
@@ -147,6 +166,7 @@ def build_app(config_path: str):
                     "embedding gateway is enabled"
                 )
             embedding_catalog = load_embedding_catalog(catalog_path)
+            profile_names.update(_catalog_profile_names(embedding_catalog))
             app.include_router(
                 create_embedding_router(
                     repository,
@@ -175,6 +195,7 @@ def build_app(config_path: str):
                     "decision gateway is enabled"
                 )
             decision_catalog = load_decision_catalog(catalog_path)
+            profile_names.update(_catalog_profile_names(decision_catalog))
             app.include_router(
                 create_decision_router(
                     repository,
@@ -191,6 +212,15 @@ def build_app(config_path: str):
             )
         for router in audio_routers:
             app.include_router(router)
+        if admin_section.get("enabled", False):
+            # No authentication: see control/admin.py. Off unless asked for.
+            from .admin import create_admin_router
+
+            app.include_router(
+                create_admin_router(
+                    repository, profile_names=profile_names, allowed_hosts=admin_hosts
+                )
+            )
         return app
     except Exception:
         if audio_setup is not None:
