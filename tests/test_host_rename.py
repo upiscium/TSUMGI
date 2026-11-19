@@ -610,3 +610,24 @@ def test_an_unreset_base_exec_start_still_counts_as_a_reference(host):
     unit = host / "etc/systemd/system/astrumweaver-worker.service"
     unit.write_text(unit.read_text() + "ExecStart=/x/bin/astrumweaver-worker --runtime-manifest /etc/astrumweaver/tsumgi-rc1-runtime.json\n")
     assert any("tsumgi-rc1-runtime.json" in b for b in migration(host).plan().blockers)
+
+
+def test_the_backup_keeps_the_owner_so_a_rollback_restores_it(host, tmp_path, monkeypatch):
+    """Found on a real host: root:group 0640 files came back root:root and the old Worker could not read them."""
+    calls: list[tuple[str, int, int]] = []
+    real_chown = os.chown
+
+    def spy(path, uid, gid, *a, **k):
+        calls.append((str(path), uid, gid))
+        return real_chown(path, uid, gid, *a, **k)
+
+    monkeypatch.setattr(os, "chown", spy)
+    worker_toml = host / "etc/astrumweaver/p/worker.toml"
+    info = worker_toml.stat()
+    migration(host, runner=Recorder()).apply(tmp_path / "b")
+    backed_up = [c for c in calls if c[0].endswith("files/etc/astrumweaver/p/worker.toml")]
+    assert backed_up == [(str(tmp_path / "b/files/etc/astrumweaver/p/worker.toml"), info.st_uid, info.st_gid)]
+    # every backed-up file, units included, had its owner set
+    assert len(calls) >= len(list((tmp_path / "b/files").rglob("*.*"))) - 2
+    # and the rollback restores with cp -p, which uses that owner
+    assert "cp -p" in (tmp_path / "b/rollback.sh").read_text()

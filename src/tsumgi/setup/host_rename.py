@@ -430,6 +430,15 @@ class HostMigration:
             target = files_dir / path.relative_to(self.root)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, target)
+            # copy2 keeps the mode but not the owner. The rollback restores with
+            # `cp -p`, which applies the backup copy's owner: without this a
+            # file read through a group (root:service-group 0640) came back
+            # root:root and the old service could no longer read it.
+            info = path.stat()
+            try:
+                os.chown(target, info.st_uid, info.st_gid)
+            except PermissionError:
+                pass  # not root (tests, rehearsal copies)
         libexec_old = self.root / LIBEXEC_OLD
         if libexec_old.is_dir():
             shutil.copytree(libexec_old, backup_dir / "libexec-old", symlinks=True)
