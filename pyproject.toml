@@ -39,6 +39,7 @@ tsumgi-d1-gpu-smoke = "tsumgi.validation.d1_gpu_smoke:main"
 tsumgi-embedding-accept = "tsumgi.validation.embedding:main"
 tsumgi-coding-pilot = "tsumgi.validation.coding_pilot:main"
 tsumgi-setup-tui = "tsumgi.setup.tui:main"
+tsumgi-repin-decision = "tsumgi.setup.repin:main"
 tsumgi-migrate-host = "tsumgi.setup.host_rename:main"
 
 [tool.hatch.build.targets.wheel]
