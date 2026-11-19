@@ -62,12 +62,19 @@ Put the printed line in the Control config:
 enabled = true
 username = "ops"
 password_hash = "scrypt$16384$8$1$...$..."
+trusted_proxies = ["10.12.1.1"]   # the reverse proxy in front of Control
 ```
 
 Both keys are required together, and Control refuses to start with only one or
-with an unusable hash. After 5 wrong attempts within 5 minutes a client gets
-429 until the window passes (the nearest proxy's forwarded address identifies
-the client). Failures are logged. Use it only over HTTPS: Basic credentials
+with a hash it cannot run. After 5 wrong attempts within 5 minutes a client
+gets 429 until the window passes (an IPv6 /64 counts as one client). Failures
+are logged, and at most two password checks run at once.
+
+`trusted_proxies` lists the peer addresses allowed to name the real client in
+`X-Forwarded-For` (the rightmost entry is used). From any other peer the header
+is ignored. Without it, every request behind a proxy looks like the proxy and
+shares one lockout, so set it when a proxy fronts Control. Better still, let
+only the proxy reach Control's port. Use it only over HTTPS: Basic credentials
 are not encrypted. Pair it with `allowed_hosts` when exposing the console.
 
 ## Worker status

@@ -119,7 +119,13 @@ def build_app(config_path: str):
             raise RuntimeError("admin_ui.username and admin_ui.password_hash must be text")
         from .admin_auth import BasicAuth
 
-        admin_auth = BasicAuth(admin_user, admin_hash)
+        proxies = admin_section.get("trusted_proxies", [])
+        if not isinstance(proxies, list) or not all(isinstance(p, str) for p in proxies):
+            raise RuntimeError("admin_ui.trusted_proxies must be a list of addresses")
+        try:
+            admin_auth = BasicAuth(admin_user, admin_hash, trusted_proxies=proxies)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
     profile_names: dict[str, str] = {}
     try:
         app = create_app(

@@ -250,6 +250,8 @@ def create_admin_router(
 
     @router.post("/api/model-check")
     async def model_check(request: Request) -> JSONResponse:
+        # Basic credentials ride along on same-site requests automatically, so this
+        # rule is the CSRF defence for the POST: do not relax it.
         # A JSON content type forces a CORS preflight from other origins, so a
         # page on another site cannot trigger this from an operator's browser.
         if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
