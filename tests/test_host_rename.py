@@ -40,6 +40,7 @@ def write(root: Path, rel: str, text: str) -> Path:
 
 
 def make_worker(root: Path) -> None:
+    write(root, "nix/var/nix/profiles/tsumgi-v030-installer/bin/tsumgi-worker", "#!/bin/sh\n")
     write(root, "etc/passwd", "root:x:0:0::/root:/bin/sh\nastrumweaver:x:999:999::/var/lib/astrumweaver:/usr/sbin/nologin\n")
     write(root, "etc/group", "root:x:0:\nvideo:x:44:astrumweaver\nastrumweaver:x:999:\nastrumweaver-config:x:998:astrumweaver\n")
     write(root, "etc/systemd/system/astrumweaver-worker.service",
@@ -68,6 +69,7 @@ def host(tmp_path):
 
 
 def migration(root, **kw):
+    kw.setdefault("live", True)
     return HostMigration(root, "worker", "tsumgi-v030-installer",
                          helpers_from=root.parent / (root.name + "-helpers"), **kw)
 
@@ -171,7 +173,7 @@ def test_existing_targets_block_the_migration(host, tmp_path):
 
 def test_helpers_are_required_when_old_helpers_exist(host, tmp_path):
     with pytest.raises(MigrationError, match="helpers-from"):
-        HostMigration(host, "worker", "tsumgi-v030-installer", runner=Recorder()).apply(tmp_path / "b")
+        HostMigration(host, "worker", "tsumgi-v030-installer", runner=Recorder(), live=True).apply(tmp_path / "b")
 
 
 def test_a_failing_command_points_at_the_rollback(host, tmp_path):
@@ -211,7 +213,8 @@ def test_control_role_migrates_the_control_unit_and_state(tmp_path):
     write(root, "etc/astrumweaver/control.env", "ASTRUMWEAVER_DATABASE_URL=postgresql://u:p@db/astrumweaver\n")
     write(root, "var/lib/astrumweaver-control/admin-credentials.json", '{"username": "ops"}')
     run = Recorder()
-    HostMigration(root, "control", "tsumgi-v030-control", runner=run).apply(tmp_path / "b")
+    write(root, "nix/var/nix/profiles/tsumgi-v030-control/bin/tsumgi-control", "#!/bin/sh\n")
+    HostMigration(root, "control", "tsumgi-v030-control", runner=run, live=True).apply(tmp_path / "b", db_renamed=True)
     assert (root / "var/lib/tsumgi-control/admin-credentials.json").is_file()
     assert (root / "etc/tsumgi/control.env").read_text() == "TSUMGI_DATABASE_URL=postgresql://u:p@db/tsumgi\n"
     assert "tsumgi-v030-control/bin/tsumgi-control --config /etc/tsumgi/control.toml" in (
@@ -272,3 +275,224 @@ def test_rollback_script_restores_the_exact_tree(host, tmp_path):
     # Running it a second time changes nothing.
     again = subprocess.run(["sh", str(backup / "rollback.sh")], env=env, capture_output=True, text=True, check=False)
     assert again.returncode == 0 and _snapshot(host) == before
+
+
+# ---- review follow-ups ---------------------------------------------------------------
+
+
+def _stubs(tmp_path):
+    bin_dir = tmp_path / "stubs"
+    bin_dir.mkdir(exist_ok=True)
+    log = tmp_path / "stub.log"
+    for name in ("systemctl", "usermod", "groupmod", "id", "getent"):
+        stub = bin_dir / name
+        stub.write_text(f'#!/bin/sh\necho "{name} $*" >> {log}\nexit 0\n')
+        stub.chmod(0o755)
+    return {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}, log
+
+
+def _run_script(path: Path, env):
+    import subprocess
+
+    return subprocess.run(["sh", str(path)], env=env, capture_output=True, text=True, check=False)
+
+
+class Selective(Recorder):
+    def __init__(self, inactive=(), **kw):
+        super().__init__(**kw)
+        self.inactive = set(inactive)
+
+    def __call__(self, argv):
+        if argv[:2] == ["systemctl", "is-active"] and argv[2] in self.inactive:
+            self.calls.append(list(argv))
+            return CommandResult(3)
+        return super().__call__(argv)
+
+
+def test_a_unit_that_was_stopped_stays_stopped_in_apply_and_rollback(host, tmp_path):
+    run = Selective(inactive={"astrumweaver-worker.service"})
+    plan = migration(host, runner=run).apply(tmp_path / "b")
+    assert not any(c[:2] == ["systemctl", "start"] for c in run.calls)
+    assert any("was not running" in w for w in plan.warnings)
+    assert "systemctl start" not in (tmp_path / "b" / "rollback.sh").read_text()
+
+
+def test_control_is_held_until_the_database_is_renamed(tmp_path):
+    root = tmp_path / "c"
+    write(root, "etc/passwd", "astrumweaver-control:x:996:996::/var/lib/astrumweaver-control:/bin/false\n")
+    write(root, "etc/group", "astrumweaver-control:x:996:\n")
+    write(root, "etc/systemd/system/astrumweaver-control.service", "[Service]\nUser=astrumweaver-control\n")
+    write(root, "etc/astrumweaver/control.env",
+          "TSUMGI_DATABASE_URL=postgresql://astrumweaver:pw-astrumweaver@db/astrumweaver\n".replace("TSUMGI", "ASTRUMWEAVER"))
+    write(root, "nix/var/nix/profiles/tsumgi-v030-control/bin/tsumgi-control", "#!/bin/sh\n")
+    run = Recorder()
+    plan = HostMigration(root, "control", "tsumgi-v030-control", runner=run, live=True).apply(tmp_path / "b")
+    assert not any(c[:2] == ["systemctl", "start"] for c in run.calls)
+    assert any("Control was NOT started" in w for w in plan.warnings)
+    # the credentials in the URL keep their names; only the database name changes
+    assert (root / "etc/tsumgi/control.env").read_text() == "TSUMGI_DATABASE_URL=postgresql://astrumweaver:pw-astrumweaver@db/tsumgi\n"
+
+
+def test_rename_text_keeps_url_credentials():
+    assert rename_text("postgresql://astrumweaver:p@db/astrumweaver") == "postgresql://astrumweaver:p@db/tsumgi"
+    assert rename_text("see https://example.invalid/astrumweaver") == "see https://example.invalid/tsumgi"
+
+
+def test_relative_paths_become_absolute_in_the_rollback_script(host, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    migration(host, runner=Recorder()).apply(Path("rel-backup"))
+    script = (tmp_path / "rel-backup" / "rollback.sh").read_text()
+    assert str(tmp_path / "rel-backup") in script and " rel-backup/" not in script
+    assert oct((tmp_path / "rel-backup").stat().st_mode & 0o777) == "0o700"
+
+
+def test_a_rehearsal_root_never_gets_system_commands_in_its_rollback(host, tmp_path):
+    host2 = host
+    (host / "nix/var/nix/profiles/tsumgi-v030-installer/bin/tsumgi-worker").unlink()
+    helpers = host.parent / (host.name + "-helpers")
+    run = Recorder()
+    m = HostMigration(host2, "worker", "tsumgi-v030-installer", helpers_from=helpers, runner=run)  # live defaults to False
+    plan = m.plan()
+    assert any("binary is missing" in w for w in plan.warnings) and not plan.blockers
+    m.apply(tmp_path / "b")
+    script = (tmp_path / "b" / "rollback.sh").read_text()
+    for forbidden in ("systemctl", "usermod", "groupmod", "getent", "id "):
+        assert forbidden not in script.replace("rehearsal root: only files are restored; no system command is run", "")
+    assert "rehearsal root" in script
+
+
+def test_a_missing_new_binary_blocks_a_live_host(host):
+    (host / "nix/var/nix/profiles/tsumgi-v030-installer/bin/tsumgi-worker").unlink()
+    assert any("binary is missing" in b for b in migration(host).plan().blockers)
+
+
+def test_files_that_cannot_be_rewritten_block_when_they_mention_the_old_name(host):
+    (host / "etc/astrumweaver/blob.bin").write_bytes(b"\xff\xfe ASTRUMWEAVER \xff")
+    assert any("blob.bin" in b and "cannot be rewritten" in b for b in migration(host).plan().blockers)
+    (host / "etc/astrumweaver/blob.bin").write_bytes(b"\xff\xfe clean \xff")
+    (host / "etc/astrumweaver/big.txt").write_text("astrumweaver " + "x" * (2 * 1024 * 1024))
+    assert any("big.txt" in b for b in migration(host).plan().blockers)
+
+
+def test_other_extensions_are_rewritten_too(host, tmp_path):
+    write(host, "etc/astrumweaver/extra.yaml", "path: /etc/astrumweaver/x\n")
+    migration(host, runner=Recorder()).apply(tmp_path / "b")
+    assert (host / "etc/tsumgi/extra.yaml").read_text() == "path: /etc/tsumgi/x\n"
+
+
+def test_symlinks_that_will_dangle_are_reported(host):
+    (host / "usr/local/bin").mkdir(parents=True)
+    (host / "usr/local/bin/strata").symlink_to("/opt/astrumweaver/strata/bin/strata")
+    (host / "var/lib/astrumweaver/link").symlink_to("/opt/astrumweaver/strata")
+    warnings = migration(host).plan().warnings
+    assert sum("will dangle" in w for w in warnings) == 2
+
+
+def test_the_other_role_on_the_same_host_blocks(host):
+    write(host, "etc/systemd/system/astrumweaver-control.service", "[Service]\n")
+    assert any("control unit is installed on this host too" in b for b in migration(host).plan().blockers)
+
+
+def test_a_half_migrated_host_blocks_until_rolled_back(host):
+    write(host, "etc/group", (host / "etc/group").read_text() + "tsumgi-config:x:997:\n")
+    host2 = host
+    (host2 / "etc/group").write_text("root:x:0:\ntsumgi-config:x:998:\n")  # old group gone, new present
+    blockers = migration(host2).plan().blockers
+    assert any("tsumgi-config exists but astrumweaver-config does not" in b for b in blockers)
+
+
+def test_a_symlinked_or_odd_unit_is_refused(host):
+    target = host / "etc/systemd/system/real.service"
+    (host / "etc/systemd/system/astrumweaver-worker.service").rename(target)
+    (host / "etc/systemd/system/astrumweaver-worker.service").symlink_to(target)
+    assert any("is a symlink" in b for b in migration(host).plan().blockers)
+
+
+def test_mount_points_block(host, monkeypatch):
+    monkeypatch.setattr(os.path, "ismount", lambda p: str(p).endswith("opt/astrumweaver"))
+    assert any("mount point" in b for b in migration(host).plan().blockers)
+
+
+def test_unhandled_files_in_other_units_are_reported(host):
+    write(host, "etc/systemd/system/backup.timer", "[Timer]\nUnit=astrumweaver-worker.service\n")
+    assert any("backup.timer" in w for w in migration(host).plan().warnings)
+
+
+def test_the_original_home_is_recorded_and_restored(host, tmp_path):
+    write(host, "etc/passwd", "astrumweaver:x:999:999::/nonexistent:/usr/sbin/nologin\n")
+    run = Recorder()
+    migration(host, runner=run).apply(tmp_path / "b")
+    assert not any(c[:2] == ["usermod", "-d"] for c in run.calls)
+    assert "usermod -d" not in (tmp_path / "b" / "rollback.sh").read_text()
+
+
+def _partial_failure_roundtrip(host, tmp_path, *, break_at):
+    env, log = _stubs(tmp_path)
+    helpers_dot = host.parent / (host.name + "-helpers")
+    write(helpers_dot, ".hidden", "dot")
+    (host / "usr/local/libexec/astrumweaver/.keep").write_text("old dotfile")
+    (host / "usr/local/libexec/astrumweaver/sub").mkdir()
+    (host / "usr/local/libexec/astrumweaver/sub/x").write_text("old sub")
+    before = _snapshot(host)
+    backup = tmp_path / "backup"
+    with pytest.raises(MigrationError, match="rollback.sh"):
+        break_at(migration(host, runner=Recorder(fail_on=None)), backup)
+    assert (backup / "rollback.sh").is_file()
+    done = _run_script(backup / "rollback.sh", env)
+    assert done.returncode == 0, done.stderr
+    assert _snapshot(host) == before
+    again = _run_script(backup / "rollback.sh", env)
+    assert again.returncode == 0 and _snapshot(host) == before
+
+
+def test_rollback_after_a_failure_in_the_middle_of_the_moves(host, tmp_path, monkeypatch):
+    real_rename = os.rename
+
+    def failing(src, dst, *a, **k):
+        if str(dst).endswith("var/lib/tsumgi"):
+            raise OSError(18, "Invalid cross-device link")
+        return real_rename(src, dst, *a, **k)
+
+    def run(m, backup):
+        monkeypatch.setattr(os, "rename", failing)
+        try:
+            m.apply(backup)
+        finally:
+            monkeypatch.setattr(os, "rename", real_rename)
+
+    _partial_failure_roundtrip(host, tmp_path, break_at=run)
+
+
+def test_rollback_after_a_failure_after_the_user_rename(host, tmp_path):
+    def run(m, backup):
+        m.run = Recorder(fail_on=("groupmod", "-n"))
+        m.apply(backup)
+
+    _partial_failure_roundtrip(host, tmp_path, break_at=run)
+
+
+def test_rollback_after_a_failure_when_the_units_are_renamed(host, tmp_path, monkeypatch):
+    def run(m, backup):
+        m.run = Recorder(fail_on=("systemctl", "daemon-reload"))
+        m.apply(backup)
+
+    _partial_failure_roundtrip(host, tmp_path, break_at=run)
+
+
+def test_a_broken_backup_makes_the_rollback_exit_non_zero(host, tmp_path):
+    env, _ = _stubs(tmp_path)
+    backup = tmp_path / "b"
+    migration(host, runner=Recorder()).apply(backup)
+    for item in (backup / "files").rglob("worker.env"):
+        item.unlink()
+    done = _run_script(backup / "rollback.sh", env)
+    assert done.returncode == 1 and "could not restore" in done.stderr
+
+
+def test_old_helpers_with_subdirectories_and_dotfiles_are_replaced_and_restored(host, tmp_path):
+    (host / "usr/local/libexec/astrumweaver/.keep").write_text("old dotfile")
+    (host / "usr/local/libexec/astrumweaver/sub").mkdir()
+    (host / "usr/local/libexec/astrumweaver/sub/x").write_text("old sub")
+    migration(host, runner=Recorder()).apply(tmp_path / "b")
+    names = sorted(p.name for p in (host / "usr/local/libexec/tsumgi").iterdir())
+    assert names == ["gpu-preflight"]
