@@ -100,6 +100,23 @@ def worker_status(
             "power_w": _num(live.get("power_w")),
         })
 
+    # Workers registered without accelerator records (older configs) still list
+    # their GPUs: identity from the registration, the rest from telemetry.
+    known = {accelerator.uuid for accelerator in record.spec.accelerators}
+    for uuid in record.spec.gpu_uuids:
+        if uuid in known:
+            continue
+        live = live_gpus.get(uuid, {})
+        gpus.append({
+            "uuid": uuid,
+            "name": _text(live.get("name"), 64),
+            "memory_total_mb": _num(live.get("memory_total_mb")),
+            "memory_used_mb": _num(live.get("memory_used_mb")),
+            "utilization_percent": _num(live.get("utilization_percent")),
+            "temperature_c": _num(live.get("temperature_c")),
+            "power_w": _num(live.get("power_w")),
+        })
+
     raw_runtime = telemetry.get("runtime")
     runtime: Mapping[str, Any] = raw_runtime if isinstance(raw_runtime, Mapping) else {}
     context = _num(runtime.get("context_tokens"))
