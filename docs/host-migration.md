@@ -95,3 +95,38 @@ first.
   rewritten; check after the move.
 - Anything under `/var/lib` or `/opt` is moved but never read or rewritten. Absolute symlinks there (and in `/usr/local/bin`, `/usr/local/sbin`) that name the old paths are retargeted; others are only reported.
 - `/opt/astrumweaver-gpu-*` evidence logs from old acceptance runs stay as they are.
+
+## Re-pinning the decision files (altair and Control)
+
+`astrumweaver-decisions-v1` becomes `tsumgi-decisions-v1`, which gives altair's
+decision contract a new revision. Chat and embedding contracts do not contain the
+name: their pins, and the embedding catalog, stay valid. Three files change:
+
+| File | Host | Change |
+| --- | --- | --- |
+| `serving-deployment.json` | altair | the decision contract and its revision |
+| decision catalog (`tsumgi-rc1-decision-catalog.json`) | Control | the contract, the profile and its `serving_contract_revision` |
+| `runtime-deployment.json` | altair | the runtime package path and the launcher `bin/tsumgi-llama-server` (the code requires that exact name) |
+
+1. **Build the new runtime package on altair** (store only; the heavy CUDA llama.cpp
+   build keeps its old store-path name on purpose, so it is reused and only three
+   small derivations are built):
+   `nix build --no-link --print-out-paths github:upiscium/TSUMGI/<rev>#decision-llama-cuda-sm61`
+2. **Generate the new files** (inputs are never modified):
+
+   ```sh
+   tsumgi-repin-decision --out-dir NEW \
+     --serving /etc/astrumweaver/serving-deployment.json \
+     --runtime-manifest /etc/astrumweaver/runtime-deployment.json \
+     --runtime-old /nix/store/...-astrumweaver-d1-decision-cuda-sm61-runtime \
+     --runtime-new /nix/store/...-tsumgi-d1-decision-cuda-sm61-runtime
+   tsumgi-repin-decision --out-dir NEW --catalog /etc/astrumweaver/tsumgi-rc1-decision-catalog.json
+   ```
+
+   Every output is loaded back through the same classes the Worker and Control use,
+   so a file they would refuse is refused here. The serving declaration and the
+   catalog get the same new revision.
+3. **Install them at cutover**: the new files replace the old ones before
+   `tsumgi-migrate-host plan` (they no longer carry the old identity, so the plan
+   stops blocking). Do it with no non-terminal decision Jobs, and move Control and
+   altair in the same window. Keep the old files for the rollback.
