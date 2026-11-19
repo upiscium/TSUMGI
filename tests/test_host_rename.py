@@ -593,3 +593,20 @@ def test_a_pinned_file_that_nothing_refers_to_only_warns(host, tmp_path):
 def test_a_pinned_file_that_the_config_refers_to_blocks(host):
     write(host, "etc/astrumweaver/p/runtime.json", json.dumps({"executable": STORE + "/bin/x"}))
     assert any("re-pin" in b and "runtime.json" in b for b in migration(host).plan().blockers)
+
+
+def test_a_reset_base_exec_start_does_not_count_as_a_reference(host, tmp_path):
+    write(host, "etc/astrumweaver/tsumgi-rc1-runtime.json", json.dumps({"executable": STORE + "/bin/x"}))
+    unit = host / "etc/systemd/system/astrumweaver-worker.service"
+    unit.write_text(unit.read_text() + "ExecStart=/x/bin/astrumweaver-worker --runtime-manifest /etc/astrumweaver/tsumgi-rc1-runtime.json\n")
+    plan = migration(host).plan()  # the drop-in already resets ExecStart
+    assert not plan.blockers and any("nothing refers to it" in w for w in plan.warnings)
+
+
+def test_an_unreset_base_exec_start_still_counts_as_a_reference(host):
+    write(host, "etc/astrumweaver/tsumgi-rc1-runtime.json", json.dumps({"executable": STORE + "/bin/x"}))
+    (host / "etc/systemd/system/astrumweaver-worker.service.d/70-strata.conf").write_text(
+        "[Service]\nExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight /etc/astrumweaver/gpu-uuids\n")
+    unit = host / "etc/systemd/system/astrumweaver-worker.service"
+    unit.write_text(unit.read_text() + "ExecStart=/x/bin/astrumweaver-worker --runtime-manifest /etc/astrumweaver/tsumgi-rc1-runtime.json\n")
+    assert any("tsumgi-rc1-runtime.json" in b for b in migration(host).plan().blockers)

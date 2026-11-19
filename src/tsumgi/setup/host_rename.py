@@ -295,7 +295,7 @@ class HostMigration:
 
     def _demote_unreferenced_pins(self, plan: Plan) -> None:
         """A pinned file that no unit or config points at is a leftover: warn, do not block."""
-        blob = "\n".join(filter(None, (_read_text(p) for p in plan.unit_files + plan.rewrites)))
+        blob = "\n".join(filter(None, (self._live_text(plan, p) for p in plan.unit_files + plan.rewrites)))
         keep: list[Path] = []
         for path in plan.repin:
             logical = "/" + path.relative_to(self.root).as_posix() if path.is_relative_to(self.root) else str(path)
@@ -304,6 +304,24 @@ class HostMigration:
             else:
                 plan.warnings.append(f"{logical} carries the old name but nothing refers to it; it is moved unchanged")
         plan.repin = keep
+
+    def _live_text(self, plan: Plan, path: Path) -> str | None:
+        """File text, minus base-unit ExecStart lines that a drop-in resets (they never run)."""
+        text = _read_text(path)
+        if text is None or path.suffix != ".service":
+            return text
+        reset: set[str] = set()
+        for other in plan.unit_files:
+            if other.parent.name == path.name + ".d":
+                other_text = _read_text(other) or ""
+                for key in ("ExecStart", "ExecStartPre", "ExecStartPost"):
+                    if re.search(rf"^{key}=\s*$", other_text, re.M):
+                        reset.add(key)
+        if not reset:
+            return text
+        return "\n".join(
+            line for line in text.splitlines()
+            if not any(line.startswith(f"{key}=") for key in reset))
 
     def _plan_profiles(self, plan: Plan) -> None:
         base = self.root / "nix/var/nix/profiles"
