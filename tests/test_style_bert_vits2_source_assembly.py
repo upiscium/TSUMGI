@@ -78,6 +78,7 @@ def test_disabled_candidate_not_inspected_and_no_io(monkeypatch):
 
 @pytest.mark.parametrize("gpu", [False, True])
 def test_static_review_preserves_blockers_and_public_redaction(gpu):
+    registry_before = dict(_PROVIDER_TYPES)
     intent = static_intent(gpu=gpu)
     review = review_stylebert_source_assembly(enabled=True, intent=intent)
     same = review_stylebert_source_assembly(enabled=True, intent=intent)
@@ -93,7 +94,7 @@ def test_static_review_preserves_blockers_and_public_redaction(gpu):
     assert "native_license_attribution_and_privacy_unqualified" in review.blockers
     assert ("real_gpu_isolation_and_vram_unqualified" in review.blockers) is gpu
     assert "style-bert-vits2" not in _PROVIDER_TYPES
-    assert "voicevox" not in _PROVIDER_TYPES
+    assert dict(_PROVIDER_TYPES) == registry_before
     for private in (
         "/opt/private",
         "model.safetensors",

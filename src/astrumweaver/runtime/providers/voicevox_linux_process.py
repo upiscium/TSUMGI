@@ -79,6 +79,7 @@ class VoicevoxLinuxLaunchSpec:
     auxiliary_path: str | None = None
     auxiliary_sha256: str | None = None
     stop_timeout_seconds: float = 2.0
+    private_home: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -106,8 +107,38 @@ class VoicevoxLinuxLaunchSpec:
             or type(self.stop_timeout_seconds) not in (int, float)
             or not math.isfinite(self.stop_timeout_seconds)
             or not 0 < self.stop_timeout_seconds <= 60
+            or (self.private_home is not None and (
+                not _strict_path(self.private_home) or self.private_home.startswith("//")
+            ))
         ):
             raise ValueError("VOICEVOX owned process launch configuration is invalid")
+
+
+def _launch_environment(spec: VoicevoxLinuxLaunchSpec) -> dict[str, str]:
+    env = {"PATH": "/usr/bin:/bin", "PYTHONNOUSERSITE": "1"}
+    if spec.private_home is None:
+        return env
+    home = Path(spec.private_home)
+    try:
+        for path in (*reversed(home.parents), home):
+            info = path.lstat()
+            mode = stat.S_IMODE(info.st_mode)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.geteuid()):
+                _fail()
+            if mode & 0o022 and not (str(path) in ("/tmp", "/var/tmp")
+                                      and info.st_uid == 0 and mode & stat.S_ISVTX):
+                _fail()
+            if path == home and (info.st_uid != os.geteuid() or mode != 0o700):
+                _fail()
+        # Do not load old engine settings, third-party voice libraries or a
+        # service account's regular HOME. Rotation is explicit; never erase it.
+        with os.scandir(home) as entries:
+            if next(entries, None) is not None:
+                _fail()
+    except OSError:
+        raise VoicevoxOwnedProcessError() from None
+    env["HOME"] = str(home)
+    return env
 
 
 def _verified_file(path: str, expected: str) -> tuple[int, int, int, int]:
@@ -457,6 +488,7 @@ class LinuxVoicevoxOwnedProcessControl:
                     self._check_before_launch, config, port
                 )
                 exe_identity, model_identity, aux_identity = artifacts
+                child_env = await asyncio.to_thread(_launch_environment, self._launch_spec)
                 spawn = asyncio.create_task(
                     asyncio.create_subprocess_exec(
                         config.executable_path,
@@ -464,7 +496,7 @@ class LinuxVoicevoxOwnedProcessControl:
                         stdin=asyncio.subprocess.DEVNULL,
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
-                        env={"PATH": "/usr/bin:/bin", "PYTHONNOUSERSITE": "1"},
+                        env=child_env,
                         cwd="/",
                         close_fds=True,
                         start_new_session=True,

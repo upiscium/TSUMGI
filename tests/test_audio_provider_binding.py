@@ -458,9 +458,11 @@ def test_audio_providers_cannot_be_started_via_existing_runtime_registry(kind):
             gpu_topology=GPUTopology.NONE,
         ),
     )
-    # Explicitly assert the source-only B6a review does not install a provider
-    # in the executable Worker registry by side effect of importing setup.
+    # B6a still cannot activate either provider. Only the independently
+    # reviewed VOICEVOX manifest lane is known to the registry, and an
+    # empty config must never enable it.
     with pytest.raises(
-        ValueError, match=f"^unsupported runtime provider: {provider_id}$"
+        ValueError, match=("^VOICEVOX manifest configuration is invalid$" if provider_id == "voicevox"
+                           else f"^unsupported runtime provider: {provider_id}$")
     ):
         provider_from_deployment(manifest)
