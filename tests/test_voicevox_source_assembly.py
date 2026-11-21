@@ -126,7 +126,6 @@ def test_valid_static_review_redacts_private_metadata_and_preserves_stop_gates(
         assert secret not in repr(intent)
 
     assert dict(_PROVIDER_TYPES) == registry_before
-    assert "style-bert-vits2" not in _PROVIDER_TYPES
 
     # Assembly construction is inert: no file hashing, socket or subprocess.
     def forbidden(*_args, **_kwargs):

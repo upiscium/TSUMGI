@@ -27,6 +27,7 @@ from ..runtime.providers.dual_llama_cpp import (
     DUAL_LLAMA_CPP_PROVIDER_ID, DualLlamaCppProviderConfig,
 )
 from ..runtime.providers.voicevox import VOICEVOX_PROVIDER_ID
+from ..runtime.providers.style_bert_vits2 import STYLE_BERT_VITS2_PROVIDER_ID
 from ..runtime import (
     RuntimeDeploymentSpec,
     RuntimeHealth,
@@ -48,6 +49,9 @@ from .runtime import (
     require_executor_serving_features,
     require_isolated_gpu_access,
 )
+
+
+_OWNED_CPU_SPEECH = frozenset({VOICEVOX_PROVIDER_ID, STYLE_BERT_VITS2_PROVIDER_ID})
 
 
 def _load_toml(path: str) -> dict[str, Any]:
@@ -91,10 +95,10 @@ def _load_runtime_deployment(path: str) -> RuntimeDeploymentSpec:
         raise RuntimeError("runtime deployment manifest must contain an object")
     try:
         deployment = RuntimeDeploymentSpec.from_dict(value)
-        if deployment.provider_id == VOICEVOX_PROVIDER_ID and (
+        if deployment.provider_id in _OWNED_CPU_SPEECH and (
             duplicate or not _canonical_subset(value, deployment.to_dict())
         ):
-            raise ValueError("ambiguous VOICEVOX runtime declaration")
+            raise ValueError("ambiguous owned speech runtime declaration")
         return deployment
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("runtime deployment manifest is invalid") from exc
@@ -110,12 +114,12 @@ def _load_serving_deployment(path: str) -> ServingDeploymentDeclaration:
         raise RuntimeError("serving deployment manifest must contain an object")
     try:
         serving = ServingDeploymentDeclaration.from_dict(value)
-        if serving.deployment.provider_id == VOICEVOX_PROVIDER_ID and (
+        if serving.deployment.provider_id in _OWNED_CPU_SPEECH and (
             duplicate or value.keys() - {"schema_version", "deployment", "contracts"}
             or any(type(item) is not dict or item.keys() != {"contract", "serving_contract_revision"}
                    for item in value["contracts"])
         ):
-            raise ValueError("ambiguous VOICEVOX serving declaration")
+            raise ValueError("ambiguous owned speech serving declaration")
         return serving
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("serving deployment manifest is invalid") from exc
@@ -340,12 +344,11 @@ def _require_runtime_concurrency(
         raise RuntimeError("dual runtime requires max_concurrency=1")
 
 
-def _require_voicevox_worker(deployment, declaration, spec, section) -> None:
-    # The first native audio lane is local, CPU-only, one slot; no implicit
-    # attach or fallback. Reject an unrelated runtime before GPU preflight.
+def _require_owned_speech_worker(deployment, declaration, spec, section) -> None:
+    # Explicit owned CPU lanes only. Never substitute the other synth provider.
     provider = getattr(deployment, "provider_id", None)
     serving_id = getattr(getattr(declaration, "deployment", None), "provider_id", None)
-    if VOICEVOX_PROVIDER_ID not in (provider, serving_id):
+    if provider not in _OWNED_CPU_SPEECH and serving_id not in _OWNED_CPU_SPEECH:
         return
     slots = section.get("max_concurrency", 1)
     control = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", str(section["control_url"]))
@@ -354,7 +357,7 @@ def _require_voicevox_worker(deployment, declaration, spec, section) -> None:
             or type(slots) is not int or slots != 1
             or control is None or int(control[1]) > 65535
             or section.get("health_host", "127.0.0.1") != "127.0.0.1"):
-        raise RuntimeError("VOICEVOX requires matching manifests and a dedicated loopback CPU Worker")
+        raise RuntimeError("owned speech requires matching manifests and a dedicated loopback CPU Worker")
 
 
 async def run_worker(
@@ -405,7 +408,7 @@ async def run_worker(
         spec, executor_factory=executor_factory, runtime_manifest=runtime_manifest,
     )
     deployment = _load_runtime_deployment(runtime_manifest) if runtime_manifest else None
-    _require_voicevox_worker(deployment, serving_declaration, spec, worker_section)
+    _require_owned_speech_worker(deployment, serving_declaration, spec, worker_section)
     _run_gpu_preflight(spec, worker_section)
 
     client = ControlClient(
