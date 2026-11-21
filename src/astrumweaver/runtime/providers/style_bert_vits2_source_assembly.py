@@ -151,6 +151,7 @@ def _review_enabled(
     snapshot = intent.snapshot
     if (
         type(spec.adapter) is not StyleBertVits2ProviderConfig
+        or spec.jvnv_inputs is not None  # B6e cannot attest the executable manifest lane.
         or type(spec.adapter.model) is not StyleBertVits2ModelPin
         or type(spec.adapter.voices) is not tuple
         or any(type(v) is not StyleBertVits2Voice for v in spec.adapter.voices)

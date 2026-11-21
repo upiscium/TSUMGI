@@ -48,6 +48,9 @@ from .providers import (
     VllmProviderConfig,
 )
 from .providers.voicevox_manifest import VOICEVOX_PROVIDER_ID, VoicevoxProvider, VoicevoxProviderConfig
+from .providers.style_bert_vits2_manifest import (
+    STYLE_BERT_VITS2_PROVIDER_ID, StyleBertManifestConfig, StyleBertManifestProvider,
+)
 
 
 def _json_value(value: Any) -> Any:
@@ -248,6 +251,7 @@ _PROVIDER_TYPES: Mapping[
     tuple[type[Any], type[Any]],
 ] = {
     VOICEVOX_PROVIDER_ID: (VoicevoxProvider, VoicevoxProviderConfig),
+    STYLE_BERT_VITS2_PROVIDER_ID: (StyleBertManifestProvider, StyleBertManifestConfig),
     DUAL_LLAMA_CPP_PROVIDER_ID: (DualLlamaCppProvider, DualLlamaCppProviderConfig),
     OLLAMA_PROVIDER_ID: (OllamaProvider, OllamaProviderConfig),
     LLAMA_CPP_PROVIDER_ID: (
@@ -320,6 +324,8 @@ def provider_from_deployment(
     except (TypeError, ValueError):
         if provider_type is VoicevoxProvider:
             raise ValueError("VOICEVOX manifest configuration is invalid") from None
+        if provider_type is StyleBertManifestProvider:
+            raise ValueError("Style-Bert-VITS2 manifest configuration is invalid") from None
         raise
     return provider_type(config)
 
@@ -380,9 +386,9 @@ def managed_runtime_from_deployment(
         )
     # An owned audio runtime must bind the two manifests *before* start().
     # Its already provisioned assets do not authorize any SetupPlan action.
-    if isinstance(provider, VoicevoxProvider):
+    if isinstance(provider, (VoicevoxProvider, StyleBertManifestProvider)):
         if deployment.setup_intent is not None:
-            raise ValueError("VOICEVOX setup intent is not supported")
+            raise ValueError("owned audio setup intent is not supported")
         return provider.create_manifest_runtime(context, serving)
     setup_intent = (
         deployment.setup_intent
