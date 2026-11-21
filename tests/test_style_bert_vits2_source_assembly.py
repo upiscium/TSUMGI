@@ -22,6 +22,7 @@ from astrumweaver.gateway.audio import (
 )
 from astrumweaver.runtime.contracts import RuntimeHealthState, RuntimeHostFacts
 from astrumweaver.runtime.deployment import _PROVIDER_TYPES
+from astrumweaver.runtime.providers.jvnv_assets import JvnvInputs
 from astrumweaver.runtime.providers.style_bert_vits2_managed import (
     StyleBertRuntimeFailure,
 )
@@ -76,6 +77,13 @@ def test_disabled_candidate_not_inspected_and_no_io(monkeypatch):
         review_stylebert_source_assembly(enabled=0, intent=Poison())
 
 
+def test_source_review_is_not_the_pinned_manifest_boot_path():
+    old = static_intent()
+    inputs = JvnvInputs("/private/home", "/private/deps.lock", "/private/dict", "sha256:" + "1" * 64)
+    with pytest.raises(StyleBertSourceAssemblyError):
+        review_stylebert_source_assembly(enabled=True, intent=replace(old, runtime=replace(old.runtime, jvnv_inputs=inputs)))
+
+
 @pytest.mark.parametrize("gpu", [False, True])
 def test_static_review_preserves_blockers_and_public_redaction(gpu):
     registry_before = dict(_PROVIDER_TYPES)
@@ -93,7 +101,6 @@ def test_static_review_preserves_blockers_and_public_redaction(gpu):
     assert "native_runner_and_loaded_model_unqualified" in review.blockers
     assert "native_license_attribution_and_privacy_unqualified" in review.blockers
     assert ("real_gpu_isolation_and_vram_unqualified" in review.blockers) is gpu
-    assert "style-bert-vits2" not in _PROVIDER_TYPES
     assert dict(_PROVIDER_TYPES) == registry_before
     for private in (
         "/opt/private",
@@ -340,9 +347,10 @@ def synthetic_intent(tmp_path: Path, *, fault="none") -> StyleBertSourceAssembly
 
 @pytest.mark.asyncio
 async def test_disposable_exact_synthetic_runner_wav_and_model_drift(tmp_path):
+    registry_before = dict(_PROVIDER_TYPES)
     intent = synthetic_intent(tmp_path)
     review = review_stylebert_source_assembly(enabled=True, intent=intent)
-    assert not review.can_apply and "style-bert-vits2" not in _PROVIDER_TYPES
+    assert not review.can_apply
     runtime = review.compose_disposable_source_runtime()
     media = FakeMedia()
     child = None
@@ -374,7 +382,7 @@ async def test_disposable_exact_synthetic_runner_wav_and_model_drift(tmp_path):
         await runtime.release()
     assert child is not None and child.returncode is not None
     assert runtime._proc is None
-    assert "style-bert-vits2" not in _PROVIDER_TYPES
+    assert dict(_PROVIDER_TYPES) == registry_before
 
 
 @pytest.mark.asyncio
