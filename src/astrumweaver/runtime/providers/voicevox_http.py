@@ -45,6 +45,7 @@ class VoicevoxHttpConfig:
     endpoint: str
     adapter: VoicevoxAdapterConfig
     request_timeout_seconds: float = 10.0
+    strict_style_identity: tuple[str, str, str] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -76,6 +77,40 @@ class VoicevoxHttpConfig:
             or not 0 < self.request_timeout_seconds <= 300
         ):
             raise _invalid()
+
+        identity = self.strict_style_identity
+        if identity is not None and (
+            type(identity) is not tuple or len(identity) != 3 or len(self.adapter.voices) != 1
+            or any(type(s) is not str or not 1 <= len(s) <= 128 for s in identity)
+        ):
+            raise _invalid()
+
+
+def _check_style_identity(raw: bytes, config: VoicevoxHttpConfig) -> None:
+    """Use the very same bounded catalog returned to the managed readiness check."""
+    expected = config.strict_style_identity
+    if expected is None:
+        return
+    pin, = config.adapter.voices
+    speakers = _decoded_json(raw)
+    matches = 0
+    if type(speakers) is not list or not 1 <= len(speakers) <= 1024:
+        raise VoicevoxHttpError()
+    for speaker in speakers:
+        if type(speaker) is not dict or type(speaker.get("styles")) is not list:
+            raise VoicevoxHttpError()
+        if not 1 <= len(speaker["styles"]) <= 256:
+            raise VoicevoxHttpError()
+        for style in speaker["styles"]:
+            if type(style) is not dict or type(style.get("id")) is not int:
+                raise VoicevoxHttpError()
+            if style["id"] == pin.style_id:
+                if (speaker.get("speaker_uuid") != pin.speaker_uuid or
+                        (speaker.get("name"), style.get("name"), style.get("type")) != expected):
+                    raise VoicevoxHttpError()
+                matches += 1
+    if matches != 1:
+        raise VoicevoxHttpError()
 
 
 def _decoded_json(raw: bytes) -> object:
@@ -275,12 +310,15 @@ class VoicevoxLoopbackHttpApi:
             and type(max_bytes) is int
             and 0 < max_bytes <= _MAX_SPEAKERS
         ):
-            return await self._request(
+            raw = await self._request(
                 "GET",
                 path,
                 max_bytes=max_bytes,
                 media_type=_JSON_TYPE,
             )
+            if path == "/speakers":
+                _check_style_identity(raw, self._config)
+            return raw
         raise VoicevoxHttpError()
 
     async def version(self) -> str:
