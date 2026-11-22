@@ -236,7 +236,11 @@ class AudioOutputChannel:
             )
 
     def read_published(self, job_id: str, artifact_id: str) -> bytes:
-        """Only expose an intact output referenced by a SUCCEEDED Job."""
+        """Expose an intact SUCCEEDED output only while its epoch is not fenced.
+
+        This is a call-time read check, not cancellation of bytes already sent
+        before a concurrent fence, nor a claim that stored bytes were erased.
+        """
         with self._lock:
             self._reap_locked()
             staged = self._staged.get(artifact_id)
@@ -246,6 +250,12 @@ class AudioOutputChannel:
             if (record.status is not JobStatus.SUCCEEDED
                     or record.result is None
                     or staged.reference not in record.result.artifacts):
+                raise NotFoundError("audio output unavailable")
+            try:
+                self.repository.get_audio_epoch_fence(staged.worker_id, staged.epoch)
+            except NotFoundError:
+                pass
+            else:
                 raise NotFoundError("audio output unavailable")
             try:
                 return self._spool.read(artifact_id, scope=staged.scope)

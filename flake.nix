@@ -213,6 +213,19 @@
         default = astrumweaver;
       };
 
+      lib.mkVoicevoxCpuBundle = { pkgs, archive, rightsReviewSha256 }:
+        pkgs.callPackage ./nix/voicevox-cpu-bundle.nix {
+          inherit archive rightsReviewSha256;
+          sevenzip = pkgs._7zz;
+        };
+
+      # Explicit, already-acquired inputs only. This factory does not call the
+      # bundle extractor, add a package to the default closure or wire a unit.
+      lib.mkVoicevoxServiceView = { pkgs, libcArchive, libcRoot, engineRoot }:
+        pkgs.callPackage ./nix/voicevox-service-view.nix {
+          inherit libcArchive libcRoot engineRoot;
+        };
+
       nixosModules = {
         control = import ./nix/modules/control.nix;
         worker = import ./nix/modules/worker.nix;
@@ -239,6 +252,18 @@
 
         audio-control-module = import ./nix/tests/audio-control-module.nix {
           inherit pkgs nixpkgs system;
+        };
+
+        audio-worker-module = import ./nix/tests/audio-worker-module.nix {
+          inherit pkgs nixpkgs system;
+        };
+
+        voicevox-bundle = import ./nix/tests/voicevox-bundle.nix {
+          inherit nixpkgs system;
+        };
+
+        voicevox-service-view = import ./nix/tests/voicevox-service-view.nix {
+          inherit nixpkgs system;
         };
 
         audio-control-package = import ./nix/tests/audio-control-package.nix {

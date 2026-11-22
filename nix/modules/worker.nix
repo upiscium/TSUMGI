@@ -9,6 +9,46 @@ let
     integration = integrationPackage;
   };
   toml = pkgs.formats.toml { };
+  audioProfiles = {
+    voicevox = { model = "model/0.vvm"; format = "vvm"; gpu = false; };
+    style-bert-vits2 = { model = "jvnv-F1-jp"; format = "safetensors"; gpu = false; };
+    parakeet-ja = { model = "nvidia/parakeet-tdt_ctc-0.6b-ja"; format = "nemo"; gpu = true; };
+  };
+  audioSelected = builtins.hasAttr cfg.runtime.provider audioProfiles;
+  audioActive = cfg.runtime.enable && audioSelected;
+  audioProfile = audioProfiles.${cfg.runtime.provider};
+  audioCapability = if audioProfile.gpu then "audio.transcribe" else "audio.synthesize";
+  audioSchema = if audioProfile.gpu
+    then "openai-audio-transcription-metadata-v1" else "openai-audio-speech-v1";
+  privateHome = cfg.runtime.providerConfig.private_home or null;
+  service = config.systemd.services.astrumweaver-worker.serviceConfig;
+  # References only. No live private input is opened or copied into the store.
+  canonicalReference = prefix: value:
+    builtins.isString value && !builtins.hasContext value
+    && builtins.match prefix value != null
+    && builtins.all (part: part != "" && part != "." && part != "..")
+      (lib.drop 1 (lib.splitString "/" value));
+  protectedEnvironment = canonicalReference "/(etc|run)/[A-Za-z0-9_./-]+" cfg.environmentFile;
+  protectedHome = canonicalReference "/var/lib/astrumweaver-audio/[A-Za-z0-9_./-]+" privateHome;
+  # systemd interprets numeric User=/Group= strings as IDs, independently of
+  # NixOS's named-account uid/gid options. Require names, not numeric aliases.
+  staticAccountName = value: builtins.match "[a-z_][a-z0-9_-]{0,31}" value != null;
+  loopbackControl = builtins.match "http://127\\.0\\.0\\.1:([1-9][0-9]{0,4})" cfg.controlUrl;
+  # A retained declaration must not activate an explicitly disabled audio lane.
+  servingActive = (!audioSelected || cfg.runtime.enable) && cfg.serving.declaration != null;
+  declaration = cfg.serving.declaration;
+  declarationProvider =
+    if builtins.isAttrs declaration && builtins.isAttrs (declaration.deployment or null)
+    then declaration.deployment.provider_id or null else null;
+  audioDeclarationMatches =
+    builtins.isAttrs declaration && (declaration.schema_version or null) == "serving-deployment-v1"
+    && declarationProvider == cfg.runtime.provider
+    && builtins.isList (declaration.contracts or null)
+    && builtins.length declaration.contracts == 1
+    && builtins.isAttrs (builtins.head declaration.contracts)
+    && builtins.isAttrs ((builtins.head declaration.contracts).contract or null)
+    && ((builtins.head declaration.contracts).contract.capability or null) == audioCapability
+    && ((builtins.head declaration.contracts).contract.operation_schema or null) == audioSchema;
   effectiveRuntimeGpuTopology =
     if cfg.runtime.gpuTopology != null
     then cfg.runtime.gpuTopology
@@ -47,6 +87,26 @@ let
   runtimeManifest = pkgs.writeText "astrumweaver-runtime-deployment.json" (
     builtins.toJSON runtimeManifestData
   );
+  servingManifest = pkgs.writeText "astrumweaver-serving-deployment.json" (
+    builtins.toJSON declaration
+  );
+  audioDemandMatches = runtimeManifestData.demand == {
+    model = {
+      model_ref = audioProfile.model;
+      model_format = audioProfile.format;
+      topology = "dense";
+      estimated_size_mb = null;
+      metadata = { };
+    };
+    residency_policy = if audioProfile.gpu then "vram_only" else "cpu_gpu_hybrid";
+    gpu_topology = if audioProfile.gpu then "single_gpu" else "none";
+    min_gpu_count = if audioProfile.gpu then 1 else 0;
+    min_total_vram_mb = if audioProfile.gpu then 11264 else 0;
+    min_single_gpu_vram_mb = if audioProfile.gpu then 11264 else 0;
+    min_host_ram_mb = 0;
+    preferred_host_ram_mb = 0;
+    metadata = { };
+  };
   coreSettings = {
     worker = {
       id = cfg.workerId;
@@ -74,16 +134,44 @@ let
       startup_timeout_seconds = cfg.runtime.startupTimeoutSeconds;
       shutdown_timeout_seconds = cfg.runtime.shutdownTimeoutSeconds;
     };
+  } // lib.optionalAttrs servingActive {
+    serving.manifest = servingManifest;
   };
-  generatedConfig = toml.generate "astrumweaver-worker.toml" (
-    lib.recursiveUpdate cfg.settings coreSettings
-  );
+  effectiveSettings = lib.recursiveUpdate cfg.settings coreSettings;
+  generatedConfig = toml.generate "astrumweaver-worker.toml" effectiveSettings;
+  # Reviewable configuration artifacts, not an engine/model installation. The
+  # passthru exposes the exact serialization inputs for evaluation-only checks.
+  audioConfigArtifacts = {
+    "worker.toml" = generatedConfig;
+    "runtime.json" = runtimeManifest;
+    "serving.json" = servingManifest;
+  };
+  audioConfigBundle = (pkgs.linkFarm "astrumweaver-audio-worker-config"
+    (lib.mapAttrsToList (name: path: { inherit name path; }) audioConfigArtifacts)
+  ).overrideAttrs (_: {
+    passthru = {
+      artifacts = audioConfigArtifacts;
+      reviewed = {
+        settings = effectiveSettings;
+        runtime = runtimeManifestData;
+        serving = declaration;
+      };
+    };
+  });
+  sharedNvidiaDeviceNodes = [
+    "/dev/nvidiactl"
+    "/dev/nvidia-modeset"
+    "/dev/nvidia-uvm"
+    "/dev/nvidia-uvm-tools"
+  ];
   expectedGpuUuids = pkgs.writeText "astrumweaver-gpu-uuids" (
     lib.concatStringsSep "\n" (lib.sort builtins.lessThan cfg.gpuUuids) + "\n"
   );
   gpuIsolationDevicePaths = map (
     uuid: cfg.gpuIsolation.deviceMap.${uuid} or ""
   ) cfg.gpuUuids;
+  gpuDeviceAllows = map (path: "${path} rw")
+    (gpuIsolationDevicePaths ++ cfg.gpuIsolation.auxiliaryDeviceNodes);
   gpuIsolationMap = pkgs.writeText "astrumweaver-gpu-device-map" (
     lib.concatStringsSep "\n" (
       map (
@@ -211,12 +299,7 @@ in
 
       auxiliaryDeviceNodes = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [
-          "/dev/nvidiactl"
-          "/dev/nvidia-modeset"
-          "/dev/nvidia-uvm"
-          "/dev/nvidia-uvm-tools"
-        ];
+        default = sharedNvidiaDeviceNodes;
         description = "Shared NVIDIA control/UVM device nodes required by the runtime service in addition to selected per-GPU nodes.";
       };
     };
@@ -334,6 +417,9 @@ in
           "vllm"
           "freetoken"
           "exllamav3"
+          "voicevox"
+          "style-bert-vits2"
+          "parakeet-ja"
         ];
         default = "ollama";
         description = "Explicit first-class RuntimeProvider selected by the operator.";
@@ -342,7 +428,7 @@ in
       packages = lib.mkOption {
         type = lib.types.listOf lib.types.package;
         default = [ ];
-        description = "Packages that provide the selected runtime executable/backend. They are added only to the Worker service closure.";
+        description = "Packages that provide a non-audio runtime executable/backend. Owned audio uses separately reviewed pre-provisioned assets and requires this list to be empty.";
       };
 
       providerConfig = lib.mkOption {
@@ -438,6 +524,18 @@ in
       };
     };
 
+    serving.declaration = lib.mkOption {
+      type = lib.types.nullOr lib.types.attrs;
+      default = null;
+      description = ''
+        Explicit reviewed, non-secret ServingDeploymentDeclaration JSON value.
+        It is serialized into the standard serving.manifest; no catalog, pins,
+        rights receipt, or validation evidence is invented. Required for an
+        enabled owned audio provider. Retained values do not activate a disabled
+        audio runtime. Full binding is rechecked by the daemon before startup.
+      '';
+    };
+
     borrowable = {
       enable = lib.mkEnableOption "borrowable GPU ownership mode for a development node";
 
@@ -494,7 +592,7 @@ in
         message = "services.astrumweaver.worker.runtime.modelFormat must be set when RuntimeProvider execution is enabled.";
       }
       {
-        assertion = !cfg.runtime.enable || cfg.runtime.packages != [ ];
+        assertion = !cfg.runtime.enable || audioActive || cfg.runtime.packages != [ ];
         message = "services.astrumweaver.worker.runtime.packages must provide the selected runtime closure.";
       }
       {
@@ -570,15 +668,91 @@ in
             && cfg.maxSingleGpuVramMb <= cfg.totalVramMb;
         message = "Worker VRAM shape must be zero for non-GPU Workers and positive/consistent for GPU Workers.";
       }
+      {
+        assertion = !(builtins.any (cap: builtins.elem cap [ "audio.synthesize" "audio.transcribe" ]) cfg.capabilities)
+          || audioActive;
+        message = "Worker audio capabilities require an explicitly enabled owned audio RuntimeProvider.";
+      }
+      {
+        assertion = !servingActive || !(builtins.elem declarationProvider (builtins.attrNames audioProfiles))
+          || audioActive;
+        message = "An audio serving declaration requires the matching enabled owned audio RuntimeProvider.";
+      }
+    ] ++ lib.optionals audioActive [
+      {
+        assertion = (cfg.runtime.providerConfig.enabled or false) == true
+          && audioDeclarationMatches && audioDemandMatches;
+        message = "Worker audio requires literal providerConfig.enabled=true, the exact qualified demand, and one matching reviewed serving declaration.";
+      }
+      {
+        assertion = pkgs.stdenv.hostPlatform.system == "x86_64-linux"
+          && cfg.capabilities == [ audioCapability ]
+          && cfg.maxConcurrency == 1 && cfg.healthHost == "127.0.0.1"
+          && loopbackControl != null && lib.toInt (builtins.head loopbackControl) <= 65535;
+        message = "Worker audio requires a dedicated single-slot x86_64-linux capability and loopback Control/health endpoints.";
+      }
+      {
+        assertion = if audioProfile.gpu then
+          builtins.length cfg.gpuUuids == 1
+          && builtins.match "GPU-[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}" (builtins.head cfg.gpuUuids) != null
+          && (cfg.runtime.providerConfig.gpu_uuid or null) == builtins.head cfg.gpuUuids
+          && cfg.totalVramMb >= 11264 && cfg.maxSingleGpuVramMb >= 11264
+          && cfg.gpuIsolation.enable
+          && builtins.all (path: builtins.elem path sharedNvidiaDeviceNodes)
+            cfg.gpuIsolation.auxiliaryDeviceNodes
+          && (service.DevicePolicy or null) == "closed"
+          && (service.DeviceAllow or [ ]) == gpuDeviceAllows
+        else cfg.gpuUuids == [ ] && cfg.accelerators == [ ]
+          && cfg.totalVramMb == 0 && cfg.maxSingleGpuVramMb == 0
+          && !cfg.gpuIsolation.enable;
+        message = "Worker audio requires CPU-only TTS or the exact isolated single Parakeet GPU with the declared 11264 MiB floor.";
+      }
+      {
+        assertion = cfg.settings == { } && cfg.extraArgs == [ ]
+          && cfg.executorSettings == { } && cfg.runtime.packages == [ ]
+          && (service.ExecStart or null) == execStart;
+        message = "Worker audio requires typed configuration only, no settings/extraArgs/executorSettings/runtime.packages or ExecStart override.";
+      }
+      {
+        assertion = protectedEnvironment && (service.EnvironmentFile or null) == cfg.environmentFile;
+        message = "Worker audio requires a protected canonical /etc or /run environmentFile without store context or service override.";
+      }
+      {
+        assertion = protectedHome && (service.WorkingDirectory or null) == privateHome
+          && (service.ReadWritePaths or [ ]) == [ privateHome ]
+          && (service.StateDirectory or [ ]) == [ ]
+          && (service.UMask or null) == "0077"
+          && (service.ProtectSystem or null) == "strict"
+          && (service.ProtectHome or false) == true;
+        message = "Worker audio requires its pre-provisioned private_home beneath /var/lib/astrumweaver-audio with matching protected unit paths; no shared StateDirectory or permission repair.";
+      }
+      {
+        assertion = staticAccountName cfg.user && !(builtins.elem cfg.user [ "root" "astrumweaver" ])
+          && staticAccountName cfg.group && cfg.group != "root"
+          && (service.User or null) == cfg.user && (service.Group or null) == cfg.group
+          && !(service.DynamicUser or false)
+          && (config.users.users.${cfg.user}.uid or null) != 0
+          && (config.users.groups.${cfg.group}.gid or null) != 0
+          && config.users.users.${cfg.user}.home == "/var/empty"
+          && !config.users.users.${cfg.user}.createHome
+          && (service.NoNewPrivileges or false) == true
+          && (service.Restart or null) == "no"
+          && (service.KillMode or null) == "control-group";
+        message = "Worker audio requires a dedicated non-root static user, no automatic home provisioning/restart, and owned control-group shutdown.";
+      }
     ];
+
+    system.build = lib.optionalAttrs audioActive {
+      astrumweaverAudioWorkerConfig = audioConfigBundle;
+    };
 
     users.groups.${cfg.group} = { };
     users.users.${cfg.user} = {
       isSystemUser = lib.mkDefault true;
       group = lib.mkDefault cfg.group;
       extraGroups = cfg.supplementaryGroups;
-      home = lib.mkDefault "/var/lib/astrumweaver";
-      createHome = lib.mkDefault true;
+      home = lib.mkDefault (if audioActive then "/var/empty" else "/var/lib/astrumweaver");
+      createHome = lib.mkDefault (!audioActive);
     };
 
     environment.systemPackages =
@@ -606,7 +780,7 @@ in
       requires = lib.optional cfg.gpuIsolation.enable "astrumweaver-worker-gpu-isolation-preflight.service";
       path = [ cfg.package ]
         ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage
-        ++ cfg.runtime.packages
+        ++ (if audioSelected && !cfg.runtime.enable then [ ] else cfg.runtime.packages)
         ++ cfg.extraPackages;
 
       serviceConfig = {
@@ -614,11 +788,11 @@ in
         User = cfg.user;
         Group = cfg.group;
         ExecStart = execStart;
-        Restart = "on-failure";
+        Restart = if audioActive then "no" else "on-failure";
         RestartSec = "5s";
         RuntimeDirectory = "astrumweaver-worker";
-        RuntimeDirectoryMode = "0750";
-        StateDirectory = "astrumweaver";
+        RuntimeDirectoryMode = if audioActive then "0700" else "0750";
+        StateDirectory = if audioActive then [ ] else "astrumweaver";
         StateDirectoryMode = "0750";
         NoNewPrivileges = true;
         PrivateTmp = true;
@@ -629,14 +803,15 @@ in
         ProtectControlGroups = true;
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
       }
+      // lib.optionalAttrs audioActive {
+        WorkingDirectory = privateHome;
+        ReadWritePaths = [ privateHome ];
+        UMask = "0077";
+        KillMode = "control-group";
+      }
       // lib.optionalAttrs cfg.gpuIsolation.enable {
         DevicePolicy = "closed";
-        DeviceAllow = map (
-          path: "${path} rw"
-        ) (
-          gpuIsolationDevicePaths
-          ++ cfg.gpuIsolation.auxiliaryDeviceNodes
-        );
+        DeviceAllow = gpuDeviceAllows;
         Environment = [
           "CUDA_VISIBLE_DEVICES=${lib.concatStringsSep "," cfg.gpuUuids}"
           "ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access"

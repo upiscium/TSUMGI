@@ -23,6 +23,20 @@ from ..serving import (
     worker_serving_accepts_job,
 )
 from .migrate import _require_utf8_database, required_migration_names
+from .audio_epoch import (
+    AudioEpochFence,
+    fence_matches,
+    validate_fence_arguments,
+    validate_fence_lookup,
+    worker_matches_fence,
+)
+from .audio_prepare import (
+    AudioEpochPreparation,
+    AudioPreparationQualification,
+    preparation_matches,
+    validate_prepare_arguments,
+    worker_spec_revision,
+)
 from .models import (
     JobEventRecord,
     JobRecord,
@@ -611,6 +625,312 @@ class PostgresControlRepository:
             "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
         ).fetchone()
 
+    @staticmethod
+    def _assert_audio_epoch_not_fenced(
+        connection: Any, worker_id: str, runtime_instance_epoch: str | None
+    ) -> None:
+        prepared = connection.execute(
+            "SELECT 1 FROM audio_epoch_preparations WHERE worker_id = %s LIMIT 1",
+            (worker_id,),
+        ).fetchone()
+        if prepared is not None:
+            raise ConflictError("audio epoch is not active")
+        if runtime_instance_epoch is None:
+            return
+        row = connection.execute(
+            """SELECT 1 FROM audio_epoch_fences
+               WHERE worker_id = %s AND runtime_instance_epoch = %s""",
+            (worker_id, runtime_instance_epoch),
+        ).fetchone()
+        if row is not None:
+            raise ConflictError("audio epoch is fenced")
+
+    def store_audio_preparation_qualification(
+        self, qualification: AudioPreparationQualification
+    ) -> AudioPreparationQualification:
+        try:
+            validated = AudioPreparationQualification.from_dict(qualification.to_dict())
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("invalid audio preparation qualification") from exc
+        with self._transaction() as connection:
+            worker = connection.execute(
+                "SELECT id FROM workers WHERE id = %s FOR UPDATE",
+                (validated.worker_id,),
+            ).fetchone()
+            if worker is None:
+                raise NotFoundError("worker not found")
+            connection.execute(
+                """INSERT INTO audio_preparation_qualifications
+                       (qualification_revision, worker_id, body)
+                   VALUES (%s, %s, %s) ON CONFLICT DO NOTHING""",
+                (validated.qualification_revision, validated.worker_id,
+                 _json(validated.to_dict())),
+            )
+            row = connection.execute(
+                """SELECT qualification_revision, worker_id, body
+                   FROM audio_preparation_qualifications
+                   WHERE qualification_revision = %s""",
+                (validated.qualification_revision,),
+            ).fetchone()
+            try:
+                stored = AudioPreparationQualification.from_dict(row["body"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ConflictError("audio preparation qualification conflict") from exc
+            if (row["worker_id"] != validated.worker_id
+                    or row["qualification_revision"] != validated.qualification_revision
+                    or stored != validated):
+                raise ConflictError("audio preparation qualification conflict")
+            return stored
+
+    def revoke_audio_preparation_qualification(
+        self, qualification_revision: str, *, now: datetime | None = None
+    ) -> None:
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT worker_id FROM audio_preparation_qualifications WHERE qualification_revision = %s",
+                (qualification_revision,),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("audio preparation qualification not found")
+            worker_id = row["worker_id"]
+            worker = connection.execute(
+                "SELECT id FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
+            ).fetchone()
+            if worker is None:
+                raise NotFoundError("audio preparation qualification not found")
+            exists = connection.execute(
+                "SELECT 1 FROM audio_preparation_qualifications WHERE qualification_revision = %s AND worker_id = %s",
+                (qualification_revision, worker_id),
+            ).fetchone()
+            if exists is None:
+                raise NotFoundError("audio preparation qualification not found")
+            timestamp = _aware(now) if now is not None else connection.execute(
+                "SELECT clock_timestamp() AS ts"
+            ).fetchone()["ts"]
+            connection.execute(
+                """INSERT INTO audio_preparation_qualification_revocations
+                       (qualification_revision, revoked_at)
+                   VALUES (%s, %s) ON CONFLICT DO NOTHING""",
+                (qualification_revision, timestamp),
+            )
+
+    def prepare_audio_epoch(
+        self, worker_id: str, runtime_instance_epoch: str, *,
+        qualification_revision: str, expected_intent_revision: int,
+        prepare_request_id: str, ttl_seconds: int = 60,
+        now: datetime | None = None,
+    ) -> AudioEpochPreparation:
+        validate_prepare_arguments(
+            worker_id, runtime_instance_epoch, qualification_revision,
+            expected_intent_revision, prepare_request_id, ttl_seconds,
+        )
+        with self._transaction() as connection:
+            worker_row = connection.execute(
+                "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
+            ).fetchone()
+            if worker_row is None:
+                raise NotFoundError("worker not found")
+            timestamp = _aware(now) if now is not None else connection.execute(
+                "SELECT clock_timestamp() AS ts"
+            ).fetchone()["ts"]
+            qualification_row = connection.execute(
+                """SELECT qualification_revision, worker_id, body,
+                          NOT EXISTS (SELECT 1 FROM audio_preparation_qualification_revocations r
+                                      WHERE r.qualification_revision = q.qualification_revision) AS active
+                   FROM audio_preparation_qualifications q
+                   WHERE qualification_revision = %s""",
+                (qualification_revision,),
+            ).fetchone()
+            try:
+                qualification = AudioPreparationQualification.from_dict(
+                    qualification_row["body"]
+                )
+            except (TypeError, ValueError, KeyError) as exc:
+                raise ConflictError("audio epoch preparation rejected") from exc
+            if (qualification_row["worker_id"] != worker_id
+                    or qualification.qualification_revision != qualification_revision
+                    or not qualification.reviewed
+                    or not qualification_row["active"]
+                    or qualification.issued_at > timestamp
+                    or qualification.expires_at <= timestamp):
+                raise ConflictError("audio epoch preparation rejected")
+            worker = self._worker(worker_row)
+            if (not worker_matches_fence(
+                    worker, worker.serving.runtime_instance.epoch if worker.serving else "",
+                    qualification.deployment_revision,
+                    qualification.serving_contract_revision)
+                    or worker_spec_revision(worker) != qualification.worker_spec_revision):
+                raise ConflictError("audio epoch preparation rejected")
+            if worker.state is not WorkerState.OFFLINE or worker.active_jobs:
+                raise ConflictError("audio epoch preparation rejected")
+            running = connection.execute(
+                "SELECT 1 FROM jobs WHERE status = 'running' AND assigned_worker_id = %s LIMIT 1",
+                (worker_id,),
+            ).fetchone()
+            if running is not None:
+                raise ConflictError("audio epoch preparation rejected")
+            if worker.serving is not None and runtime_instance_epoch == worker.serving.runtime_instance.epoch:
+                raise ConflictError("audio epoch preparation rejected")
+            claimed = connection.execute(
+                """SELECT 1 FROM jobs WHERE assigned_worker_id = %s
+                   AND claimed_runtime_instance_epoch = %s LIMIT 1""",
+                (worker_id, runtime_instance_epoch),
+            ).fetchone()
+            if claimed is not None:
+                raise ConflictError("audio epoch preparation rejected")
+            existing = connection.execute(
+                """SELECT * FROM audio_epoch_preparations
+                   WHERE worker_id = %s AND runtime_instance_epoch = %s""",
+                (worker_id, runtime_instance_epoch),
+            ).fetchone()
+            if existing is not None:
+                record = AudioEpochPreparation(**existing)
+                latest = connection.execute(
+                    "SELECT max(intent_revision) AS revision FROM audio_epoch_preparations WHERE worker_id = %s",
+                    (worker_id,),
+                ).fetchone()["revision"] or 0
+                if (preparation_matches(record, qualification_revision,
+                        expected_intent_revision, prepare_request_id)
+                        and record.expires_at > timestamp and latest == record.intent_revision):
+                    return record
+                raise ConflictError("audio epoch preparation rejected")
+            latest = connection.execute(
+                "SELECT max(intent_revision) AS revision FROM audio_epoch_preparations WHERE worker_id = %s",
+                (worker_id,),
+            ).fetchone()["revision"] or 0
+            if expected_intent_revision != latest:
+                raise ConflictError("audio epoch preparation rejected")
+            prior = connection.execute(
+                """SELECT 1 FROM audio_epoch_preparations p
+                   WHERE p.worker_id = %s AND p.expires_at > %s
+                     AND NOT EXISTS (SELECT 1 FROM audio_preparation_qualification_revocations r
+                                     WHERE r.qualification_revision = p.qualification_revision)
+                   LIMIT 1""", (worker_id, timestamp)
+            ).fetchone()
+            if prior is not None:
+                raise ConflictError("audio epoch preparation rejected")
+            expires = min(qualification.expires_at, timestamp + timedelta(seconds=ttl_seconds))
+            connection.execute(
+                """INSERT INTO audio_epoch_preparations
+                   (worker_id, runtime_instance_epoch, qualification_revision,
+                    deployment_revision, serving_contract_revision, prepare_request_id,
+                    expected_intent_revision, intent_revision, prepared_at, expires_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (worker_id, runtime_instance_epoch, qualification_revision,
+                 qualification.deployment_revision, qualification.serving_contract_revision,
+                 prepare_request_id, expected_intent_revision,
+                 expected_intent_revision + 1, timestamp, expires),
+            )
+            return AudioEpochPreparation(
+                worker_id, runtime_instance_epoch, qualification_revision,
+                qualification.deployment_revision, qualification.serving_contract_revision,
+                prepare_request_id, expected_intent_revision,
+                expected_intent_revision + 1, timestamp, expires,
+            )
+
+    def get_audio_epoch_preparation(
+        self, worker_id: str, runtime_instance_epoch: str
+    ) -> AudioEpochPreparation:
+        validate_prepare_arguments(
+            worker_id, runtime_instance_epoch, "0" * 64, 0,
+            "00000000-0000-0000-0000-000000000001", 1,
+        )
+        with self._connection() as connection:
+            row = connection.execute(
+                """SELECT * FROM audio_epoch_preparations
+                   WHERE worker_id = %s AND runtime_instance_epoch = %s""",
+                (worker_id, runtime_instance_epoch),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("audio epoch preparation not found")
+        return AudioEpochPreparation(**row)
+
+    def fence_audio_epoch(
+        self,
+        worker_id: str,
+        runtime_instance_epoch: str,
+        *,
+        expected_deployment_revision: str,
+        expected_serving_contract_revision: str,
+        fence_request_id: str,
+        now: datetime | None = None,
+    ) -> AudioEpochFence:
+        validate_fence_arguments(
+            worker_id, runtime_instance_epoch, expected_deployment_revision,
+            expected_serving_contract_revision, fence_request_id,
+        )
+        timestamp = _aware(now)
+        with self._transaction() as connection:
+            worker_row = connection.execute(
+                "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
+            ).fetchone()
+            if worker_row is None:
+                raise NotFoundError("worker not found")
+
+            existing = connection.execute(
+                """SELECT * FROM audio_epoch_fences
+                   WHERE worker_id = %s AND runtime_instance_epoch = %s""",
+                (worker_id, runtime_instance_epoch),
+            ).fetchone()
+            if existing is not None:
+                record = AudioEpochFence(**existing)
+                if fence_matches(
+                    record,
+                    expected_deployment_revision=expected_deployment_revision,
+                    expected_serving_contract_revision=expected_serving_contract_revision,
+                    fence_request_id=fence_request_id,
+                ):
+                    return record
+                raise ConflictError("audio epoch fence conflict")
+
+            worker = self._worker(worker_row)
+            if not worker_matches_fence(
+                worker, runtime_instance_epoch, expected_deployment_revision,
+                expected_serving_contract_revision,
+            ):
+                raise ConflictError("audio epoch fence conflict")
+            connection.execute(
+                """INSERT INTO audio_epoch_fences (
+                       worker_id, runtime_instance_epoch, deployment_revision,
+                       serving_contract_revision, fence_request_id, fenced_at
+                   ) VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT DO NOTHING""",
+                (
+                    worker_id, runtime_instance_epoch, expected_deployment_revision,
+                    expected_serving_contract_revision, fence_request_id, timestamp,
+                ),
+            )
+            row = connection.execute(
+                """SELECT * FROM audio_epoch_fences
+                   WHERE worker_id = %s AND runtime_instance_epoch = %s""",
+                (worker_id, runtime_instance_epoch),
+            ).fetchone()
+            if row is None:
+                raise ConflictError("audio epoch fence conflict")
+            record = AudioEpochFence(**row)
+            if not fence_matches(
+                record,
+                expected_deployment_revision=expected_deployment_revision,
+                expected_serving_contract_revision=expected_serving_contract_revision,
+                fence_request_id=fence_request_id,
+            ):
+                raise ConflictError("audio epoch fence conflict")
+            return record
+
+    def get_audio_epoch_fence(
+        self, worker_id: str, runtime_instance_epoch: str
+    ) -> AudioEpochFence:
+        validate_fence_lookup(worker_id, runtime_instance_epoch)
+        with self._connection() as connection:
+            row = connection.execute(
+                """SELECT * FROM audio_epoch_fences
+                   WHERE worker_id = %s AND runtime_instance_epoch = %s""",
+                (worker_id, runtime_instance_epoch),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("audio epoch fence not found")
+        return AudioEpochFence(**row)
+
     def _gpu_overlap(
         self,
         connection: Any,
@@ -649,6 +969,27 @@ class PostgresControlRepository:
             existing = self._lock_worker_ownership(
                 connection, spec.worker_id, spec.gpu_uuids
             )
+            proposed_epoch = (
+                None if registration.serving is None
+                else registration.serving.runtime_instance.epoch
+            )
+            preparation_history = connection.execute(
+                "SELECT 1 FROM audio_epoch_preparations WHERE worker_id = %s LIMIT 1",
+                (spec.worker_id,),
+            ).fetchone()
+            if preparation_history is not None:
+                raise ConflictError("audio epoch is not active")
+            if proposed_epoch is None:
+                history = connection.execute(
+                    "SELECT 1 FROM audio_epoch_fences WHERE worker_id = %s LIMIT 1",
+                    (spec.worker_id,),
+                ).fetchone()
+                if history is not None:
+                    raise ConflictError("audio epoch is fenced")
+            else:
+                self._assert_audio_epoch_not_fenced(
+                    connection, spec.worker_id, proposed_epoch
+                )
             if existing is not None:
                 current = self._worker(existing)
                 if recovery:
@@ -797,6 +1138,9 @@ class PostgresControlRepository:
                 raise NotFoundError(f"worker not found: {worker_id}")
             current = self._worker(current_row)
             _assert_worker_epoch(current, runtime_instance_epoch)
+            self._assert_audio_epoch_not_fenced(
+                connection, worker_id, runtime_instance_epoch
+            )
             if state is not WorkerState.OFFLINE:
                 conflict = self._gpu_overlap(
                     connection,
@@ -885,6 +1229,9 @@ class PostgresControlRepository:
                 raise NotFoundError(f"worker not found: {worker_id}")
             current = self._worker(worker_row)
             _assert_worker_epoch(current, heartbeat.runtime_instance_epoch)
+            self._assert_audio_epoch_not_fenced(
+                connection, worker_id, heartbeat.runtime_instance_epoch
+            )
             if current.state is WorkerState.OFFLINE and heartbeat.state in {
                 WorkerState.ONLINE, WorkerState.DRAINING,
             }:
@@ -1045,10 +1392,19 @@ class PostgresControlRepository:
                 cutoff = timestamp - timedelta(seconds=self.worker_ttl_seconds)
                 candidate_rows = connection.execute(
                     """
-                    SELECT * FROM workers
-                    WHERE state = 'online'
-                      AND last_seen_at >= %s
-                      AND capabilities ? %s
+                    SELECT w.* FROM workers AS w
+                    WHERE w.state = 'online'
+                      AND w.last_seen_at >= %s
+                      AND w.capabilities ? %s
+                      AND NOT EXISTS (
+                          SELECT 1 FROM audio_epoch_fences AS f
+                          WHERE f.worker_id = w.id
+                            AND f.runtime_instance_epoch = w.serving #>> '{runtime_instance,epoch}'
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM audio_epoch_preparations AS p
+                          WHERE p.worker_id = w.id
+                      )
                     """,
                     (cutoff, submission.capability),
                 ).fetchall()
@@ -1159,9 +1515,12 @@ class PostgresControlRepository:
             if worker_row is None:
                 raise ConflictError("audio artifact authority rejected")
             try:
+                self._assert_audio_epoch_not_fenced(
+                    connection, worker_id, runtime_instance_epoch
+                )
                 job = self._job(job_row)
                 worker = self._worker(worker_row)
-            except (AttributeError, KeyError, TypeError, ValueError):
+            except (AttributeError, KeyError, TypeError, ValueError, ConflictError):
                 raise ConflictError("audio artifact authority rejected") from None
             _assert_audio_artifact_attempt(
                 job, worker, job_id=job_id, worker_id=worker_id, attempt=attempt,
@@ -1217,6 +1576,14 @@ class PostgresControlRepository:
                 lease_token=lease_token,
                 runtime_instance_epoch=runtime_instance_epoch,
                 now=timestamp,
+            )
+            worker_row = connection.execute(
+                "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
+            ).fetchone()
+            if worker_row is None:
+                raise ConflictError("audio artifact authority rejected")
+            self._assert_audio_epoch_not_fenced(
+                connection, worker_id, runtime_instance_epoch
             )
             claimed_epoch = job_row.get("claimed_runtime_instance_epoch")
             if runtime_instance_epoch != claimed_epoch:
@@ -1314,6 +1681,9 @@ class PostgresControlRepository:
                 raise NotFoundError(f"worker not found: {worker_id}")
             worker = self._worker(worker_row)
             _assert_worker_epoch(worker, runtime_instance_epoch)
+            self._assert_audio_epoch_not_fenced(
+                connection, worker_id, runtime_instance_epoch
+            )
             if worker.last_seen_at < cutoff:
                 connection.execute(
                     """
@@ -1448,6 +1818,9 @@ class PostgresControlRepository:
                 raise NotFoundError(f"worker not found: {worker_id}")
             locked_worker = self._worker(locked_worker_row)
             _assert_worker_epoch(locked_worker, runtime_instance_epoch)
+            self._assert_audio_epoch_not_fenced(
+                connection, worker_id, runtime_instance_epoch
+            )
             if (
                 locked_worker.last_seen_at < cutoff
                 or locked_worker.state is not WorkerState.ONLINE
@@ -1589,6 +1962,14 @@ class PostgresControlRepository:
                 runtime_instance_epoch=runtime_instance_epoch,
                 now=timestamp,
             )
+            worker_row = connection.execute(
+                "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
+            ).fetchone()
+            if worker_row is None:
+                raise ConflictError(f"job {job_id} is assigned to another worker")
+            self._assert_audio_epoch_not_fenced(
+                connection, worker_id, runtime_instance_epoch
+            )
             updated = connection.execute(
                 """
                 UPDATE jobs
@@ -1637,6 +2018,14 @@ class PostgresControlRepository:
                 lease_token=lease_token,
                 runtime_instance_epoch=runtime_instance_epoch,
                 now=timestamp,
+            )
+            worker_row = connection.execute(
+                "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
+            ).fetchone()
+            if worker_row is None:
+                raise ConflictError(f"job {job_id} is assigned to another worker")
+            self._assert_audio_epoch_not_fenced(
+                connection, worker_id, runtime_instance_epoch
             )
             should_retry = (
                 retryable

@@ -8,6 +8,7 @@ PostgreSQL backend in postgres.py.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -32,6 +33,20 @@ from .models import (
     WorkerRegistration,
     WorkerState,
     utc_now,
+)
+from .audio_epoch import (
+    AudioEpochFence,
+    fence_matches,
+    validate_fence_arguments,
+    validate_fence_lookup,
+    worker_matches_fence,
+)
+from .audio_prepare import (
+    AudioEpochPreparation,
+    AudioPreparationQualification,
+    preparation_matches,
+    validate_prepare_arguments,
+    worker_spec_revision,
 )
 
 
@@ -75,6 +90,34 @@ class StorageUnavailable(RepositoryError):
 
 
 class ControlRepository(Protocol):
+    def store_audio_preparation_qualification(
+        self, qualification: AudioPreparationQualification,
+    ) -> AudioPreparationQualification: ...
+
+    def revoke_audio_preparation_qualification(
+        self, qualification_revision: str, *, now: datetime | None = None,
+    ) -> None: ...
+
+    def prepare_audio_epoch(
+        self, worker_id: str, runtime_instance_epoch: str, *,
+        qualification_revision: str, expected_intent_revision: int,
+        prepare_request_id: str, ttl_seconds: int = 60, now: datetime | None = None,
+    ) -> AudioEpochPreparation: ...
+
+    def get_audio_epoch_preparation(
+        self, worker_id: str, runtime_instance_epoch: str,
+    ) -> AudioEpochPreparation: ...
+
+    def fence_audio_epoch(
+        self, worker_id: str, runtime_instance_epoch: str, *,
+        expected_deployment_revision: str, expected_serving_contract_revision: str,
+        fence_request_id: str, now: datetime | None = None,
+    ) -> AudioEpochFence: ...
+
+    def get_audio_epoch_fence(
+        self, worker_id: str, runtime_instance_epoch: str,
+    ) -> AudioEpochFence: ...
+
     def check_storage(self) -> None: ...
 
     def register_worker(
@@ -345,11 +388,184 @@ class InMemoryControlRepository:
         self._events: dict[str, list[JobEventRecord]] = {}
         self._event_bytes: dict[str, int] = {}
         self._idempotency: dict[str, str] = {}
+        self._audio_epoch_fences: dict[tuple[str, str], AudioEpochFence] = {}
+        self._audio_preparation_qualifications: dict[str, AudioPreparationQualification] = {}
+        self._revoked_audio_qualifications: set[str] = set()
+        self._audio_epoch_preparations: dict[tuple[str, str], AudioEpochPreparation] = {}
         self._sequence = 0
         self._lock = RLock()
 
     def check_storage(self) -> None:
         return None
+
+    def _assert_audio_epoch_not_fenced(self, worker_id: str, epoch: str | None) -> None:
+        if any(key[0] == worker_id for key in self._audio_epoch_preparations):
+            raise ConflictError("audio epoch is not active")
+        if epoch is not None and (worker_id, epoch) in self._audio_epoch_fences:
+            raise ConflictError("audio epoch is fenced")
+
+    def store_audio_preparation_qualification(
+        self, qualification: AudioPreparationQualification,
+    ) -> AudioPreparationQualification:
+        if not isinstance(qualification, AudioPreparationQualification):
+            raise ValueError("invalid audio epoch preparation")
+        record = AudioPreparationQualification.from_dict(qualification.to_dict())
+        revision = record.qualification_revision
+        with self._lock:
+            if record.worker_id not in self._workers:
+                raise NotFoundError("worker not found")
+            prior = self._audio_preparation_qualifications.get(revision)
+            if prior is not None:
+                if prior.to_dict() == record.to_dict():
+                    return prior
+                raise ConflictError("audio preparation qualification conflict")
+            self._audio_preparation_qualifications[revision] = record
+            return record
+
+    def revoke_audio_preparation_qualification(
+        self, qualification_revision: str, *, now: datetime | None = None,
+    ) -> None:
+        del now
+        if type(qualification_revision) is not str or not re.fullmatch(
+            r"[0-9a-f]{64}", qualification_revision
+        ):
+            raise ValueError("invalid audio epoch preparation")
+        with self._lock:
+            if qualification_revision not in self._audio_preparation_qualifications:
+                raise NotFoundError("audio preparation qualification not found")
+            self._revoked_audio_qualifications.add(qualification_revision)
+
+    def prepare_audio_epoch(
+        self, worker_id: str, runtime_instance_epoch: str, *,
+        qualification_revision: str, expected_intent_revision: int,
+        prepare_request_id: str, ttl_seconds: int = 60, now: datetime | None = None,
+    ) -> AudioEpochPreparation:
+        validate_prepare_arguments(
+            worker_id, runtime_instance_epoch, qualification_revision,
+            expected_intent_revision, prepare_request_id, ttl_seconds,
+        )
+        key = (worker_id, runtime_instance_epoch)
+        with self._lock:
+            timestamp = _aware(now)
+            worker = self._workers.get(worker_id)
+            if worker is None:
+                raise NotFoundError("worker not found")
+            qualification = self._audio_preparation_qualifications.get(qualification_revision)
+            if (qualification is None or qualification.worker_id != worker_id
+                    or not qualification.reviewed
+                    or qualification_revision in self._revoked_audio_qualifications
+                    or not qualification.issued_at <= timestamp < qualification.expires_at):
+                raise ConflictError("audio epoch preparation rejected")
+            advertisement = worker.serving
+            audio_contracts = [] if advertisement is None else [
+                item for item in advertisement.contracts
+                if item.capability in {"audio.synthesize", "audio.transcribe"}
+            ]
+            if (advertisement is None or len(advertisement.contracts) != 1
+                    or len(audio_contracts) != 1
+                    or advertisement.deployment_revision != qualification.deployment_revision
+                    or audio_contracts[0].revision != qualification.serving_contract_revision
+                    or worker_spec_revision(worker) != qualification.worker_spec_revision):
+                raise ConflictError("audio epoch preparation rejected")
+            if (worker.state is not WorkerState.OFFLINE or worker.active_jobs != 0
+                    or self._active_job_count(worker_id) != 0
+                    or any(job.status is JobStatus.RUNNING and job.assigned_worker_id == worker_id
+                           for job in self._jobs.values())):
+                raise ConflictError("audio epoch preparation rejected")
+            if key in self._audio_epoch_fences:
+                raise ConflictError("audio epoch preparation rejected")
+            existing = self._audio_epoch_preparations.get(key)
+            history = [item for (wid, _), item in self._audio_epoch_preparations.items()
+                       if wid == worker_id]
+            max_intent = max((item.intent_revision for item in history), default=0)
+            if existing is not None:
+                if (preparation_matches(existing, qualification_revision,
+                                        expected_intent_revision, prepare_request_id)
+                        and existing.expires_at > timestamp
+                        and max_intent == existing.intent_revision):
+                    return existing
+                raise ConflictError("audio epoch preparation rejected")
+            if (runtime_instance_epoch == (
+                    None if worker.serving is None else worker.serving.runtime_instance.epoch
+                )
+                    or any(job.assigned_worker_id == worker_id
+                           and job.claimed_runtime_instance_epoch == runtime_instance_epoch
+                           for job in self._jobs.values())
+                    or expected_intent_revision != max_intent
+                    or any(item.prepare_request_id == prepare_request_id
+                           for item in self._audio_epoch_preparations.values())
+                    or any(item.expires_at > timestamp
+                           and item.qualification_revision not in self._revoked_audio_qualifications
+                           for item in history)):
+                raise ConflictError("audio epoch preparation rejected")
+            record = AudioEpochPreparation(
+                worker_id, runtime_instance_epoch, qualification_revision,
+                advertisement.deployment_revision, audio_contracts[0].revision,
+                prepare_request_id, expected_intent_revision, expected_intent_revision + 1,
+                timestamp, min(qualification.expires_at, timestamp + timedelta(seconds=ttl_seconds)),
+            )
+            self._audio_epoch_preparations[key] = record
+            return record
+
+    def get_audio_epoch_preparation(
+        self, worker_id: str, runtime_instance_epoch: str,
+    ) -> AudioEpochPreparation:
+        validate_prepare_arguments(
+            worker_id, runtime_instance_epoch, "0" * 64, 0, str(uuid4()), 1
+        )
+        with self._lock:
+            try:
+                return self._audio_epoch_preparations[(worker_id, runtime_instance_epoch)]
+            except KeyError as exc:
+                raise NotFoundError("audio epoch preparation not found") from exc
+
+    def fence_audio_epoch(
+        self, worker_id: str, runtime_instance_epoch: str, *,
+        expected_deployment_revision: str, expected_serving_contract_revision: str,
+        fence_request_id: str, now: datetime | None = None,
+    ) -> AudioEpochFence:
+        validate_fence_arguments(
+            worker_id, runtime_instance_epoch, expected_deployment_revision,
+            expected_serving_contract_revision, fence_request_id,
+        )
+        key = (worker_id, runtime_instance_epoch)
+        with self._lock:
+            existing = self._audio_epoch_fences.get(key)
+            if existing is not None:
+                if fence_matches(
+                    existing,
+                    expected_deployment_revision=expected_deployment_revision,
+                    expected_serving_contract_revision=expected_serving_contract_revision,
+                    fence_request_id=fence_request_id,
+                ):
+                    return existing
+                raise ConflictError("audio epoch fence conflict")
+            if any(item.fence_request_id == fence_request_id for item in self._audio_epoch_fences.values()):
+                raise ConflictError("audio epoch fence conflict")
+            worker = self._workers.get(worker_id)
+            if worker is None:
+                raise NotFoundError("worker not found")
+            if not worker_matches_fence(
+                worker, runtime_instance_epoch, expected_deployment_revision,
+                expected_serving_contract_revision,
+            ):
+                raise ConflictError("audio epoch fence conflict")
+            record = AudioEpochFence(
+                worker_id, runtime_instance_epoch, expected_deployment_revision,
+                expected_serving_contract_revision, fence_request_id, _aware(now),
+            )
+            self._audio_epoch_fences[key] = record
+            return record
+
+    def get_audio_epoch_fence(
+        self, worker_id: str, runtime_instance_epoch: str,
+    ) -> AudioEpochFence:
+        validate_fence_lookup(worker_id, runtime_instance_epoch)
+        with self._lock:
+            try:
+                return self._audio_epoch_fences[(worker_id, runtime_instance_epoch)]
+            except KeyError as exc:
+                raise NotFoundError("audio epoch fence not found") from exc
 
     def _authorize_audio_artifact_attempt(
         self, job_id: str, *, worker_id: str, attempt: int, lease_token: str,
@@ -364,6 +580,10 @@ class InMemoryControlRepository:
             job_id, worker_id, attempt, lease_token, runtime_instance_epoch
         )
         with self._lock:
+            try:
+                self._assert_audio_epoch_not_fenced(worker_id, runtime_instance_epoch)
+            except ConflictError:
+                raise ConflictError("audio artifact authority rejected") from None
             _assert_audio_artifact_attempt(
                 self._jobs.get(job_id), self._workers.get(worker_id),
                 job_id=job_id, worker_id=worker_id, attempt=attempt,
@@ -402,6 +622,17 @@ class InMemoryControlRepository:
             raise ConflictError("Worker cannot supply Control-owned offline reason")
         with self._lock:
             existing = self._workers.get(registration.spec.worker_id)
+            epoch = (
+                None if registration.serving is None
+                else registration.serving.runtime_instance.epoch
+            )
+            self._assert_audio_epoch_not_fenced(registration.spec.worker_id, epoch)
+            if any(key[0] == registration.spec.worker_id for key in self._audio_epoch_preparations):
+                raise ConflictError("audio epoch is not active")
+            if epoch is None and any(
+                key[0] == registration.spec.worker_id for key in self._audio_epoch_fences
+            ):
+                raise ConflictError("audio epoch is fenced")
             if recovery:
                 if (existing is None or existing.state is not WorkerState.OFFLINE
                     or existing.metadata.get(OFFLINE_REASON_KEY) != RECOVERABLE_OFFLINE_REASON):
@@ -466,6 +697,10 @@ class InMemoryControlRepository:
         with self._lock:
             current = self.get_worker(worker_id)
             _assert_worker_epoch(current, runtime_instance_epoch)
+            self._assert_audio_epoch_not_fenced(
+                worker_id,
+                None if current.serving is None else current.serving.runtime_instance.epoch,
+            )
             if state is not WorkerState.OFFLINE:
                 registration = WorkerRegistration(
                     spec=current.spec,
@@ -499,6 +734,7 @@ class InMemoryControlRepository:
         with self._lock:
             current = self.get_worker(worker_id)
             _assert_worker_epoch(current, heartbeat.runtime_instance_epoch)
+            self._assert_audio_epoch_not_fenced(worker_id, heartbeat.runtime_instance_epoch)
             if current.state is WorkerState.OFFLINE and heartbeat.state in {
                 WorkerState.ONLINE, WorkerState.DRAINING,
             }:
@@ -636,6 +872,12 @@ class InMemoryControlRepository:
                     worker
                     for worker in self._workers.values()
                     if worker.state is WorkerState.ONLINE
+                    and not any(key[0] == worker.worker_id for key in self._audio_epoch_preparations)
+                    and (
+                        worker.serving is None
+                        or (worker.worker_id, worker.serving.runtime_instance.epoch)
+                        not in self._audio_epoch_fences
+                    )
                     and worker.last_seen_at >= cutoff
                     and submission.capability in worker.spec.capabilities
                     and worker_matches(worker.spec, submission.requirements)
@@ -779,6 +1021,7 @@ class InMemoryControlRepository:
     ) -> JobRecord | None:
         timestamp = _aware(now)
         with self._lock:
+            self._assert_audio_epoch_not_fenced(worker_id, runtime_instance_epoch)
             worker = self.get_worker(worker_id)
             _assert_worker_epoch(worker, runtime_instance_epoch)
             if timestamp - worker.last_seen_at > timedelta(seconds=self.worker_ttl_seconds):
@@ -850,6 +1093,9 @@ class InMemoryControlRepository:
         runtime_instance_epoch: str | None,
         now: datetime,
     ) -> None:
+        self._assert_audio_epoch_not_fenced(
+            worker_id, job.claimed_runtime_instance_epoch
+        )
         if job.status is not JobStatus.RUNNING:
             raise ConflictError(f"job {job.job_id} is not running")
         if job.assigned_worker_id != worker_id:

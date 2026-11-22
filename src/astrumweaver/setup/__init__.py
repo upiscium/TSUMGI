@@ -50,6 +50,10 @@ from .planner import (
     build_runtime_setup_plan,
 )
 from .systemd import SystemdSetupDriver, create_systemd_driver
+from .voicevox_staging import (
+    VoicevoxStagingDriver, VoicevoxStagingError, VoicevoxStagingRollbackError,
+    build_voicevox_staging_plan,
+)
 
 __all__ = [
     "ActionInspection",
@@ -80,9 +84,13 @@ __all__ = [
     "SetupPlanningError",
     "SetupPreview",
     "SystemdSetupDriver",
+    "VoicevoxStagingDriver",
+    "VoicevoxStagingError",
+    "VoicevoxStagingRollbackError",
     "apply_plan",
     "build_runtime_release_plan",
     "build_runtime_setup_plan",
+    "build_voicevox_staging_plan",
     "create_systemd_driver",
     "discover_local_gpus",
     "discover_local_host",

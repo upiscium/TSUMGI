@@ -28,6 +28,7 @@ from ..runtime.providers.dual_llama_cpp import (
 )
 from ..runtime.providers.voicevox import VOICEVOX_PROVIDER_ID
 from ..runtime.providers.style_bert_vits2 import STYLE_BERT_VITS2_PROVIDER_ID
+from ..runtime.providers.parakeet_manifest import PROVIDER_ID as PARAKEET_PROVIDER_ID
 from ..runtime import (
     RuntimeDeploymentSpec,
     RuntimeHealth,
@@ -52,6 +53,7 @@ from .runtime import (
 
 
 _OWNED_CPU_SPEECH = frozenset({VOICEVOX_PROVIDER_ID, STYLE_BERT_VITS2_PROVIDER_ID})
+_OWNED_AUDIO = _OWNED_CPU_SPEECH | {PARAKEET_PROVIDER_ID}
 
 
 def _load_toml(path: str) -> dict[str, Any]:
@@ -95,7 +97,7 @@ def _load_runtime_deployment(path: str) -> RuntimeDeploymentSpec:
         raise RuntimeError("runtime deployment manifest must contain an object")
     try:
         deployment = RuntimeDeploymentSpec.from_dict(value)
-        if deployment.provider_id in _OWNED_CPU_SPEECH and (
+        if deployment.provider_id in _OWNED_AUDIO and (
             duplicate or not _canonical_subset(value, deployment.to_dict())
         ):
             raise ValueError("ambiguous owned speech runtime declaration")
@@ -114,7 +116,7 @@ def _load_serving_deployment(path: str) -> ServingDeploymentDeclaration:
         raise RuntimeError("serving deployment manifest must contain an object")
     try:
         serving = ServingDeploymentDeclaration.from_dict(value)
-        if serving.deployment.provider_id in _OWNED_CPU_SPEECH and (
+        if serving.deployment.provider_id in _OWNED_AUDIO and (
             duplicate or value.keys() - {"schema_version", "deployment", "contracts"}
             or any(type(item) is not dict or item.keys() != {"contract", "serving_contract_revision"}
                    for item in value["contracts"])
@@ -360,6 +362,23 @@ def _require_owned_speech_worker(deployment, declaration, spec, section) -> None
         raise RuntimeError("owned speech requires matching manifests and a dedicated loopback CPU Worker")
 
 
+def _require_parakeet_worker(deployment, declaration, spec, section, runtime_section) -> None:
+    provider = getattr(deployment, "provider_id", None)
+    serving_id = getattr(getattr(declaration, "deployment", None), "provider_id", None)
+    if PARAKEET_PROVIDER_ID not in (provider, serving_id):
+        return
+    local = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", str(section["control_url"]))
+    slots = section.get("max_concurrency", 1)
+    if (provider != serving_id or spec.capabilities != {"audio.transcribe"}
+            or spec.resources.gpu_count != 1 or len(spec.gpu_uuids) != 1
+            or type(slots) is not int or slots != 1
+            or section.get("gpu_preflight", True) is not True
+            or local is None or int(local[1]) > 65535
+            or section.get("health_host", "127.0.0.1") != "127.0.0.1"
+            or "parakeet_trial" in runtime_section):
+        raise RuntimeError("Parakeet requires matching manifests and a dedicated loopback single-GPU Worker")
+
+
 async def run_worker(
     config_path: str,
     runtime_manifest_path: str | None = None,
@@ -409,6 +428,7 @@ async def run_worker(
     )
     deployment = _load_runtime_deployment(runtime_manifest) if runtime_manifest else None
     _require_owned_speech_worker(deployment, serving_declaration, spec, worker_section)
+    _require_parakeet_worker(deployment, serving_declaration, spec, worker_section, runtime_section)
     _run_gpu_preflight(spec, worker_section)
 
     client = ControlClient(
