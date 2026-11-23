@@ -13,8 +13,9 @@ No real recording or private transcript belongs in this repository.
 Use `audio-stt-178-v1` JSON fixture with explicit `normalization`,
 `segmentation`, and `test_conditions`. Each case contains a private local
 audio reference (kept outside version control), duration, gold transcript,
-unique ID, and tags. At least one case must carry
-`homophone:散歩-vs-3本`, plus a `target` field for each tagged utterance.
+unique ID, and tags. The fixture must contain at least one tagged case whose
+target is `散歩` and at least one whose target is `3本` (both, or it is
+rejected), each tagged `homophone:散歩-vs-3本` with a `target` field.
 Represent two contextual sentences with gold reference text containing the
 distinct target words `散歩` and `3本`; isolated-word-only items are rejected.
 The report scores target hits independently for each target and in aggregate,
@@ -22,7 +23,10 @@ separately from full-utterance exact match. After the fixture's Unicode
 normalization and whitespace removal, only an answer containing the expected
 string and not its alternative earns a hit. An answer containing both
 `散歩` and `3本` counts as a miss, not an excluded case. This checks for the
-strings, not Japanese morphological word boundaries. Include natural conversation,
+strings, not Japanese morphological word boundaries, with one exception that
+matters for the numeral: `3本` preceded by another ASCII digit (`13本`, `23本`)
+is a different count and earns no hit, so a model that gets the number wrong is
+not credited. Include natural conversation,
 numerals, names, noise, pauses, and short/long utterances in the *real*
 curated fixture. The synthetic unit fixture is deliberately not such evidence.
 
@@ -46,9 +50,16 @@ exactly one value per case: `warm_latency_seconds`,
 `failures` and `limitations` arrays when applicable. Missing identity,
 predictions, or measured metrics is an error, not a pass. Support evidence
 must describe what was actually verified; `unknown` is allowed, model-card
-claims alone do not qualify. The harness refuses to overwrite the report and
-creates it with exclusive atomic creation and mode `0600`; the report parent
-must already exist. Fixture size is capped at 4 MiB, results at 32 MiB, cases
+claims alone do not qualify. The harness refuses to overwrite the report. It
+writes a private temporary file and hard-links it into place (atomic, mode
+`0600`); on a file system without hard links it falls back to an exclusive
+create, which still never replaces a file and removes a partial one. The report
+parent must already exist. The report records the SHA-256 of the fixture and of
+the results file it scored. Input files must be regular files (links and
+devices are refused), JSON must not contain `NaN`, `Infinity` or duplicate keys,
+identity fields are capped at 256 characters, support evidence at 4096, and
+`failures` / `limitations` must be lists of at most 100 strings of 2000
+characters. Fixture size is capped at 4 MiB, results at 32 MiB, cases
 at 500, candidates at 8, normalized text at 10,000 characters, and aggregate
 edit-distance work per candidate at 10 million cells. Keep fixture, results,
 and report private: they can contain transcripts, paths, and free-form
@@ -65,7 +76,8 @@ review.
 The fixture fixes Unicode normalization (`NFC`, `NFKC`, or `none`) and whether
 whitespace is removed for exact match and character error rate (CER). CER
 uses normalized characters under that policy. WER preserves whitespace and uses
-whitespace-delimited tokens; `segmentation` must name this rule and WER has
+whitespace-delimited tokens; `segmentation` is a required, non-empty statement
+of the rule the operator used (its content is not checked) and WER has
 limited meaning for unsegmented Japanese. CER and WER are explicitly
 macro-averages of per-utterance rates, not corpus-weighted rates. Exact match
 compares normalized strings under the configured whitespace policy. Warm/cold

@@ -11,6 +11,8 @@ import hashlib
 import json
 import math
 import os
+import re
+import stat
 import sys
 import tempfile
 import unicodedata
@@ -29,12 +31,51 @@ MAX_EDIT_CELLS_PER_CANDIDATE = 10_000_000
 CONTRAST_TARGETS = ("散歩", "3本")
 
 
+# "13本" or "23本" contains the text "3本" but is another count: a model that
+# gets the number wrong must not be credited with the "3本" side of the contrast.
+_CONTRAST_PATTERN = {"散歩": re.compile("散歩"), "3本": re.compile("(?<![0-9])3本")}
+
+
 def _matches_contrast(text: str, target: str) -> bool:
-    return {term for term in CONTRAST_TARGETS if term in text} == {target}
+    return {term for term in CONTRAST_TARGETS if _CONTRAST_PATTERN[term].search(text)} == {target}
 
 
 class AudioStt178Error(ValueError):
     """Invalid or incomplete evaluation input."""
+
+
+MAX_IDENTITY_CHARS = 256
+MAX_EVIDENCE_CHARS = 4096
+MAX_NOTES = 100
+MAX_NOTE_CHARS = 2000
+
+
+def _reject_constant(_name: str) -> Any:
+    raise AudioStt178Error("NaN and Infinity are not valid JSON")
+
+
+def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise AudioStt178Error("duplicate JSON keys are not accepted")
+    return dict(pairs)
+
+
+def strict_json_loads(raw: bytes) -> Any:
+    """JSON without NaN/Infinity or duplicate keys; any malformed input is one error."""
+    try:
+        return json.loads(raw.decode("utf-8"), parse_constant=_reject_constant,
+                          object_pairs_hook=_unique_pairs)
+    except AudioStt178Error:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
+        raise AudioStt178Error("input is not valid JSON") from exc
+
+
+def string_list(value: Any, name: str) -> tuple[str, ...]:
+    if (not isinstance(value, (list, tuple)) or len(value) > MAX_NOTES
+            or not all(isinstance(item, str) and len(item) <= MAX_NOTE_CHARS for item in value)):
+        raise AudioStt178Error(f"{name} must be a short list of strings")
+    return tuple(value)
 
 
 def normalize(text: str, *, form: str = "NFKC", remove_whitespace: bool = True) -> str:
@@ -95,9 +136,9 @@ def percentile(values: Sequence[float], percent: float) -> float:
 def load_fixture(path: Path) -> tuple[dict[str, Any], str]:
     try:
         raw = _read_bounded(path, MAX_FIXTURE_BYTES)
-        fixture = json.loads(raw)
-    except (OSError, json.JSONDecodeError) as exc:
+    except OSError as exc:
         raise AudioStt178Error("fixture could not be loaded") from exc
+    fixture = strict_json_loads(raw)
     if (not isinstance(fixture, dict) or fixture.get("schema_version") != SCHEMA
             or set(fixture) != {"schema_version", "normalization", "segmentation",
                                 "test_conditions", "cases"}):
@@ -147,12 +188,15 @@ def load_fixture(path: Path) -> tuple[dict[str, Any], str]:
             contrast_targets.add(target)
     if contrast_targets != {"散歩", "3本"}:
         raise AudioStt178Error("fixture lacks contextual 散歩 and 3本 target cases")
-    conditions_size = len(json.dumps(fixture["test_conditions"], ensure_ascii=False))
+    try:
+        conditions_size = len(json.dumps(fixture["test_conditions"], ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise AudioStt178Error("test conditions must be plain JSON") from exc
     if conditions_size > 64 * 1024:
         raise AudioStt178Error("test conditions byte bound exceeded")
     # Hash canonical fixture bytes without returning any potentially private text.
     canonical = json.dumps(fixture, sort_keys=True, ensure_ascii=False,
-                           separators=(",", ":")).encode("utf-8")
+                           separators=(",", ":"), allow_nan=False).encode("utf-8")
     return fixture, "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
@@ -189,7 +233,7 @@ def _measured_resource(data: Mapping[str, Any], case_count: int) -> dict[str, An
 
 
 def compare(fixture: Mapping[str, Any], fixture_digest: str,
-            candidates: Sequence[Candidate]) -> dict[str, Any]:
+            candidates: Sequence[Candidate], *, results_digest: str | None = None) -> dict[str, Any]:
     if not candidates or len(candidates) > MAX_CANDIDATES:
         raise AudioStt178Error("at least one candidate is required")
     case_ids = [case["id"] for case in fixture["cases"]]
@@ -202,10 +246,14 @@ def compare(fixture: Mapping[str, Any], fixture_digest: str,
     for candidate in candidates:
         identities = (candidate.name, candidate.model, candidate.release,
                       candidate.quantization, candidate.runtime)
-        if not all(isinstance(x, str) and x.strip() for x in identities):
+        if not all(isinstance(x, str) and x.strip() and len(x) <= MAX_IDENTITY_CHARS
+                   for x in identities):
             raise AudioStt178Error("candidate model/release/quantization/runtime identity is required")
-        if not candidate.support_evidence.strip():
+        if (not isinstance(candidate.support_evidence, str) or not candidate.support_evidence.strip()
+                or len(candidate.support_evidence) > MAX_EVIDENCE_CHARS):
             raise AudioStt178Error("model support evidence must be explicit (unknown is allowed)")
+        string_list(candidate.failures, "failures")
+        string_list(candidate.limitations, "limitations")
         if not isinstance(candidate.predictions, Mapping) or set(candidate.predictions) != set(case_ids):
             raise AudioStt178Error("candidate predictions must cover exactly the fixture cases")
         if any(not isinstance(value, str) or len(value) > MAX_TEXT_CHARS
@@ -290,6 +338,7 @@ def compare(fixture: Mapping[str, Any], fixture_digest: str,
         })
     return {
         "report_version": SCHEMA, "fixture_sha256": fixture_digest,
+        "results_sha256": results_digest,
         "case_count": len(case_ids), "normalization": dict(norm),
         "metric_aggregation": "macro-average per utterance; not corpus-weighted",
         "segmentation": fixture["segmentation"],
@@ -312,27 +361,58 @@ def compare(fixture: Mapping[str, Any], fixture_digest: str,
 
 
 def _read_bounded(path: Path, limit: int) -> bytes:
-    with path.open("rb") as handle:
+    # Operator-chosen paths, still: never follow a link, never block on a FIFO or device.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise AudioStt178Error("input must be a regular file")
         value = handle.read(limit + 1)
     if len(value) > limit:
         raise AudioStt178Error("input byte bound exceeded")
     return value
 
 
+def _fsync_directory(path: Path) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def write_report_exclusive(path: Path, report: Mapping[str, Any]) -> None:
-    """Atomically publish a new local report with mode 0600; never replace one."""
+    """Publish a new local report with mode 0600; never replace one.
+
+    The report is written to a private temporary file and then hard-linked into
+    place, which is atomic and cannot replace an existing file. A file system
+    without hard links gets an exclusive create instead (still never replacing,
+    mode 0600, removed again if the write fails).
+    """
     parent = path.parent
+    try:
+        data = (json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise AudioStt178Error("report could not be created") from exc
     temp_name: str | None = None
     try:
         fd, temp_name = tempfile.mkstemp(prefix=".audio-stt-178-", dir=parent)
         with os.fdopen(fd, "wb") as handle:
             os.fchmod(handle.fileno(), 0o600)
-            handle.write((json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+            handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.link(temp_name, path)
-        os.unlink(temp_name)
-        temp_name = None
+        try:
+            os.link(temp_name, path)
+        except FileExistsError:
+            raise
+        except OSError:
+            _create_exclusive(path, data)
+        _fsync_directory(parent)
     except FileExistsError as exc:
         raise AudioStt178Error("report already exists") from exc
     except OSError as exc:
@@ -340,9 +420,24 @@ def write_report_exclusive(path: Path, report: Mapping[str, Any]) -> None:
     finally:
         if temp_name is not None:
             try:
-                os.unlink(temp_name)
+                os.unlink(temp_name)  # the report already exists; a stray temp file is not a failure
             except OSError:
                 pass
+
+
+def _create_exclusive(path: Path, data: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        try:
+            os.unlink(path)  # we created it, so a partial file is ours to remove
+        except OSError:
+            pass
+        raise
 
 
 def main() -> None:
@@ -354,12 +449,14 @@ def main() -> None:
     args = parser.parse_args()
     try:
         fixture, digest = load_fixture(args.fixture)
-        payload = json.loads(_read_bounded(args.results, MAX_RESULTS_BYTES))
+        raw_results = _read_bounded(args.results, MAX_RESULTS_BYTES)
+        payload = strict_json_loads(raw_results)
         candidates = [Candidate(**{**item, "predictions": item["predictions"],
-                                   "failures": tuple(item.get("failures", ())),
-                                   "limitations": tuple(item.get("limitations", ()))})
+                                   "failures": string_list(item.get("failures", ()), "failures"),
+                                   "limitations": string_list(item.get("limitations", ()), "limitations")})
                       for item in payload["candidates"]]
-        report = compare(fixture, digest, candidates)
+        report = compare(fixture, digest, candidates,
+                         results_digest="sha256:" + hashlib.sha256(raw_results).hexdigest())
         write_report_exclusive(args.report, report)
     except Exception:
         # Exception text may contain local paths, fixture values, or transcripts.
