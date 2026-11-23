@@ -10,7 +10,7 @@ import re
 from uuid import UUID
 
 
-_SHA = re.compile(r"[0-9a-f]{64}\Z")
+_SHA = re.compile(r"sha256:[0-9a-f]{64}\Z")  # the codebase's canonical digest form
 _WORKER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _QUAL_FIELDS = (
     "deployment_revision", "serving_contract_revision", "worker_spec_revision",
@@ -56,7 +56,7 @@ def _parse_time(value: object) -> datetime:
 def worker_spec_revision(worker) -> str:
     from .serde import worker_spec_to_dict
 
-    return hashlib.sha256(_canonical({
+    return "sha256:" + hashlib.sha256(_canonical({
         "spec": worker_spec_to_dict(worker.spec),
         "max_concurrency": worker.max_concurrency,
     }).encode()).hexdigest()
@@ -103,7 +103,7 @@ class AudioPreparationQualification:
 
     @property
     def qualification_revision(self) -> str:
-        return hashlib.sha256(_canonical(self._payload()).encode()).hexdigest()
+        return "sha256:" + hashlib.sha256(_canonical(self._payload()).encode()).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
         return {**self._payload(), "qualification_revision": self.qualification_revision}
@@ -196,6 +196,12 @@ def validate_prepare_arguments(worker_id, epoch, qualification_revision,
             or not 0 <= expected_intent_revision <= _MAX_INT - 2
             or type(ttl_seconds) is not int or not 1 <= ttl_seconds <= 300):
         raise ValueError("invalid audio epoch preparation") from None
+
+
+def validate_prepare_lookup(worker_id, epoch) -> None:
+    validate_prepare_arguments(
+        worker_id, epoch, "sha256:" + "0" * 64, 0, "00000000-0000-4000-8000-000000000000", 1,
+    )
 
 
 def preparation_matches(record: AudioEpochPreparation, qualification_revision: str,

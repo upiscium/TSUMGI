@@ -21,6 +21,7 @@ from ..control.auth import ClientAuthMode
 from ..control.models import WorkerState
 from ..control.worker_auth import WorkerCredentials
 from ..control.audio_epoch import validate_fence_arguments, validate_fence_lookup
+from ..control.audio_prepare import validate_prepare_arguments, validate_prepare_lookup
 from ..control.repository import (
     ConflictError,
     ControlRepository,
@@ -92,6 +93,12 @@ def _unique_fence_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return dict(pairs)
 
 
+def _unique_prepare_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    if len({name for name, _ in pairs}) != len(pairs):
+        raise ValueError("duplicate preparation field")
+    return dict(pairs)
+
+
 def _serving_epoch(body: dict[str, Any]) -> str | None:
     extensions = _extensions(body)
     raw = body.get("runtime_instance_epoch")
@@ -151,6 +158,7 @@ def create_app(
     audio_input_channel: AudioInputChannel | None = None,
     audio_epoch_operator_token: str | None = None,
     worker_credentials: WorkerCredentials | None = None,
+    audio_preparation_ttl_seconds: int | None = None,
 ) -> FastAPI:
     mode = ClientAuthMode(client_auth)
     if audio_output_channel is not None:
@@ -255,6 +263,74 @@ def create_app(
         if target is not None and target != principal:
             raise HTTPException(status_code=403, detail="worker identity mismatch")
         return principal
+
+    if audio_preparation_ttl_seconds is not None:
+        # Preparation is a Worker-owned, non-admitting record. Without separate
+        # per-Worker identities one Worker could prepare another's epoch.
+        if (type(audio_preparation_ttl_seconds) is not int
+                or not 1 <= audio_preparation_ttl_seconds <= 300
+                or worker_credentials is None):
+            raise ValueError("audio epoch preparation requires per-worker credentials and a 1-300 s ttl")
+
+        @app.middleware("http")
+        async def no_store_epoch_preparation(request: Request, call_next):
+            response = await call_next(request)
+            if "/audio-epochs/" in request.url.path and request.url.path.startswith("/v1/workers/"):
+                response.headers["cache-control"] = "no-store"
+            return response
+
+        @app.post(
+            "/v1/workers/{worker_id}/audio-epochs/{epoch}/prepare",
+            dependencies=[Depends(require_worker)],
+        )
+        async def prepare_audio_epoch(worker_id: str, epoch: str, request: Request) -> JSONResponse:
+            # Records an intent only: it admits no Worker, epoch, claim or activation.
+            # Bearer-only (no ambient browser credentials), like the other Worker
+            # routes, so the body is judged on its content, not its content type.
+            try:
+                async with asyncio.timeout(5):
+                    raw = await _bounded_audio_body(request, 2048)
+                body = json.loads(raw, object_pairs_hook=_unique_prepare_fields)
+                if not isinstance(body, dict) or set(body) != {
+                    "protocol_version", "qualification_revision",
+                    "expected_intent_revision", "prepare_request_id",
+                } or body["protocol_version"] != PROTOCOL_VERSION:
+                    raise ValueError
+                validate_prepare_arguments(
+                    worker_id, epoch, body["qualification_revision"],
+                    body["expected_intent_revision"], body["prepare_request_id"],
+                    audio_preparation_ttl_seconds,
+                )
+            except TimeoutError:
+                raise HTTPException(status_code=408, detail="audio epoch preparation timed out") from None
+            except (ValueError, TypeError, RecursionError):
+                raise HTTPException(status_code=422, detail="invalid audio epoch preparation request") from None
+            record = await asyncio.to_thread(
+                repository.prepare_audio_epoch, worker_id, epoch,
+                qualification_revision=body["qualification_revision"],
+                expected_intent_revision=body["expected_intent_revision"],
+                prepare_request_id=body["prepare_request_id"],
+                ttl_seconds=audio_preparation_ttl_seconds,
+            )
+            return JSONResponse(
+                {"protocol_version": PROTOCOL_VERSION, **record.to_dict()},
+                headers={"cache-control": "no-store"},
+            )
+
+        @app.get(
+            "/v1/workers/{worker_id}/audio-epochs/{epoch}",
+            dependencies=[Depends(require_worker)],
+        )
+        async def read_audio_epoch_preparation(worker_id: str, epoch: str) -> JSONResponse:
+            try:
+                validate_prepare_lookup(worker_id, epoch)
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=422, detail="invalid audio epoch preparation request") from None
+            record = await asyncio.to_thread(repository.get_audio_epoch_preparation, worker_id, epoch)
+            return JSONResponse(
+                {"protocol_version": PROTOCOL_VERSION, **record.to_dict()},
+                headers={"cache-control": "no-store"},
+            )
 
     if audio_epoch_operator_token is not None:
         @app.middleware("http")

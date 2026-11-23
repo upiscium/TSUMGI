@@ -3,7 +3,7 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS audio_preparation_qualifications (
     qualification_revision text PRIMARY KEY
-        CHECK (qualification_revision ~ '^[0-9a-f]{64}$'),
+        CHECK (qualification_revision ~ '^sha256:[0-9a-f]{64}$'),
     worker_id text NOT NULL REFERENCES workers(id) ON DELETE RESTRICT,
     body jsonb NOT NULL CHECK (jsonb_typeof(body) = 'object')
 );
@@ -21,8 +21,8 @@ CREATE TABLE IF NOT EXISTS audio_epoch_preparations (
         CHECK (runtime_instance_epoch ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     qualification_revision text NOT NULL
         REFERENCES audio_preparation_qualifications(qualification_revision) ON DELETE RESTRICT,
-    deployment_revision text NOT NULL CHECK (deployment_revision ~ '^[0-9a-f]{64}$'),
-    serving_contract_revision text NOT NULL CHECK (serving_contract_revision ~ '^[0-9a-f]{64}$'),
+    deployment_revision text NOT NULL CHECK (deployment_revision ~ '^sha256:[0-9a-f]{64}$'),
+    serving_contract_revision text NOT NULL CHECK (serving_contract_revision ~ '^sha256:[0-9a-f]{64}$'),
     prepare_request_id text NOT NULL UNIQUE
         CHECK (prepare_request_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     expected_intent_revision bigint NOT NULL CHECK (expected_intent_revision >= 0),

@@ -35,6 +35,7 @@ from .audio_prepare import (
     AudioPreparationQualification,
     preparation_matches,
     validate_prepare_arguments,
+    validate_prepare_lookup,
     worker_spec_revision,
 )
 from .models import (
@@ -831,10 +832,7 @@ class PostgresControlRepository:
     def get_audio_epoch_preparation(
         self, worker_id: str, runtime_instance_epoch: str
     ) -> AudioEpochPreparation:
-        validate_prepare_arguments(
-            worker_id, runtime_instance_epoch, "0" * 64, 0,
-            "00000000-0000-0000-0000-000000000001", 1,
-        )
+        validate_prepare_lookup(worker_id, runtime_instance_epoch)
         with self._connection() as connection:
             row = connection.execute(
                 """SELECT * FROM audio_epoch_preparations

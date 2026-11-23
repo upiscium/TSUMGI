@@ -224,7 +224,8 @@ class EpochHarness:
 
 @contextmanager
 def make_harness(tmp_path, monkeypatch, *, database_url, observer, memory_repository=None,
-                 fencing_enabled=True, worker_credentials=None, worker_token=WORKER_TOKEN):
+                 fencing_enabled=True, worker_credentials=None, worker_token=WORKER_TOKEN,
+                 preparation_enabled=False, preparation_ttl_seconds=60):
     """Production build_app + lifespan; ASGI transport, not a TCP/host trial."""
     profile = make_profile("model-tts")
     catalog = AudioProfileCatalog((profile, make_profile("model-stt")))
@@ -264,6 +265,9 @@ db_pool_max_size = 2
 {worker_auth_config}
 [audio_epoch_fencing]
 enabled = {str(fencing_enabled).lower()}
+[audio_epoch_preparation]
+enabled = {str(preparation_enabled).lower()}
+ttl_seconds = {int(preparation_ttl_seconds)}
 [audio_gateway]
 enabled = true
 catalog = {json.dumps(str(catalog_path))}

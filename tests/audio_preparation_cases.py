@@ -52,7 +52,7 @@ def prepare(h, revision, *, epoch=E2, request_id=REQUEST,
             expected_intent_revision=0, worker_id=WORKER_ID, headers=None):
     return h.client.post(
         f"/v1/workers/{worker_id}/audio-epochs/{epoch}/prepare",
-        headers=headers or h.worker_headers,
+        headers=h.worker_headers if headers is None else headers,
         json={
             "protocol_version": "v1",
             "qualification_revision": revision,
@@ -62,24 +62,46 @@ def prepare(h, revision, *, epoch=E2, request_id=REQUEST,
     )
 
 
+PREPARATION_TABLES = (
+    "audio_preparation_qualifications",
+    "audio_preparation_qualification_revocations",
+    "audio_epoch_preparations",
+)
+
+
+def core_effects(h):
+    """Effects on Workers, Jobs, events, fences and spool files.
+
+    A successful preparation legitimately adds a preparation row (and a stored
+    qualification is setup data), so the PostgreSQL observer's raw preparation
+    tables are left out here; the preparation tables themselves are compared
+    exactly wherever a request must have no effect at all.
+    """
+    state, files = h.effects()
+    rows = state.get("database_rows") if isinstance(state, dict) else None
+    if rows is not None:
+        state = {**state, "database_rows": {k: v for k, v in rows.items() if k not in PREPARATION_TABLES}}
+    return state, files
+
+
 class AudioPreparationCases:
     def test_invalid_qualification_and_forged_body_have_no_effect(self, preparation_harness):
         h = preparation_harness
         repo = h.qualification_repository
         assert h.register(E1).status_code == 201
         assert h.state(E1, "offline").status_code == 200
-        before = h.effects()
         missing = digest("not stored")
-        assert prepare(h, missing).status_code == 409
         unreviewed = qualification_for(h, repo, reviewed=False)
-        assert prepare(h, unreviewed.qualification_revision).status_code == 409
         revoked = qualification_for(h, repo)
         repo.revoke_audio_preparation_qualification(revoked.qualification_revision)
-        assert prepare(h, revoked.qualification_revision).status_code == 409
         expired = qualification_for(
             h, repo, issued_at=datetime.now(UTC) - timedelta(seconds=120),
             expires_at=datetime.now(UTC) - timedelta(seconds=60),
         )
+        before = h.effects()  # after the fixtures: only the requests below are measured
+        assert prepare(h, missing).status_code == 409
+        assert prepare(h, unreviewed.qualification_revision).status_code == 409
+        assert prepare(h, revoked.qualification_revision).status_code == 409
         assert prepare(h, expired.qualification_revision).status_code == 409
         forged = {
             "protocol_version": "v1", "qualification_revision": missing,
@@ -99,7 +121,7 @@ class AudioPreparationCases:
         assert h.register(E1).status_code == 201
         assert h.state(E1, "offline").status_code == 200
         q = qualification_for(h, repo)
-        before = h.effects()
+        before = core_effects(h)
         response = prepare(h, q.qualification_revision)
         assert response.status_code == 200, response.text
         receipt = response.json()
@@ -113,7 +135,7 @@ class AudioPreparationCases:
             f"/v1/workers/{WORKER_ID}/audio-epochs/{E2}",
             headers=h.worker_headers,
         ).json() == receipt
-        assert h.effects()[0] == before[0]
+        assert core_effects(h)[0] == before[0]
         assert prepare(h, q.qualification_revision).json() == receipt
         assert h.client.get(
             f"/v1/workers/{WORKER_ID}/audio-epochs/{E2}",

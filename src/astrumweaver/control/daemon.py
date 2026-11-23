@@ -92,6 +92,13 @@ def build_app(config_path: str):
                 or epoch_operator_token in (client_token, worker_token)
                 or (audio_config is not None and epoch_operator_token == audio_config.token)):
             raise RuntimeError("audio epoch fencing requires a distinct operator bearer token")
+    prep_section = config.get("audio_epoch_preparation", {})
+    if (not isinstance(prep_section, dict) or set(prep_section) - {"enabled", "ttl_seconds"}
+            or type(prep_section.get("enabled", False)) is not bool
+            or (type(prep_section.get("ttl_seconds", 60)) is not int
+                or not 1 <= prep_section.get("ttl_seconds", 60) <= 300)):
+        raise RuntimeError("audio_epoch_preparation configuration is invalid")
+    preparation_ttl = prep_section.get("ttl_seconds", 60) if prep_section.get("enabled", False) else None
     worker_auth = config.get("worker_auth", {})
     if (not isinstance(worker_auth, dict)
             or set(worker_auth) - {"mode", "credentials_file"}
@@ -175,6 +182,8 @@ def build_app(config_path: str):
                     )
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
+    if preparation_ttl is not None and worker_credentials is None:
+        raise RuntimeError("audio_epoch_preparation requires worker_auth.mode = per-worker")
     profile_names: dict[str, str] = {}
     try:
         app = create_app(
@@ -187,6 +196,7 @@ def build_app(config_path: str):
             maintenance_interval_seconds=float(section.get("maintenance_interval_seconds", 5.0)),
             audio_epoch_operator_token=epoch_operator_token,
             worker_credentials=worker_credentials,
+            audio_preparation_ttl_seconds=preparation_ttl,
         )
 
         enabled = chat_section.get("enabled", False)

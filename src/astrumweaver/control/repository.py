@@ -46,6 +46,7 @@ from .audio_prepare import (
     AudioPreparationQualification,
     preparation_matches,
     validate_prepare_arguments,
+    validate_prepare_lookup,
     worker_spec_revision,
 )
 
@@ -427,7 +428,7 @@ class InMemoryControlRepository:
     ) -> None:
         del now
         if type(qualification_revision) is not str or not re.fullmatch(
-            r"[0-9a-f]{64}", qualification_revision
+            r"sha256:[0-9a-f]{64}", qualification_revision
         ):
             raise ValueError("invalid audio epoch preparation")
         with self._lock:
@@ -510,9 +511,7 @@ class InMemoryControlRepository:
     def get_audio_epoch_preparation(
         self, worker_id: str, runtime_instance_epoch: str,
     ) -> AudioEpochPreparation:
-        validate_prepare_arguments(
-            worker_id, runtime_instance_epoch, "0" * 64, 0, str(uuid4()), 1
-        )
+        validate_prepare_lookup(worker_id, runtime_instance_epoch)
         with self._lock:
             try:
                 return self._audio_epoch_preparations[(worker_id, runtime_instance_epoch)]

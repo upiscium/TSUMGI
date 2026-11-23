@@ -353,6 +353,7 @@ def test_check_storage_rejects_legacy_001_only_schema_until_migrated() -> None:
         "004_serving_identity_invariants.sql",
         "005_job_events.sql",
         "006_audio_epoch_fences.sql",
+        "007_audio_epoch_preparations.sql",
     ]
     repo.check_storage()
 
