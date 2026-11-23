@@ -244,6 +244,7 @@ def test_dedicated_preview_is_not_implicitly_mounted_in_production():
 import logging  # noqa: E402
 
 from astrumweaver.audio import voicevox_local_preview as preview  # noqa: E402
+from astrumweaver.execution import JobExecutionError  # noqa: E402
 from astrumweaver.runtime.providers.voicevox import _validate_query  # noqa: E402
 
 
@@ -262,16 +263,18 @@ async def test_a_realistic_audio_query_is_accepted_not_a_503():
     # and that is why the preview passes its own budget
     mora = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6}
     big = {"accent_phrases": [{"moras": [dict(mora) for _ in range(10)]} for _ in range(30)]}
-    with pytest.raises(Exception):
+    with pytest.raises(JobExecutionError) as refused:
         _validate_query(big, 256 * 1024)  # the adapter's default budget refuses it
+    assert refused.value.code == "invalid_query"
     assert _validate_query(big, 256 * 1024, max_nodes=16384) is big
 
 
 @pytest.mark.asyncio
 async def test_the_query_budget_is_still_bounded():
     huge = {"accent_phrases": [{"moras": [{"a": 1}] * 250} for _ in range(250)]}  # about 190k nodes
-    with pytest.raises(Exception):
-        _validate_query(huge, 256 * 1024, max_nodes=preview._MAX_QUERY_NODES)
+    with pytest.raises(JobExecutionError) as refused:
+        _validate_query(huge, 256 * 1024, max_nodes=16384)
+    assert refused.value.code == "invalid_query"
 
 
 @pytest.mark.asyncio
@@ -304,7 +307,7 @@ async def test_only_one_speech_request_runs_at_a_time():
             second = await user.post("/preview/audio/speech", json={"input": "二"}, headers=auth())
             assert second.status_code == 429 and second.json()["error"]["code"] == "busy"
             engine.resume.set()
-            assert (await first).status_code in (200, 503)
+            assert (await first).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -371,7 +374,8 @@ async def test_the_preview_itself_never_logs_or_prints_the_text_or_token(caplog,
         async with client(create_local_voicevox_preview_app(config(endpoint))) as user:
             await user.post("/preview/audio/speech", json={"input": "極秘の入力文"}, headers=auth())
             await user.post("/preview/audio/speech", json={"input": "極秘の入力文"}, headers={"authorization": "Bearer " + "x" * 40})
-    seen = caplog.text + capsys.readouterr().out + capsys.readouterr().err
+    captured = capsys.readouterr()
+    seen = caplog.text + captured.out + captured.err
     assert "極秘" not in seen and TOKEN not in seen
 
 
@@ -407,3 +411,21 @@ def test_main_binds_loopback_only_and_needs_the_token_and_both_consents(monkeypa
     with pytest.raises(SystemExit) as raised:
         preview.main()  # a clean usage error, not a traceback
     assert raised.value.code == 2
+
+
+@pytest.mark.asyncio
+async def test_a_close_that_never_finishes_cannot_hold_the_request_past_its_deadline(monkeypatch):
+    """An engine that never reads keeps the closing socket from flushing."""
+    import time
+
+    async def never_closed(self):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(asyncio.StreamWriter, "wait_closed", never_closed)
+    async with fake_engine() as (_engine, endpoint):
+        port = int(endpoint.rsplit(":", 1)[1])
+        started = time.monotonic()
+        answer = await preview._loopback_post(
+            port, "/audio_query?speaker=3", body=b"", accept="application/json", max_bytes=4096,
+        )
+        assert answer and time.monotonic() - started < 5

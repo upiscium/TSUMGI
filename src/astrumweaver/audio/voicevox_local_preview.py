@@ -40,7 +40,9 @@ from ..runtime.providers.voicevox_http import (
 _TOKEN = re.compile(r"[A-Za-z0-9._~+/-]{32,256}=*\Z")  # a long random token, enforced
 # A real /audio_query answer is about 13 JSON nodes and 150-200 bytes per mora, so
 # the Worker adapter's 2048-node budget (a heartbeat-loop guard) is far too small
-# for this standalone process: 2048 bytes of text can mean 700 moras.
+# for this standalone process. This budget covers ordinary sentences; very long,
+# punctuation-heavy or kanji-dense text can still exceed it (or the 256-item
+# container cap in `_validate_query`) and is refused as engine_unavailable.
 _MAX_QUERY = 256 * 1024
 _MAX_QUERY_NODES = 16384
 _MAX_TARGET = 8192
@@ -192,9 +194,14 @@ async def _loopback_post(
         if writer is not None:
             writer.close()
             try:
-                await writer.wait_closed()
-            except Exception:  # noqa: BLE001 - the answer was already read or failed
-                pass
+                # Bounded: an engine that never reads must not hold the request (and the
+                # single-request lock) past its deadline while the close waits to flush.
+                await asyncio.wait_for(writer.wait_closed(), 1.0)
+            except asyncio.CancelledError:
+                writer.transport.abort()
+                raise
+            except Exception:  # noqa: BLE001 - the answer was already read, or it failed
+                writer.transport.abort()
 
 
 def create_local_voicevox_preview_app(config: LocalVoicevoxPreviewConfig) -> FastAPI:
