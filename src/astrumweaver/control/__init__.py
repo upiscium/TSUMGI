@@ -1,6 +1,7 @@
 """AstrumWeaver durable control-plane contracts."""
 
 from .auth import ClientAuthMode
+from .audio_epoch import AudioEpochFence
 from .models import (
     JobEventRecord,
     JobRecord,
@@ -27,6 +28,7 @@ from .repository import (
 )
 
 __all__ = [
+    "AudioEpochFence",
     "ClientAuthMode",
     "ConflictError",
     "ControlRepository",

@@ -23,6 +23,7 @@ from .api import create_app
 from .audio_gateway_config import load_audio_gateway_config
 from .auth import ClientAuthMode
 from .postgres import PostgresControlRepository
+from .worker_auth import load_worker_credentials
 
 
 def _load_toml(path: str) -> dict[str, Any]:
@@ -74,14 +75,52 @@ def build_app(config_path: str):
             "ASTRUMWEAVER_CLIENT_TOKEN is required when "
             "control.client_auth=bearer"
         )
-    if not worker_token:
-        raise RuntimeError("ASTRUMWEAVER_WORKER_TOKEN is required")
     if audio_config is not None and client_auth is not ClientAuthMode.BEARER:
         # create_app protects all audio artifact routes using Control bearer auth.
         # Reject an unsafe mixed mode until per-job audio auth is designed.
         raise RuntimeError("audio_gateway requires control.client_auth=bearer")
     if audio_config is not None and client_token == worker_token:
         raise RuntimeError("audio_gateway requires distinct client and worker tokens")
+    fence_section = config.get("audio_epoch_fencing", {})
+    if (not isinstance(fence_section, dict) or set(fence_section) - {"enabled"}
+            or type(fence_section.get("enabled", False)) is not bool):
+        raise RuntimeError("audio_epoch_fencing configuration is invalid")
+    epoch_operator_token = None
+    if fence_section.get("enabled", False):
+        epoch_operator_token = os.environ.get("ASTRUMWEAVER_AUDIO_EPOCH_OPERATOR_TOKEN", "")
+        if (client_auth is not ClientAuthMode.BEARER or not epoch_operator_token
+                or epoch_operator_token in (client_token, worker_token)
+                or (audio_config is not None and epoch_operator_token == audio_config.token)):
+            raise RuntimeError("audio epoch fencing requires a distinct operator bearer token")
+    prep_section = config.get("audio_epoch_preparation", {})
+    if (not isinstance(prep_section, dict) or set(prep_section) - {"enabled", "ttl_seconds"}
+            or type(prep_section.get("enabled", False)) is not bool
+            or (type(prep_section.get("ttl_seconds", 60)) is not int
+                or not 1 <= prep_section.get("ttl_seconds", 60) <= 300)):
+        raise RuntimeError("audio_epoch_preparation configuration is invalid")
+    preparation_ttl = prep_section.get("ttl_seconds", 60) if prep_section.get("enabled", False) else None
+    worker_auth = config.get("worker_auth", {})
+    if (not isinstance(worker_auth, dict)
+            or set(worker_auth) - {"mode", "credentials_file"}
+            or worker_auth.get("mode", "shared") not in ("shared", "per-worker")):
+        raise RuntimeError("invalid worker authentication configuration")
+    worker_credentials = None
+    if worker_auth.get("mode", "shared") == "per-worker":
+        if client_auth is not ClientAuthMode.BEARER:
+            raise RuntimeError("per-worker authentication requires client bearer authentication")
+        try:
+            worker_credentials = load_worker_credentials(worker_auth.get("credentials_file"))
+            worker_credentials.reject_token_collisions((
+                worker_token, client_token, epoch_operator_token,
+                None if audio_config is None else audio_config.token,
+            ))
+        except ValueError:
+            raise RuntimeError("invalid worker credentials configuration") from None
+    else:
+        if "credentials_file" in worker_auth:
+            raise RuntimeError("worker credentials require per-worker authentication mode")
+        if not worker_token:
+            raise RuntimeError("ASTRUMWEAVER_WORKER_TOKEN is required")
 
     repository = PostgresControlRepository(
         database_url,
@@ -143,6 +182,8 @@ def build_app(config_path: str):
                     )
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
+    if preparation_ttl is not None and worker_credentials is None:
+        raise RuntimeError("audio_epoch_preparation requires worker_auth.mode = per-worker")
     profile_names: dict[str, str] = {}
     try:
         app = create_app(
@@ -153,6 +194,9 @@ def build_app(config_path: str):
             worker_token=worker_token,
             client_auth=client_auth,
             maintenance_interval_seconds=float(section.get("maintenance_interval_seconds", 5.0)),
+            audio_epoch_operator_token=epoch_operator_token,
+            worker_credentials=worker_credentials,
+            audio_preparation_ttl_seconds=preparation_ttl,
         )
 
         enabled = chat_section.get("enabled", False)

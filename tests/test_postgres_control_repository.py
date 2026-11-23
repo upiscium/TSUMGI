@@ -330,6 +330,10 @@ def test_check_storage_rejects_legacy_001_only_schema_until_migrated() -> None:
     ).read_text(encoding="utf-8")
 
     with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        # DROP ... CASCADE removes incoming foreign keys, not the referencing
+        # tables. Rebuild those too so IF NOT EXISTS cannot retain orphan tables.
+        connection.execute("DROP TABLE IF EXISTS audio_epoch_fences")
+        connection.execute("DROP TABLE IF EXISTS job_events")
         connection.execute("DROP TABLE IF EXISTS jobs CASCADE")
         connection.execute("DROP TABLE IF EXISTS workers CASCADE")
         connection.execute("DROP TABLE IF EXISTS schema_migrations CASCADE")
@@ -348,6 +352,8 @@ def test_check_storage_rejects_legacy_001_only_schema_until_migrated() -> None:
         "003_serving_bindings.sql",
         "004_serving_identity_invariants.sql",
         "005_job_events.sql",
+        "006_audio_epoch_fences.sql",
+        "007_audio_epoch_preparations.sql",
     ]
     repo.check_storage()
 
@@ -368,9 +374,18 @@ def test_check_storage_rejects_legacy_001_only_schema_until_migrated() -> None:
                 "SELECT name FROM schema_migrations"
             ).fetchall()
         }
+        fence_worker_fk_count = connection.execute(
+            """
+            SELECT count(*) FROM pg_constraint
+            WHERE conrelid = 'audio_epoch_fences'::regclass
+              AND confrelid = 'workers'::regclass
+              AND contype = 'f' AND confdeltype = 'r'
+            """
+        ).fetchone()[0]
 
     assert "accelerators" in columns
     assert set(applied) <= recorded
+    assert fence_worker_fk_count == 1
 
 
 @pytest.mark.asyncio
@@ -383,6 +398,8 @@ async def test_ready_rejects_legacy_001_only_schema_until_all_migrations_apply()
     ).read_text(encoding="utf-8")
 
     with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        connection.execute("DROP TABLE IF EXISTS audio_epoch_fences")
+        connection.execute("DROP TABLE IF EXISTS job_events")
         connection.execute("DROP TABLE IF EXISTS jobs CASCADE")
         connection.execute("DROP TABLE IF EXISTS workers CASCADE")
         connection.execute("DROP TABLE IF EXISTS schema_migrations CASCADE")

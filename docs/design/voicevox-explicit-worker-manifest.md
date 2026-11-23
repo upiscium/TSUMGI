@@ -5,6 +5,10 @@ VOICEVOX backend. No audio engine is selected by default. There is no
 `runtime.voicevox_trial` switch, automatic install, SetupPlan, attach to a
 user-managed process, GPU path, STT, or fallback. This is separate from #247.
 
+A later [offline bundle/staging candidate](voicevox-offline-bundle-staging.md)
+can prepare review files via a separate `goal="stage"` plan. It does not enable
+this provider's ordinary installation/activation SetupPlan or qualify its ABI.
+
 ## Two manifests and one slot
 
 The Worker must be unprivileged, on Linux x86-64, dedicated to

@@ -73,11 +73,14 @@ class PrivilegeMode(StrEnum):
 
 
 class SetupPlanGoal(StrEnum):
+    STAGE = "stage"
     ACTIVATE = "activate"
     RELEASE = "release"
 
 
 class SetupActionKind(StrEnum):
+    VERIFY_AUDIO_BUNDLE = "verify_audio_bundle"
+    STAGE_AUDIO_CONFIG = "stage_audio_config"
     ENSURE_DIRECTORY = "ensure_directory"
     ENSURE_PACKAGE = "ensure_package"
     ENSURE_NVIDIA_DRIVER_BRIDGE = "ensure_nvidia_driver_bridge"
