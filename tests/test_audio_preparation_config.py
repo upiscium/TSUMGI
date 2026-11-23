@@ -77,7 +77,7 @@ def test_requests_are_strict_bounded_and_uncacheable(preparation_harness):  # no
     assert h.client.post(path, headers=h.worker_headers, content=b"{not json").status_code == 422
     assert h.client.post(path, headers=h.worker_headers, content=b"").status_code == 422
     oversized = json.dumps({**good, "pad": "x" * 4096})
-    assert h.client.post(path, headers=h.worker_headers, content=oversized).status_code in (413, 422)
+    assert h.client.post(path, headers=h.worker_headers, content=oversized).status_code == 413
     for bad_epoch in ("not-a-uuid", E2.upper(), "00000000-0000-0000-0000-000000000000"):
         assert prepare(h, q.qualification_revision, epoch=bad_epoch).status_code in (404, 422)
     assert h.effects() == before

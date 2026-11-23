@@ -458,16 +458,15 @@ class InMemoryControlRepository:
                     or not qualification.issued_at <= timestamp < qualification.expires_at):
                 raise ConflictError("audio epoch preparation rejected")
             advertisement = worker.serving
-            audio_contracts = [] if advertisement is None else [
-                item for item in advertisement.contracts
-                if item.capability in {"audio.synthesize", "audio.transcribe"}
-            ]
-            if (advertisement is None or len(advertisement.contracts) != 1
-                    or len(audio_contracts) != 1
-                    or advertisement.deployment_revision != qualification.deployment_revision
-                    or audio_contracts[0].revision != qualification.serving_contract_revision
+            # The same match as the PostgreSQL implementation and the fence slice.
+            if (advertisement is None
+                    or not worker_matches_fence(
+                        worker, advertisement.runtime_instance.epoch,
+                        qualification.deployment_revision,
+                        qualification.serving_contract_revision)
                     or worker_spec_revision(worker) != qualification.worker_spec_revision):
                 raise ConflictError("audio epoch preparation rejected")
+            audio_contract = advertisement.contracts[0]
             if (worker.state is not WorkerState.OFFLINE or worker.active_jobs != 0
                     or self._active_job_count(worker_id) != 0
                     or any(job.status is JobStatus.RUNNING and job.assigned_worker_id == worker_id
@@ -501,7 +500,7 @@ class InMemoryControlRepository:
                 raise ConflictError("audio epoch preparation rejected")
             record = AudioEpochPreparation(
                 worker_id, runtime_instance_epoch, qualification_revision,
-                advertisement.deployment_revision, audio_contracts[0].revision,
+                advertisement.deployment_revision, audio_contract.revision,
                 prepare_request_id, expected_intent_revision, expected_intent_revision + 1,
                 timestamp, min(qualification.expires_at, timestamp + timedelta(seconds=ttl_seconds)),
             )

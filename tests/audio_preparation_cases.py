@@ -180,8 +180,8 @@ class AudioPreparationCases:
         assert receipt["state"] == "prepared"
         assert h.register(E2).status_code == 409
         assert h.register("42345678-1234-4234-9234-123456789abc").status_code == 409
-        assert h.claim(E1).status_code in (204, 409)
-        assert h.claim(E2).status_code in (204, 409)
+        assert h.claim(E1).status_code == 409
+        assert h.claim(E2).status_code == 409
         assert h.state(E1, "online").status_code == 409
 
     def test_bad_request_shape_and_intent_conflict(self, preparation_harness):
@@ -201,3 +201,51 @@ class AudioPreparationCases:
         assert h.client.post(path, headers=h.worker_headers,
                              json={**body, "prepare_request_id": "not-a-uuid"}).status_code == 422
         assert prepare(h, q.qualification_revision, expected_intent_revision=1).status_code == 409
+
+    def test_a_fenced_epoch_can_never_be_prepared(self, preparation_harness):
+        h = preparation_harness
+        repo = h.qualification_repository
+        assert h.register(E1).status_code == 201
+        assert h.state(E1, "offline").status_code == 200
+        assert h.fence(E1).status_code == 200
+        assert h.register(E2).status_code == 201
+        assert h.state(E2, "offline").status_code == 200
+        q = qualification_for(h, repo)
+        before = h.effects()
+        assert prepare(h, q.qualification_revision, epoch=E1).status_code == 409
+        assert h.effects() == before
+
+    def test_expiry_replay_and_request_id_reuse_are_conflicts_not_server_errors(self, preparation_harness):
+        import pytest
+        from astrumweaver.control.repository import ConflictError
+
+        h = preparation_harness
+        repo = h.qualification_repository
+        assert h.register(E1).status_code == 201
+        assert h.state(E1, "offline").status_code == 200
+        q = qualification_for(h, repo)
+        t0 = datetime.now(UTC)
+        first = repo.prepare_audio_epoch(
+            WORKER_ID, E2, qualification_revision=q.qualification_revision,
+            expected_intent_revision=0, prepare_request_id=REQUEST, ttl_seconds=60, now=t0,
+        )
+        assert first.expires_at == t0 + timedelta(seconds=60)
+        later = t0 + timedelta(seconds=61)  # the first record has expired, the qualification has not
+        with pytest.raises(ConflictError):  # an expired record is not replayed
+            repo.prepare_audio_epoch(
+                WORKER_ID, E2, qualification_revision=q.qualification_revision,
+                expected_intent_revision=0, prepare_request_id=REQUEST, ttl_seconds=60, now=later,
+            )
+        epoch3 = "32345678-1234-4234-9234-123456789def"
+        with pytest.raises(ConflictError):  # the request id is used up, across epochs
+            repo.prepare_audio_epoch(
+                WORKER_ID, epoch3, qualification_revision=q.qualification_revision,
+                expected_intent_revision=1, prepare_request_id=REQUEST, ttl_seconds=60, now=later,
+            )
+        second = repo.prepare_audio_epoch(
+            WORKER_ID, epoch3, qualification_revision=q.qualification_revision,
+            expected_intent_revision=1, prepare_request_id="42345678-1234-4234-9234-123456789def",
+            ttl_seconds=60, now=later,
+        )
+        assert second.intent_revision == 2
+        assert second.expires_at == q.expires_at  # a qualification that ends sooner shortens the record

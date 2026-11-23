@@ -110,3 +110,23 @@ Worker activation, and any claim that a voice or model may be used.
 (PostgreSQL 17 only; a different server version skips as `NOT_VERIFIED`) and
 `tests/test_audio_preparation_config.py` (configuration, strict parsing,
 no-store). All qualification material in the tests is synthetic.
+
+## Known limits and decisions to confirm
+
+- **A preparation is not undone by expiry.** Any recorded preparation keeps the
+  Worker out of registration, heartbeat and claims for good, whatever
+  `expires_at` or a later revocation says; `expires_at` only governs replay and
+  whether a *new* intent may be recorded. There is no cleanup or release yet, so
+  a Worker that was prepared can only be brought back by hand in the database.
+  That follows the draft's explicit "any preparation" guard and the activation
+  and cleanup protocol being out of scope, but it is an operational risk to
+  decide before this is enabled anywhere: either cleanup/activation lands first,
+  or the guard becomes "unexpired and not revoked".
+- **Migration 007 was edited in place** (bare hex to `sha256:` checks) before it
+  was ever applied. It must not exist in any database in its first form; if one
+  does, replace it with a new migration instead of re-running this file.
+- The in-memory repository now uses the same Worker match as PostgreSQL
+  (`worker_matches_fence`). It is still a rehearsal only.
+- A second preparation with the same request id, and a preparation of a fenced
+  epoch, are 409 on both repositories (PostgreSQL used to answer 503 and to
+  accept a fenced epoch; both are covered by tests that fail on the old code).

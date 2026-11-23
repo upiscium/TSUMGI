@@ -779,6 +779,13 @@ class PostgresControlRepository:
             ).fetchone()
             if claimed is not None:
                 raise ConflictError("audio epoch preparation rejected")
+            fenced = connection.execute(
+                """SELECT 1 FROM audio_epoch_fences
+                   WHERE worker_id = %s AND runtime_instance_epoch = %s""",
+                (worker_id, runtime_instance_epoch),
+            ).fetchone()
+            if fenced is not None:
+                raise ConflictError("audio epoch preparation rejected")
             existing = connection.execute(
                 """SELECT * FROM audio_epoch_preparations
                    WHERE worker_id = %s AND runtime_instance_epoch = %s""",
@@ -801,6 +808,13 @@ class PostgresControlRepository:
             ).fetchone()["revision"] or 0
             if expected_intent_revision != latest:
                 raise ConflictError("audio epoch preparation rejected")
+            # The request id is unique across all Workers: answer 409 here, the same
+            # as the memory implementation, instead of a 503 from the constraint.
+            if connection.execute(
+                "SELECT 1 FROM audio_epoch_preparations WHERE prepare_request_id = %s",
+                (prepare_request_id,),
+            ).fetchone() is not None:
+                raise ConflictError("audio epoch preparation rejected")
             prior = connection.execute(
                 """SELECT 1 FROM audio_epoch_preparations p
                    WHERE p.worker_id = %s AND p.expires_at > %s
@@ -811,7 +825,8 @@ class PostgresControlRepository:
             if prior is not None:
                 raise ConflictError("audio epoch preparation rejected")
             expires = min(qualification.expires_at, timestamp + timedelta(seconds=ttl_seconds))
-            connection.execute(
+            try:
+                connection.execute(
                 """INSERT INTO audio_epoch_preparations
                    (worker_id, runtime_instance_epoch, qualification_revision,
                     deployment_revision, serving_contract_revision, prepare_request_id,
@@ -821,7 +836,9 @@ class PostgresControlRepository:
                  qualification.deployment_revision, qualification.serving_contract_revision,
                  prepare_request_id, expected_intent_revision,
                  expected_intent_revision + 1, timestamp, expires),
-            )
+                )
+            except psycopg.errors.UniqueViolation as exc:  # a concurrent identical request
+                raise ConflictError("audio epoch preparation rejected") from exc
             return AudioEpochPreparation(
                 worker_id, runtime_instance_epoch, qualification_revision,
                 qualification.deployment_revision, qualification.serving_contract_revision,
