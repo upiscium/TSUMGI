@@ -5,8 +5,8 @@ import json
 import httpx
 import pytest
 
-from astrumweaver.control.daemon import _catalog_profile_names, build_app
-from astrumweaver.gateway.api import load_chat_catalog
+from tsumgi.control.daemon import _catalog_profile_names, build_app
+from tsumgi.gateway.api import load_chat_catalog
 
 from test_chat_gateway_daemon import base_environment, catalog_document
 

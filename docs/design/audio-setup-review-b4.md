@@ -18,7 +18,7 @@ text-generation workloads. Reusing it for VOICEVOX, Style-Bert-VITS2 or an
 installed, license-qualified and ready. An unverified provider **must not**
 produce an apparently executable `SetupPlan`.
 
-`astrumweaver.setup.review_audio_setup` instead accepts only previously
+`tsumgi.setup.review_audio_setup` instead accepts only previously
 constructed in-memory, validated objects: `AudioProfileCatalog`, a
 `ServingDeploymentDeclaration`, `WorkerSpec`, and a `SetupHostSnapshot`, plus an
 **explicit** public profile ID and `enabled=True`. It checks:
@@ -64,7 +64,7 @@ The remaining checks deliberately never auto-pass:
   thresholds; **#179 remains unimplemented until that selection**
 
 ```python
-from astrumweaver.setup import review_audio_setup
+from tsumgi.setup import review_audio_setup
 
 review = review_audio_setup(
     enabled=True,

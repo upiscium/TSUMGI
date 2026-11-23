@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from astrumweaver.gateway.embedding import (
+from tsumgi.gateway.embedding import (
     EMBEDDING_CATALOG_SCHEMA,
     EMBEDDING_OPERATION_SCHEMA,
     LLAMA_CPP_EMBEDDING_ADAPTER,
@@ -18,7 +18,7 @@ from astrumweaver.gateway.embedding import (
     text_policy_digest,
     validate_embedding_response,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,
@@ -174,8 +174,8 @@ def test_compile_query_and_document_apply_exact_reviewed_policy():
             "model": gateway.profile_id,
             "input": ["alpha", "beta"],
             "encoding_format": "float",
-            "x_astrumweaver_input_type": "query",
-            "x_astrumweaver_embedding_space_id": gateway.embedding_space_id,
+            "x_tsumgi_input_type": "query",
+            "x_tsumgi_embedding_space_id": gateway.embedding_space_id,
         },
         gateway,
         request_size_bytes=100,
@@ -191,8 +191,8 @@ def test_compile_query_and_document_apply_exact_reviewed_policy():
         {
             "model": gateway.profile_id,
             "input": "alpha",
-            "x_astrumweaver_input_type": "document",
-            "x_astrumweaver_embedding_space_id": gateway.embedding_space_id,
+            "x_tsumgi_input_type": "document",
+            "x_tsumgi_embedding_space_id": gateway.embedding_space_id,
         },
         gateway,
         request_size_bytes=60,
@@ -207,23 +207,23 @@ def test_compile_query_and_document_apply_exact_reviewed_policy():
             "model": "notes-embed-v1",
             "input": "x",
             "encoding_format": "base64",
-            "x_astrumweaver_input_type": "document",
+            "x_tsumgi_input_type": "document",
         },
         {
             "model": "notes-embed-v1",
             "input": [[1, 2, 3]],
-            "x_astrumweaver_input_type": "document",
+            "x_tsumgi_input_type": "document",
         },
         {
             "model": "notes-embed-v1",
             "input": "x",
             "dimensions": 768,
-            "x_astrumweaver_input_type": "document",
+            "x_tsumgi_input_type": "document",
         },
         {
             "model": "notes-embed-v1",
             "input": "x",
-            "x_astrumweaver_input_type": "unknown",
+            "x_tsumgi_input_type": "unknown",
         },
     ),
 )
@@ -231,7 +231,7 @@ def test_compile_rejects_unsupported_embedding_shapes(body):
     _, _, _, gateway = values()
     pinned = {
         **body,
-        "x_astrumweaver_embedding_space_id": gateway.embedding_space_id,
+        "x_tsumgi_embedding_space_id": gateway.embedding_space_id,
     }
     with pytest.raises(EmbeddingGatewayError):
         compile_embedding_request(pinned, gateway, request_size_bytes=100)
@@ -242,7 +242,7 @@ def test_compile_requires_exact_embedding_space_pin():
     body = {
         "model": gateway.profile_id,
         "input": "alpha",
-        "x_astrumweaver_input_type": "document",
+        "x_tsumgi_input_type": "document",
     }
 
     with pytest.raises(EmbeddingGatewayError, match="must be a sha256 digest"):
@@ -252,7 +252,7 @@ def test_compile_requires_exact_embedding_space_pin():
         compile_embedding_request(
             {
                 **body,
-                "x_astrumweaver_embedding_space_id": digest("f"),
+                "x_tsumgi_embedding_space_id": digest("f"),
             },
             gateway,
             request_size_bytes=60,
@@ -269,8 +269,8 @@ def test_compile_enforces_batch_and_byte_bounds():
             {
                 "model": gateway.profile_id,
                 "input": ["a", "b", "c", "d", "e"],
-                "x_astrumweaver_input_type": "document",
-                "x_astrumweaver_embedding_space_id": gateway.embedding_space_id,
+                "x_tsumgi_input_type": "document",
+                "x_tsumgi_embedding_space_id": gateway.embedding_space_id,
             },
             gateway,
             request_size_bytes=100,
@@ -281,8 +281,8 @@ def test_compile_enforces_batch_and_byte_bounds():
             {
                 "model": gateway.profile_id,
                 "input": "x" * 4097,
-                "x_astrumweaver_input_type": "document",
-                "x_astrumweaver_embedding_space_id": gateway.embedding_space_id,
+                "x_tsumgi_input_type": "document",
+                "x_tsumgi_embedding_space_id": gateway.embedding_space_id,
             },
             gateway,
             request_size_bytes=5000,
@@ -321,10 +321,10 @@ def test_embedding_response_preserves_order_dimension_and_space_extension():
     )
     assert normalized["model"] == "notes-embed-v1"
     assert [item["index"] for item in normalized["data"]] == [0, 1]
-    assert normalized["x_astrumweaver"]["embedding_space_id"] == (
+    assert normalized["x_tsumgi"]["embedding_space_id"] == (
         gateway.embedding_space_id
     )
-    assert normalized["x_astrumweaver"]["dimensions"] == 1024
+    assert normalized["x_tsumgi"]["dimensions"] == 1024
 
 
 def test_embedding_response_rejects_wrong_dimension_order_and_nonfinite():

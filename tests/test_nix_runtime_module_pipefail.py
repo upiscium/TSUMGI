@@ -57,10 +57,10 @@ def test_drain_based_grep_preserves_positive_and_negative_results():
 
 
 def test_drain_based_extended_regex_keeps_strict_match_semantics():
-    payload = "+/nix/store/" + ("a" * 32) + "-astrumweaver-preflight\n"
+    payload = "+/nix/store/" + ("a" * 32) + "-tsumgi-preflight\n"
     payload += "unrelated-line\n" * 45_000
     for pattern, expected_rc in (
-        (r"^\+/nix/store/[a-z0-9]{32}-astrumweaver-preflight$", 0),
+        (r"^\+/nix/store/[a-z0-9]{32}-tsumgi-preflight$", 0),
         (r"^\+/nix/store/[a-z0-9]{32}-unknown-preflight$", 1),
     ):
         result = subprocess.run(

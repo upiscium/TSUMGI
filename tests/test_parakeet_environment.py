@@ -7,8 +7,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from astrumweaver.runtime.providers import parakeet_environment as environment
-from astrumweaver.runtime.providers import parakeet_process as process
+from tsumgi.runtime.providers import parakeet_environment as environment
+from tsumgi.runtime.providers import parakeet_process as process
 from parakeet_fixtures import staged_environment
 
 

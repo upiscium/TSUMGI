@@ -3,7 +3,7 @@
 let
   # The pinned nixpkgs FastAPI package currently pulls its own upstream
   # inline-snapshot test dependency, whose test suite is broken independently
-  # of AstrumWeaver. AstrumWeaver consumes FastAPI as a runtime dependency only,
+  # of TSUMGI. TSUMGI consumes FastAPI as a runtime dependency only,
   # so strip FastAPI's check-only inputs rather than overriding inline-snapshot
   # globally.
   fastapiRuntime = python312Packages.fastapi.overridePythonAttrs (_: {
@@ -12,8 +12,8 @@ let
   });
 in
 python312Packages.buildPythonPackage {
-  pname = "astrumweaver";
-  version = "0.2.1";
+  pname = "tsumgi";
+  version = "0.3.0pre1";
   pyproject = true;
 
   src = lib.cleanSourceWith {
@@ -35,8 +35,8 @@ python312Packages.buildPythonPackage {
   ];
 
   pythonImportsCheck = [
-    "astrumweaver"
-    "astrumweaver.control"
+    "tsumgi"
+    "tsumgi.control"
   ];
 
   doCheck = false;

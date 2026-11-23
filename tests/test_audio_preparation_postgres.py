@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from astrumweaver.control import PostgresControlRepository
+from tsumgi.control import PostgresControlRepository
 from audio_epoch_acceptance import make_harness, snapshot_repository
 from audio_preparation_cases import AudioPreparationCases
 from test_audio_artifact_authority_postgres import isolated_database
@@ -14,9 +14,9 @@ from worker_identity_cases import WORKERS
 
 
 def _strict_mode():
-    value = os.environ.get("ASTRUMWEAVER_REQUIRE_AUDIO_PREPARATION_POSTGRES", "0")
+    value = os.environ.get("TSUMGI_REQUIRE_AUDIO_PREPARATION_POSTGRES", "0")
     if value not in {"0", "1"}:
-        pytest.fail("ASTRUMWEAVER_REQUIRE_AUDIO_PREPARATION_POSTGRES must be 0 or 1")
+        pytest.fail("TSUMGI_REQUIRE_AUDIO_PREPARATION_POSTGRES must be 0 or 1")
     return value == "1"
 
 
@@ -27,10 +27,10 @@ def postgres17_database(request):
         if strict:
             pytest.fail("Required PostgreSQL acceptance prerequisite missing: psycopg")
         pytest.skip("NOT_VERIFIED: psycopg driver unavailable")
-    if not os.environ.get("ASTRUMWEAVER_TEST_DATABASE_URL"):
+    if not os.environ.get("TSUMGI_TEST_DATABASE_URL"):
         if strict:
             pytest.fail("Required PostgreSQL acceptance prerequisite missing: test database URL")
-        pytest.skip("NOT_VERIFIED: ASTRUMWEAVER_TEST_DATABASE_URL absent")
+        pytest.skip("NOT_VERIFIED: TSUMGI_TEST_DATABASE_URL absent")
     try:
         dsn = request.getfixturevalue("isolated_database")
     except pytest.skip.Exception:

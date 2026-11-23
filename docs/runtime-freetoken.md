@@ -221,7 +221,7 @@ ft serve
   --host 127.0.0.1
   --port 1919
   --gpu <exact Worker GPU UUID>
-  --served-model-name astrumweaver
+  --served-model-name tsumgi
   --moe-strategy <auto|offload|cpu|hybrid>
   --memory-ratio <ratio>
   --max-running-requests <count>
@@ -428,7 +428,7 @@ newer GPUs:
 
 Install it with `setup/install-freetoken-sm61.sh` (root, Ubuntu 24.04, driver
 580+). The script installs the pinned CUDA 12.6 compiler/headers, creates
-`/opt/astrumweaver/freetoken-sm61/venv` from
+`/opt/tsumgi/freetoken-sm61/venv` from
 `setup/freetoken-sm61/requirements.lock` (PyTorch `2.14.1+cu126`, because the
 default cu130 build has no sm_61 kernels), and copies the fork files only after
 their SHA-256 matches `setup/freetoken-sm61/overlay.sha256`. Packages are
@@ -439,11 +439,11 @@ The script prints the provider settings for the host:
 
 ```json
 {
-  "executable": "/opt/astrumweaver/freetoken-sm61/venv/bin/ft",
+  "executable": "/opt/tsumgi/freetoken-sm61/venv/bin/ft",
   "attention_backend": "triton",
   "max_prefill_tokens": 2048,
   "cuda_home": "/usr/local/cuda-12.6",
-  "library_paths": ["/opt/astrumweaver/freetoken-sm61/venv/lib/python3.12/site-packages/nvidia/cu13/lib"]
+  "library_paths": ["/opt/tsumgi/freetoken-sm61/venv/lib/python3.12/site-packages/nvidia/cu13/lib"]
 }
 ```
 
@@ -467,7 +467,7 @@ RestrictAddressFamilies=AF_NETLINK
 TimeoutStartSec=600
 ```
 
-The Worker user's home (`/var/lib/astrumweaver`, the unit's `StateDirectory`)
+The Worker user's home (`/var/lib/tsumgi`, the unit's `StateDirectory`)
 holds those caches, so `ProtectSystem=strict` needs no extra writable paths.
 
 ## Current limitations

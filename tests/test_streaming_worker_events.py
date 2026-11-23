@@ -3,16 +3,16 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from astrumweaver import (
+from tsumgi import (
     JobEvent,
     JobResult,
     ResidencyReport,
     ResourceShape,
     WorkerSpec,
 )
-from astrumweaver.control import InMemoryControlRepository, JobStatus, JobSubmission
-from astrumweaver.control.api import create_app
-from astrumweaver.worker import ControlClient, WorkerRuntime
+from tsumgi.control import InMemoryControlRepository, JobStatus, JobSubmission
+from tsumgi.control.api import create_app
+from tsumgi.worker import ControlClient, WorkerRuntime
 
 
 WORKER_TOKEN = "worker-secret"

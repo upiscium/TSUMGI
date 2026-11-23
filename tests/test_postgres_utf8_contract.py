@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrumweaver.control import migrate
-from astrumweaver.control.postgres import PostgresControlRepository
-from astrumweaver.control.repository import StorageUnavailable
+from tsumgi.control import migrate
+from tsumgi.control.postgres import PostgresControlRepository
+from tsumgi.control.repository import StorageUnavailable
 
 
 class EncodingConnection:
@@ -60,7 +60,7 @@ def test_migration_preflight_refuses_bad_database_before_any_ddl(monkeypatch):
 
 
 def test_control_readiness_refuses_bad_database_before_schema_queries(monkeypatch):
-    from astrumweaver.control import postgres as postgres_module
+    from tsumgi.control import postgres as postgres_module
 
     # The per-call connection contract (no pool).
     monkeypatch.setattr(postgres_module, "ConnectionPool", None)
@@ -80,7 +80,7 @@ def test_control_readiness_refuses_bad_database_before_schema_queries(monkeypatc
 
 
 def test_all_control_requests_refuse_unsupported_encoding_not_only_ready(monkeypatch):
-    from astrumweaver.control import postgres as postgres_module
+    from tsumgi.control import postgres as postgres_module
 
     # The per-call connection contract (no pool).
     monkeypatch.setattr(postgres_module, "ConnectionPool", None)
@@ -109,7 +109,7 @@ def test_all_control_requests_refuse_unsupported_encoding_not_only_ready(monkeyp
 
 def test_utf8_probe_finishes_implicit_tx_before_explicit_read_committed(monkeypatch):
     """A successful preflight must not preempt the ownership isolation SET."""
-    from astrumweaver.control import postgres as postgres_module
+    from tsumgi.control import postgres as postgres_module
 
     # The per-call connection contract (no pool).
     monkeypatch.setattr(postgres_module, "ConnectionPool", None)
@@ -170,7 +170,7 @@ def test_utf8_probe_finishes_implicit_tx_before_explicit_read_committed(monkeypa
 
 
 def test_utf8_probe_transaction_cleanup_error_denies_database_access(monkeypatch):
-    from astrumweaver.control import postgres as postgres_module
+    from tsumgi.control import postgres as postgres_module
 
     # The per-call connection contract (no pool).
     monkeypatch.setattr(postgres_module, "ConnectionPool", None)
@@ -214,7 +214,7 @@ class FakePool:
 
 
 def _pooled_repo(monkeypatch, connection):
-    from astrumweaver.control import postgres as postgres_module
+    from tsumgi.control import postgres as postgres_module
 
     pool = FakePool(connection)
     repo = PostgresControlRepository("postgresql://test")
@@ -264,8 +264,8 @@ def test_pooled_connection_is_probed_per_checkout_and_rolled_back_on_return(monk
 def test_bounded_admission_never_borrows_from_the_pool(monkeypatch):
     from datetime import timedelta
 
-    from astrumweaver.control import postgres as postgres_module
-    from astrumweaver.control.models import utc_now
+    from tsumgi.control import postgres as postgres_module
+    from tsumgi.control.models import utc_now
 
     repo = PostgresControlRepository("postgresql://test")
     monkeypatch.setattr(repo, "_get_pool", lambda: pytest.fail("admission used the pool"))

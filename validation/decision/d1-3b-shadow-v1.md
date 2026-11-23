@@ -1,4 +1,4 @@
-# AstrumWeaver System-One Shadow Acceptance Evidence
+# TSUMGI System-One Shadow Acceptance Evidence
 
 This file is intentionally redacted. It contains no gateway URL, credential, fixture state/question/choice text, fixture case IDs, local path, hostname, Worker/GPU identity, or model artifact path. Scores are choice-set probabilities and are explicitly uncalibrated; this evidence grants no execution, permission, review, or release authority.
 
@@ -6,7 +6,7 @@ This file is intentionally redacted. It contains no gateway URL, credential, fix
 | --- | --- |
 | Evidence version | decision-shadow-v1 |
 | Date (UTC) | 2026-10-07 |
-| AstrumWeaver revision | 996678b1fb5820bc619e81df244f32dade21fc3c |
+| TSUMGI revision | 996678b1fb5820bc619e81df244f32dade21fc3c |
 | Logical profile | d1-3b-system-one-v1 |
 | Logical profile revision | sha256:8a2739ea6d7b504f7e55f7e225959a7b04aed191aa1ea9466daa35bf30d58a4a |
 | Deployment revision | sha256:d7265af19eef56107bde73f92addb55526eacbd2e7aad6b7df80c4de6bf4062b |

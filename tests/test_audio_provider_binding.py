@@ -5,43 +5,43 @@ from dataclasses import replace
 
 import pytest
 
-from astrumweaver.contracts import ResourceShape, WorkerSpec
-from astrumweaver.gateway.audio import (
+from tsumgi.contracts import ResourceShape, WorkerSpec
+from tsumgi.gateway.audio import (
     AudioGatewayProfile,
     AudioProfileCatalog,
     VoiceAlias,
     audio_semantic_revision,
 )
-from astrumweaver.runtime.contracts import RuntimeHostFacts
-from astrumweaver.runtime.providers.style_bert_vits2 import (
+from tsumgi.runtime.contracts import RuntimeHostFacts
+from tsumgi.runtime.providers.style_bert_vits2 import (
     StyleBertVits2ModelPin,
     StyleBertVits2ProviderConfig,
     StyleBertVits2Voice,
 )
-from astrumweaver.runtime.providers.style_bert_vits2_managed import (
+from tsumgi.runtime.providers.style_bert_vits2_managed import (
     StyleBertOwnedRuntimeSpec,
 )
-from astrumweaver.runtime.providers.voicevox import (
+from tsumgi.runtime.providers.voicevox import (
     VoicevoxAdapterConfig,
     VoicevoxVoicePin,
 )
-from astrumweaver.runtime.providers.voicevox_managed import (
+from tsumgi.runtime.providers.voicevox_managed import (
     VoicevoxOwnedRuntimeSpec,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,
     ServingDeploymentDeclaration,
     resolve_profile,
 )
-from astrumweaver.setup import (
+from tsumgi.setup import (
     AudioProviderBindingError,
     AudioProviderBindingReview,
     SetupPlan,
     review_audio_provider_binding,
 )
-from astrumweaver.setup.contracts import DeploymentPath, SetupHostSnapshot
+from tsumgi.setup.contracts import DeploymentPath, SetupHostSnapshot
 
 UUID = "c3b5b742-0000-4000-a000-000000000001"
 
@@ -433,7 +433,7 @@ def test_oversized_private_worker_snapshot_is_not_serialized_or_exposed():
 
 @pytest.mark.parametrize("kind", ["voicevox", "style-bert-vits2"])
 def test_review_only_audio_binding_never_supplies_a_manifest_opt_in(kind):
-    from astrumweaver.runtime import (
+    from tsumgi.runtime import (
         ExecutionDemand,
         GPUTopology,
         ModelDemand,

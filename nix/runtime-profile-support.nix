@@ -1,13 +1,13 @@
 { lib, nix, python312, source, writeShellApplication }:
 
 let
-  profile = "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp";
-  qwen38Profile = "/nix/var/nix/profiles/astrumweaver-runtime-qwen38";
+  profile = "/nix/var/nix/profiles/tsumgi-runtime-llama-cpp";
+  qwen38Profile = "/nix/var/nix/profiles/tsumgi-runtime-qwen38";
   candidateRef = "path:${source}";
-  registryRef = "astrumweaver-runtime-candidate";
+  registryRef = "tsumgi-runtime-candidate";
 in
 writeShellApplication {
-  name = "astrumweaver-runtime-profile";
+  name = "tsumgi-runtime-profile";
   text = ''
     profile=${lib.escapeShellArg profile}
     qwen38_profile=${lib.escapeShellArg qwen38Profile}
@@ -20,16 +20,16 @@ writeShellApplication {
     usage() {
       cat >&2 <<'EOF'
 usage:
-  astrumweaver-runtime-profile verify package llama-cpp
-  astrumweaver-runtime-profile ensure llama-cpp
-  astrumweaver-runtime-profile upgrade llama-cpp
-  astrumweaver-runtime-profile rollback llama-cpp
-  astrumweaver-runtime-profile status llama-cpp
-  astrumweaver-runtime-profile verify package qwen38-llama-cpp
-  astrumweaver-runtime-profile ensure qwen38-llama-cpp
-  astrumweaver-runtime-profile upgrade qwen38-llama-cpp
-  astrumweaver-runtime-profile rollback qwen38-llama-cpp
-  astrumweaver-runtime-profile status qwen38-llama-cpp
+  tsumgi-runtime-profile verify package llama-cpp
+  tsumgi-runtime-profile ensure llama-cpp
+  tsumgi-runtime-profile upgrade llama-cpp
+  tsumgi-runtime-profile rollback llama-cpp
+  tsumgi-runtime-profile status llama-cpp
+  tsumgi-runtime-profile verify package qwen38-llama-cpp
+  tsumgi-runtime-profile ensure qwen38-llama-cpp
+  tsumgi-runtime-profile upgrade qwen38-llama-cpp
+  tsumgi-runtime-profile rollback qwen38-llama-cpp
+  tsumgi-runtime-profile status qwen38-llama-cpp
 EOF
       exit "''${1:-2}"
     }
@@ -40,12 +40,12 @@ EOF
           profile=${lib.escapeShellArg profile}
           runtime_attr="runtime-llama-cpp"
           ;;
-        qwen38-llama-cpp|/nix/var/nix/profiles/astrumweaver-runtime-qwen38)
+        qwen38-llama-cpp|/nix/var/nix/profiles/tsumgi-runtime-qwen38)
           profile="$qwen38_profile"
           runtime_attr="runtime-qwen38-llama-cpp"
           ;;
         *)
-          echo "astrumweaver-runtime-profile: unsupported runtime package: ''${1-<missing>}" >&2
+          echo "tsumgi-runtime-profile: unsupported runtime package: ''${1-<missing>}" >&2
           exit 2
           ;;
       esac
@@ -157,11 +157,11 @@ PY
 
     status_llama_cpp() {
       if verify_llama_cpp; then
-        echo "satisfied: $profile is bound to this AstrumWeaver candidate"
+        echo "satisfied: $profile is bound to this TSUMGI candidate"
         return 0
       fi
       if managed_llama_cpp_profile; then
-        echo "candidate-mismatch: $profile is an AstrumWeaver llama.cpp profile from another candidate" >&2
+        echo "candidate-mismatch: $profile is an TSUMGI llama.cpp profile from another candidate" >&2
       elif [ -e "$profile" ] || [ -L "$profile" ]; then
         echo "invalid-profile: refusing unmanaged or mixed content at $profile" >&2
       else
@@ -172,13 +172,13 @@ PY
 
     install_or_upgrade_llama_cpp() {
       if verify_llama_cpp; then
-        echo "runtime profile already matches this AstrumWeaver candidate"
+        echo "runtime profile already matches this TSUMGI candidate"
         return 0
       fi
 
       if [ -e "$profile" ] || [ -L "$profile" ]; then
         if ! managed_llama_cpp_profile; then
-          echo "astrumweaver-runtime-profile: refusing to mutate unmanaged or mixed runtime profile: $profile" >&2
+          echo "tsumgi-runtime-profile: refusing to mutate unmanaged or mixed runtime profile: $profile" >&2
           exit 1
         fi
         "$nix_bin" profile upgrade \
@@ -193,10 +193,10 @@ PY
       fi
 
       if ! verify_llama_cpp; then
-        echo "astrumweaver-runtime-profile: Nix completed but the reviewed candidate binding is not active" >&2
+        echo "tsumgi-runtime-profile: Nix completed but the reviewed candidate binding is not active" >&2
         exit 1
       fi
-      echo "runtime profile now matches this AstrumWeaver candidate"
+      echo "runtime profile now matches this TSUMGI candidate"
     }
 
     case "''${1-}" in
@@ -219,7 +219,7 @@ PY
       rollback)
         require_llama_cpp "''${2-}"
         if ! managed_llama_cpp_profile; then
-          echo "astrumweaver-runtime-profile: refusing to rollback unmanaged or mixed runtime profile: $profile" >&2
+          echo "tsumgi-runtime-profile: refusing to rollback unmanaged or mixed runtime profile: $profile" >&2
           exit 1
         fi
         "$nix_bin" profile rollback --profile "$profile"

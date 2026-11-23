@@ -40,13 +40,13 @@ On generic systemd Linux, the standard llama.cpp installation path is managed
 by TSUMGI's dedicated Nix RuntimeBackend profile:
 
 ```text
-/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp
+/nix/var/nix/profiles/tsumgi-runtime-llama-cpp
 ```
 
 The TSUMGI flake output used by that profile is `#runtime-llama-cpp`,
 which is explicitly backed by nixpkgs `llama-cpp-cuda`. The Worker runtime
 deployment records the stable executable
-`/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server`.
+`/nix/var/nix/profiles/tsumgi-runtime-llama-cpp/bin/llama-server`.
 
 The generic-systemd prerequisite check validates the Nix profile provenance
 against the same TSUMGI candidate as the installer. A different
@@ -63,7 +63,7 @@ Decision mode is mutually exclusive with embedding mode and does not enable
 chat/Jinja templates. It does not require a separate llama-server CLI switch;
 llama.cpp discovers the decision head from model metadata.
 
-AstrumWeaver does not trust configuration alone. After startup, and again in
+TSUMGI does not trust configuration alone. After startup, and again in
 runtime health checks, the provider inspects `/v1/models` and requires the
 configured alias to advertise `architecture.output_modalities` containing
 `decisions`. A normal generation model therefore cannot become Ready as a
@@ -402,7 +402,7 @@ provider configuration enables:
 jinja = true
 ```
 
-AstrumWeaver then starts `llama-server` with `--jinja`. An optional reviewed
+TSUMGI then starts `llama-server` with `--jinja`. An optional reviewed
 template path:
 
 ```text

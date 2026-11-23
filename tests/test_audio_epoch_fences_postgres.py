@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from astrumweaver.control import PostgresControlRepository
+from tsumgi.control import PostgresControlRepository
 from audio_epoch_fence_cases import AudioEpochFenceCases, clock, fence
 from test_audio_artifact_authority import EPOCH, setup_claim
 from test_audio_artifact_authority_postgres import isolated_database, wait_for_blocker
@@ -26,8 +26,8 @@ class TestPostgresAudioEpochFences(AudioEpochFenceCases):
 
 
 def test_fence_is_independently_read_after_repository_reopen(authority_repo, postgres17_database, clock):
-    from astrumweaver.control import ConflictError
-    from astrumweaver.execution import JobResult
+    from tsumgi.control import ConflictError
+    from tsumgi.execution import JobResult
 
     claim = setup_claim(authority_repo, clock.now)
     expected = fence(authority_repo)
@@ -107,7 +107,7 @@ def test_fence_commits_while_job_locked_then_waiting_positive_operation_is_denie
     authority_repo, postgres17_database, clock, operation,
 ):
     import psycopg
-    from astrumweaver.control import ConflictError
+    from tsumgi.control import ConflictError
 
     repo = authority_repo
     claim = setup_claim(repo, clock.now)
@@ -131,7 +131,7 @@ def test_fence_commits_while_job_locked_then_waiting_positive_operation_is_denie
 
 def _positive_operation(repo, claim, now, operation):
     if operation == "complete":
-        from astrumweaver.execution import JobResult
+        from tsumgi.execution import JobResult
 
         return repo.complete_job(claim.job_id, JobResult(text="synthetic"),
             worker_id="owner", lease_token=claim.lease_token,
@@ -141,7 +141,7 @@ def _positive_operation(repo, claim, now, operation):
             lease_token=claim.lease_token, runtime_instance_epoch=EPOCH,
             kind="progress", payload={}, now=now)
     if operation == "heartbeat":
-        from astrumweaver.control import WorkerHeartbeat
+        from tsumgi.control import WorkerHeartbeat
 
         return repo.heartbeat_worker("owner", WorkerHeartbeat(
             runtime_instance_epoch=EPOCH, active_job_id=claim.job_id,

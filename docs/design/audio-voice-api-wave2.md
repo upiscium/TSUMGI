@@ -48,7 +48,7 @@ lists the selected profile's mappings; it does not choose a voice for synthesis.
 
 The successful JSON object has `object: "list"`, the exact `model`, `data` with
 only each alias's `alias`, `speaker_id`, `style_id`, `locale`, `license_id` and
-reviewed public `attribution`, and `x_astrumweaver` with:
+reviewed public `attribution`, and `x_tsumgi` with:
 
 - backend kind, capability and operation schema;
 - exact profile, deployment and serving-contract revisions;
@@ -96,7 +96,7 @@ be collected by the coordinator; none were executed/computed here. Preserve
 uncommitted additions at exactly these paths:
 
 ```text
-src/astrumweaver/gateway/audio_voice_api.py
+src/tsumgi/gateway/audio_voice_api.py
 tests/test_audio_voice_api.py
 docs/design/audio-voice-api-wave2.md
 ```

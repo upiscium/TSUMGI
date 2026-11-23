@@ -153,7 +153,7 @@ The schema is versioned by ordered SQL migrations, beginning with:
 - migrations/001_control_plane.sql
 - migrations/002_worker_accelerators.sql
 
-`schema_migrations` is the canonical applied-version ledger. The Control readiness check compares that ledger with the migration files packaged with the running binary, so starting a newer binary against an older unmigrated database remains Not Ready until `astrumweaver-migrate` succeeds.
+`schema_migrations` is the canonical applied-version ledger. The Control readiness check compares that ledger with the migration files packaged with the running binary, so starting a newer binary against an older unmigrated database remains Not Ready until `tsumgi-migrate` succeeds.
 
 PostgreSQL is the production durable backend for v0.1. The in-memory repository exists as a deterministic reference backend for unit tests and contract development; production setup must not silently fall back to it.
 

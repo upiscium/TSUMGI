@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from astrumweaver import JobResult, ResidencyReport
-from astrumweaver.execution import JobRequest
-from astrumweaver.serving import (
+from tsumgi import JobResult, ResidencyReport
+from tsumgi.execution import JobRequest
+from tsumgi.serving import (
     DeploymentIdentity,
     ServingContract,
     ServingDeploymentDeclaration,
 )
-from astrumweaver.worker import require_executor_serving_features
+from tsumgi.worker import require_executor_serving_features
 
 
 def digest(character: str) -> str:

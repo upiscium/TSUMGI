@@ -10,7 +10,7 @@ The existing #180 B4 review_audio_setup validates Gateway catalog/profile to imm
 
 ## Supported source-only binding
 
-The function astrumweaver.setup.review_audio_provider_binding takes enabled, a mandatory explicit catalog profile ID, AudioProfileCatalog, ServingDeploymentDeclaration, one WorkerSpec, an existing SetupHostSnapshot and exactly one provider-local VoicevoxOwnedRuntimeSpec or StyleBertOwnedRuntimeSpec.
+The function tsumgi.setup.review_audio_provider_binding takes enabled, a mandatory explicit catalog profile ID, AudioProfileCatalog, ServingDeploymentDeclaration, one WorkerSpec, an existing SetupHostSnapshot and exactly one provider-local VoicevoxOwnedRuntimeSpec or StyleBertOwnedRuntimeSpec.
 
 - **Disable:** enabled=False returns one constant disabled report without reading optional inputs or doing I/O.
 - **Gateway to Serving:** Reuse B4 exact logical Profile revision, deployment, single audio.synthesize / openai-audio-speech-v1 contract and Worker audio-capability preflight. No fallback or automatic model selection.

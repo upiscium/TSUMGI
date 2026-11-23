@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository, daemon
-from astrumweaver.control.api import create_app
+from tsumgi.control import InMemoryControlRepository, daemon
+from tsumgi.control.api import create_app
 from audio_epoch_acceptance import CLIENT_TOKEN, E1, E2, WORKER_ID, WORKER_TOKEN
 from audio_preparation_cases import REQUEST, digest, prepare, qualification_for
 from test_audio_preparation import preparation_harness  # noqa: F401  (fixture)
@@ -14,9 +14,9 @@ from worker_identity_cases import WORKERS
 
 
 def _configure(tmp_path, monkeypatch, text):
-    monkeypatch.setenv("ASTRUMWEAVER_DATABASE_URL", "postgresql://unused.invalid/prep-config")
-    monkeypatch.setenv("ASTRUMWEAVER_CLIENT_TOKEN", CLIENT_TOKEN)
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", WORKER_TOKEN)
+    monkeypatch.setenv("TSUMGI_DATABASE_URL", "postgresql://unused.invalid/prep-config")
+    monkeypatch.setenv("TSUMGI_CLIENT_TOKEN", CLIENT_TOKEN)
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", WORKER_TOKEN)
     path = tmp_path / "control.toml"
     path.write_text(text)
     return str(path)

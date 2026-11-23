@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrumweaver.runtime.providers import voicevox_manifest as manifest
-from astrumweaver.runtime.providers import voicevox_release as release
+from tsumgi.runtime.providers import voicevox_manifest as manifest
+from tsumgi.runtime.providers import voicevox_release as release
 
 RIGHTS = "sha256:" + "a" * 64
 

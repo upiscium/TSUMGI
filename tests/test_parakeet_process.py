@@ -8,7 +8,7 @@ import threading
 import time
 
 import pytest
-from astrumweaver.runtime.providers import parakeet_process as process
+from tsumgi.runtime.providers import parakeet_process as process
 
 _REV = "44edb27eea9317daf89333e75eb830db4b1cc298"
 _SHA = "a2ed2aab9c82cce4e9b699dca669184d7525c7b5e1eb8c3f7b789421bc3637e8"
@@ -138,7 +138,7 @@ def test_wrong_request_id_result_rejected_and_child_reaped(tmp_path, monkeypatch
     assert p._proc.poll() is not None
 
 def test_duplicate_json_keys_rejected():
-    from astrumweaver.runtime.providers.parakeet_child import _recv
+    from tsumgi.runtime.providers.parakeet_child import _recv
     import io
     raw = b'{"kind":"a","kind":"b"}'
     with pytest.raises(ValueError):

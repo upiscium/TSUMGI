@@ -5,7 +5,7 @@ Tracking: #91 / #95. Shared serving substrate: #93.
 ## First implementation scope
 
 The first explicitly supported embedding backend is llama.cpp running a dedicated
-embedding model with `--embeddings`. This does not claim that every AstrumWeaver
+embedding model with `--embeddings`. This does not claim that every TSUMGI
 runtime provider supports embeddings.
 
 The public edge surface is a documented subset of `POST /v1/embeddings`:
@@ -13,11 +13,11 @@ The public edge surface is a documented subset of `POST /v1/embeddings`:
 - `model` is a configured logical serving profile ID;
 - `input` is one string or a non-empty array of strings;
 - `encoding_format` is omitted or exactly `float`;
-- `x_astrumweaver_embedding_space_id` is required and must exactly match the
+- `x_tsumgi_embedding_space_id` is required and must exactly match the
   configured immutable space before admission;
 - token-array input, base64 output, arbitrary dimensions and undocumented fields
   fail closed;
-- AstrumWeaver adds a namespaced response extension carrying the immutable
+- TSUMGI adds a namespaced response extension carrying the immutable
   embedding-space identity.
 
 ## Immutable embedding-space identity

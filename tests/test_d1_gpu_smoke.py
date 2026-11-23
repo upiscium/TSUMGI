@@ -13,18 +13,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrumweaver.validation import d1_gpu_smoke as smoke
+from tsumgi.validation import d1_gpu_smoke as smoke
 
 
 def _package(root: Path, arch: str = "61", *, server: str = "#!/bin/sh\nexit 0\n") -> Path:
     runtime = root / "runtime"
     binpath = runtime / "bin" / "llama-server"
-    metadata = runtime / "share" / "astrumweaver"
+    metadata = runtime / "share" / "tsumgi"
     metadata.mkdir(parents=True)
     binpath.parent.mkdir()
     binpath.write_text("#!/bin/sh\nexit 0\n")
     binpath.chmod(0o755)
-    launcher = runtime / "bin" / "astrumweaver-llama-server"
+    launcher = runtime / "bin" / "tsumgi-llama-server"
     launcher.write_text(server)
     launcher.chmod(0o755)
     (metadata / "llama-cpp-revision").write_text(smoke.SOURCE_REVISION + "\n")
@@ -41,12 +41,12 @@ def _port() -> int:
 
 def test_exact_package_architecture_and_provenance(tmp_path):
     p = _package(tmp_path)
-    assert smoke._package_binary(p, 1, ("6.1",)) == p / "bin/astrumweaver-llama-server"
+    assert smoke._package_binary(p, 1, ("6.1",)) == p / "bin/tsumgi-llama-server"
     with pytest.raises(smoke.SmokeError, match="gpu_architecture_not_qualified"):
         smoke._package_binary(p, 1, ("8.6", "6.1"))
     with pytest.raises(smoke.SmokeError, match="gpu_topology_not_qualified"):
         smoke._package_binary(p, 2, ("6.1", "6.1"))
-    (p / "share/astrumweaver/llama-cpp-revision").write_text("different\n")
+    (p / "share/tsumgi/llama-cpp-revision").write_text("different\n")
     with pytest.raises(smoke.SmokeError, match="runtime_provenance_mismatch"):
         smoke._package_binary(p, 1, ("6.1",))
 
@@ -168,7 +168,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply({"status": "ok"})
         elif self.path == "/v1/models":
             output=["text"] if os.getenv("TEST_BAD_MODALITY") else ["decisions"]
-            if os.getenv("ASTRUMWEAVER_WORKER_TOKEN"):
+            if os.getenv("TSUMGI_WORKER_TOKEN"):
                 output=["text"]
             self.reply({"data":[{"architecture":{"input_modalities":["text"],
                                                    "output_modalities":output}}]})
@@ -218,7 +218,7 @@ def test_owned_server_cleanup_and_no_public_model_data(tmp_path, monkeypatch, ba
     monkeypatch.setattr(smoke, "_file_sha256",
                         lambda p: smoke.MODEL_SHA256 if p == model else "fake-runtime-digest")
     # Runtime must NOT inherit secrets from this operator process.
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "test-secret-must-not-leak")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "test-secret-must-not-leak")
     port = _port()
     evidence = tmp_path / "private.json"
     if bad_modality:
@@ -322,7 +322,7 @@ def test_only_real_nix_store_artifacts_admitted(tmp_path):
 
 def test_pinned_package_real_store_path_is_accepted_when_provided():
     import os
-    path = os.getenv("ASTRUMWEAVER_TEST_NIX_PACKAGE")
+    path = os.getenv("TSUMGI_TEST_NIX_PACKAGE")
     if not path:
         pytest.skip("standalone Nix package requires authorized GPU test host")
     smoke._require_nix_store_package(Path(path))

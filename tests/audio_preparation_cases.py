@@ -21,7 +21,7 @@ def digest(label: str) -> str:
 def qualification_for(harness, repository, *, worker_id=WORKER_ID,
                      reviewed=True, issued_at=None, expires_at=None,
                      **overrides):
-    from astrumweaver.control.audio_prepare import (
+    from tsumgi.control.audio_prepare import (
         AudioPreparationQualification, worker_spec_revision,
     )
 
@@ -217,7 +217,7 @@ class AudioPreparationCases:
 
     def test_expiry_replay_and_request_id_reuse_are_conflicts_not_server_errors(self, preparation_harness):
         import pytest
-        from astrumweaver.control.repository import ConflictError
+        from tsumgi.control.repository import ConflictError
 
         h = preparation_harness
         repo = h.qualification_repository

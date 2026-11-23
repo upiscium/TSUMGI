@@ -9,7 +9,7 @@ assert stdenvNoCC.hostPlatform.system == "x86_64-linux";
 assert validSha256 rightsReviewSha256;
 assert builtins.isPath archive || builtins.isString archive;
 stdenvNoCC.mkDerivation {
-  pname = "astrumweaver-voicevox-cpu-bundle";
+  pname = "tsumgi-voicevox-cpu-bundle";
   version = "0.26.2";
 
   # Explicit caller-provided, locally acquired archive; deliberately no fetcher.
@@ -23,7 +23,7 @@ stdenvNoCC.mkDerivation {
 
   installPhase = ''
     runHook preInstall
-    ${python3}/bin/python3 ${../src/astrumweaver/runtime/providers/voicevox_release.py} verify-archive "$src"
+    ${python3}/bin/python3 ${../src/tsumgi/runtime/providers/voicevox_release.py} verify-archive "$src"
     tmp="$TMPDIR/voicevox-unpack"
     mkdir -m 0700 "$tmp"
     ${lib.getExe sevenzip} x -bd -y "-o$tmp" "$src"
@@ -32,17 +32,17 @@ stdenvNoCC.mkDerivation {
     test "$(find "$tmp" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
     install -d "$out/lib/voicevox"
     cp -R "$tmp/linux-cpu-x64" "$out/lib/voicevox/linux-cpu-x64"
-    install -d "$out/share/astrumweaver"
-    ${python3}/bin/python3 ${../src/astrumweaver/runtime/providers/voicevox_release.py} record \
+    install -d "$out/share/tsumgi"
+    ${python3}/bin/python3 ${../src/tsumgi/runtime/providers/voicevox_release.py} record \
       "$out/lib/voicevox/linux-cpu-x64" \
-      "$out/share/astrumweaver/voicevox-bundle.json" \
+      "$out/share/tsumgi/voicevox-bundle.json" \
       --rights-review-sha256 ${lib.escapeShellArg rightsReviewSha256}
     runHook postInstall
   '';
 
   passthru = {
     engineSubdirectory = "lib/voicevox/linux-cpu-x64";
-    receiptSubpath = "share/astrumweaver/voicevox-bundle.json";
+    receiptSubpath = "share/tsumgi/voicevox-bundle.json";
     nativeExecutionQualified = false;
     archiveSha256 = "483633de02700cd918731538543a22ce895877aeb09450a990ff38af6e4c26c0";
     runSha256 = "acf74848282c0ff6f0aaf8514427c5f44b0992c26b48448d76b35a97dbe81a25";

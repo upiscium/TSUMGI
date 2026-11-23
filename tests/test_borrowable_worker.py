@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from astrumweaver.worker.mode import (
+from tsumgi.worker.mode import (
     BorrowableWorkerController,
     GPUProcess,
     ModeTransitionError,
@@ -158,7 +158,7 @@ def test_development_transition_fails_if_gpu_context_remains_after_stop() -> Non
     assert not service.active
 
 
-def test_astrumweaver_transition_rejects_development_gpu_process() -> None:
+def test_tsumgi_transition_rejects_development_gpu_process() -> None:
     health = FakeHealth()
     health.payload = None
     service = FakeService(health, active=False)
@@ -172,36 +172,36 @@ def test_astrumweaver_transition_rejects_development_gpu_process() -> None:
     controller = BorrowableWorkerController(service, health, gpu)
 
     with pytest.raises(ModeTransitionError, match="development or unrelated"):
-        controller.to_astrumweaver()
+        controller.to_tsumgi()
 
     assert service.actions == []
     assert gpu.identity_checks == 1
     assert not service.active
 
 
-def test_astrumweaver_transition_checks_identity_then_starts_and_waits_ready() -> None:
+def test_tsumgi_transition_checks_identity_then_starts_and_waits_ready() -> None:
     health = FakeHealth()
     health.payload = None
     service = FakeService(health, active=False)
     gpu = FakeGPU()
     controller = BorrowableWorkerController(service, health, gpu)
 
-    report = controller.to_astrumweaver(start_timeout_seconds=1.0)
+    report = controller.to_tsumgi(start_timeout_seconds=1.0)
 
     assert gpu.identity_checks == 1
     assert service.actions == ["start"]
-    assert report.mode == "astrumweaver"
+    assert report.mode == "tsumgi"
     assert report.service_active
     assert report.worker_ready
 
 
-def test_status_distinguishes_draining_from_astrumweaver() -> None:
+def test_status_distinguishes_draining_from_tsumgi() -> None:
     health = FakeHealth()
     service = FakeService(health)
     gpu = FakeGPU()
     controller = BorrowableWorkerController(service, health, gpu)
 
-    assert controller.status().mode == "astrumweaver"
+    assert controller.status().mode == "tsumgi"
 
     health.payload["draining"] = True
     health.payload["ready"] = False
@@ -231,7 +231,7 @@ def test_nvidia_pmon_maps_processes_back_to_expected_gpu_uuid(monkeypatch) -> No
             )
         raise AssertionError(arguments)
 
-    monkeypatch.setattr("astrumweaver.worker.mode.subprocess.run", fake_run)
+    monkeypatch.setattr("tsumgi.worker.mode.subprocess.run", fake_run)
 
     probe = NvidiaGPUProbe(("GPU-a",))
     processes = probe.active_processes()
@@ -254,7 +254,7 @@ def test_nvidia_process_inspection_fails_closed(monkeypatch) -> None:
         stderr = "unsupported"
 
     monkeypatch.setattr(
-        "astrumweaver.worker.mode.subprocess.run",
+        "tsumgi.worker.mode.subprocess.run",
         lambda *args, **kwargs: Result(),
     )
 
@@ -264,7 +264,7 @@ def test_nvidia_process_inspection_fails_closed(monkeypatch) -> None:
         probe.active_processes()
 
 
-def test_astrumweaver_transition_recovers_from_existing_draining_worker() -> None:
+def test_tsumgi_transition_recovers_from_existing_draining_worker() -> None:
     health = FakeHealth()
     health.payload["draining"] = True
     health.payload["ready"] = False
@@ -290,27 +290,27 @@ def test_astrumweaver_transition_recovers_from_existing_draining_worker() -> Non
         sleep=sleep,
     )
 
-    report = controller.to_astrumweaver(
+    report = controller.to_tsumgi(
         start_timeout_seconds=2.0,
         drain_timeout_seconds=2.0,
     )
 
     assert service.actions == ["stop", "start"]
     assert gpu.identity_checks == 1
-    assert report.mode == "astrumweaver"
+    assert report.mode == "tsumgi"
 
 
-def test_active_ready_astrumweaver_transition_is_idempotent() -> None:
+def test_active_ready_tsumgi_transition_is_idempotent() -> None:
     health = FakeHealth()
     service = FakeService(health)
     gpu = FakeGPU()
     controller = BorrowableWorkerController(service, health, gpu)
 
-    report = controller.to_astrumweaver(start_timeout_seconds=1.0)
+    report = controller.to_tsumgi(start_timeout_seconds=1.0)
 
     assert service.actions == []
     assert gpu.identity_checks == 0
-    assert report.mode == "astrumweaver"
+    assert report.mode == "tsumgi"
 
 
 def test_systemd_drain_signal_targets_worker_main_process(monkeypatch) -> None:
@@ -325,10 +325,10 @@ def test_systemd_drain_signal_targets_worker_main_process(monkeypatch) -> None:
         calls.append(tuple(arguments))
         return Result()
 
-    monkeypatch.setattr("astrumweaver.worker.mode.subprocess.run", fake_run)
+    monkeypatch.setattr("tsumgi.worker.mode.subprocess.run", fake_run)
 
     service = SystemdServiceManager(
-        "astrumweaver-worker.service",
+        "tsumgi-worker.service",
         systemctl="/bin/systemctl-test",
     )
     service.request_drain()
@@ -339,6 +339,6 @@ def test_systemd_drain_signal_targets_worker_main_process(monkeypatch) -> None:
             "kill",
             "--kill-whom=main",
             "--signal=SIGUSR1",
-            "astrumweaver-worker.service",
+            "tsumgi-worker.service",
         )
     ]

@@ -20,13 +20,13 @@ import httpx
 import pytest
 import uvicorn
 
-from astrumweaver.audio.artifact_spool import ArtifactSpool
-from astrumweaver.audio.input_channel import AudioInputChannel
-from astrumweaver.control import (
+from tsumgi.audio.artifact_spool import ArtifactSpool
+from tsumgi.audio.input_channel import AudioInputChannel
+from tsumgi.control import (
     InMemoryControlRepository, JobSubmission, PostgresControlRepository,
 )
-from astrumweaver.control.api import create_app
-from astrumweaver.control.repository import ConflictError, NotFoundError, StorageUnavailable
+from tsumgi.control.api import create_app
+from tsumgi.control.repository import ConflictError, NotFoundError, StorageUnavailable
 from test_audio_artifact_authority import EPOCH, setup_claim
 from test_audio_artifact_authority_postgres import isolated_database
 from test_audio_input_channel import WAV
@@ -341,7 +341,7 @@ def test_real_postgres_commit_ack_lost_after_successful_commit(
 
     # Guard runs before the fixture creates/migrates ANY database.
     backend_host, backend_port = _require_local_pg_destination(
-        os.environ.get("ASTRUMWEAVER_TEST_DATABASE_URL"),
+        os.environ.get("TSUMGI_TEST_DATABASE_URL"),
     )
     isolated_database = request.getfixturevalue("isolated_database")
     direct_repo = PostgresControlRepository(isolated_database, lease_seconds=60)

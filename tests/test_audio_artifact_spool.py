@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from astrumweaver.audio import ArtifactSpool
-from astrumweaver.audio.artifact_spool import ArtifactSpool as ImplementedArtifactSpool
+from tsumgi.audio import ArtifactSpool
+from tsumgi.audio.artifact_spool import ArtifactSpool as ImplementedArtifactSpool
 
 
 class Clock:
@@ -325,9 +325,9 @@ def test_chg002_failed_initialization_removes_only_new_directory(tmp_path, failu
         return real_open(path, flags, *args, **kwargs)
 
     if failure == "open":
-        mock = patch("astrumweaver.audio.artifact_spool.os.open", side_effect=failed_open)
+        mock = patch("tsumgi.audio.artifact_spool.os.open", side_effect=failed_open)
     else:
-        mock = patch("astrumweaver.audio.artifact_spool.os.fchmod", side_effect=OSError("fchmod failed"))
+        mock = patch("tsumgi.audio.artifact_spool.os.fchmod", side_effect=OSError("fchmod failed"))
 
     with mock:
         with pytest.raises((OSError, ValueError)):
@@ -341,7 +341,7 @@ def test_chg003_write_failure_is_storage_error_and_cleans_interrupted_file(tmp_p
     root.mkdir(mode=0o700)
     root.chmod(0o700)
     spool = ArtifactSpool(root, max_bytes=16, ttl_seconds=5)
-    with patch("astrumweaver.audio.artifact_spool.os.write",
+    with patch("tsumgi.audio.artifact_spool.os.write",
                side_effect=OSError("injected disk-write failure")):
         with pytest.raises(OSError):
             spool.stage(b"private bytes", scope="job/a/attempt/1")
@@ -406,7 +406,7 @@ def test_chg003_constructor_enospc_is_storage_error(tmp_path):
             raise OSError(errno.ENOSPC, "simulated disk full")
         return real_mkdir(path, mode, dir_fd=dir_fd)
 
-    with patch("astrumweaver.audio.artifact_spool.os.mkdir", side_effect=disk_full):
+    with patch("tsumgi.audio.artifact_spool.os.mkdir", side_effect=disk_full):
         with pytest.raises(OSError) as failure:
             ArtifactSpool(root, max_bytes=64, ttl_seconds=5)
     assert failure.value.errno == errno.ENOSPC
@@ -418,7 +418,7 @@ def test_chg003_zero_progress_write_is_storage_error(tmp_path):
     root.mkdir(mode=0o700)
     root.chmod(0o700)
     spool = ArtifactSpool(root, max_bytes=64, ttl_seconds=5)
-    with patch("astrumweaver.audio.artifact_spool.os.write", return_value=0):
+    with patch("tsumgi.audio.artifact_spool.os.write", return_value=0):
         with pytest.raises(OSError):
             spool.stage(b"not-written", scope="owner")
     assert not any(p.is_file() for p in root.rglob("*"))
@@ -438,7 +438,7 @@ def test_chg003_partial_write_then_eio_leaves_no_artifact(tmp_path):
             return real_write(fd, memoryview(data)[:3])
         raise OSError(errno.EIO, "injected interrupted file write")
 
-    with patch("astrumweaver.audio.artifact_spool.os.write", side_effect=partial_then_error):
+    with patch("tsumgi.audio.artifact_spool.os.write", side_effect=partial_then_error):
         with pytest.raises(OSError) as failure:
             spool.stage(b"private-audio-content", scope="owner")
     assert failure.value.errno == errno.EIO
@@ -587,8 +587,8 @@ def test_failed_create_does_not_publish_or_charge_quota(quota_env, fault):
     target = "fchmod" if fault == "fchmod" else "write"
     effect = OSError(errno.EIO, "injected chmod fault") if fault == "fchmod" else fail_write
     before = set(root.rglob("*"))
-    with patch("astrumweaver.audio.artifact_spool.os.open", side_effect=observe_open):
-        with patch(f"astrumweaver.audio.artifact_spool.os.{target}", side_effect=effect) as injected:
+    with patch("tsumgi.audio.artifact_spool.os.open", side_effect=observe_open):
+        with patch(f"tsumgi.audio.artifact_spool.os.{target}", side_effect=effect) as injected:
             with pytest.raises(OSError) as failure:
                 spool.stage(b"12345678", scope="owner")
             assert injected.called
@@ -607,9 +607,9 @@ def test_failed_create_does_not_publish_or_charge_quota(quota_env, fault):
 
 def test_failed_create_cleanup_unlink_never_authorizes_or_charges_orphan(quota_env):
     spool, root, _ = quota_env(max_total_bytes=8, max_artifacts=1)
-    with patch("astrumweaver.audio.artifact_spool.os.write",
+    with patch("tsumgi.audio.artifact_spool.os.write",
                side_effect=OSError(errno.ENOSPC, "disk full")):
-        with patch("astrumweaver.audio.artifact_spool.os.unlink",
+        with patch("tsumgi.audio.artifact_spool.os.unlink",
                    side_effect=OSError(errno.EACCES, "cleanup denied")) as injected:
             with pytest.raises(OSError):
                 spool.stage(b"12345678", scope="owner")
@@ -629,7 +629,7 @@ def test_failed_authorized_unlink_preserves_record_and_both_quotas(quota_env):
     spool, root, _ = quota_env(max_total_bytes=8, max_artifacts=1)
     receipt = spool.stage(b"12345678", scope="owner")
     entry = backing_file(root, b"12345678")
-    with patch("astrumweaver.audio.artifact_spool.os.unlink",
+    with patch("tsumgi.audio.artifact_spool.os.unlink",
                side_effect=OSError(errno.EIO, "unlink failed")) as injected:
         with pytest.raises(OSError):
             spool.delete(receipt["artifact_id"], scope="owner")
@@ -745,7 +745,7 @@ def test_reap_failed_unlink_is_not_counted_or_released(quota_env):
     spool.stage(b"12345678", scope="owner")
     entry = backing_file(root, b"12345678")
     clock.now = 110
-    with patch("astrumweaver.audio.artifact_spool.os.unlink",
+    with patch("tsumgi.audio.artifact_spool.os.unlink",
                side_effect=OSError(errno.EIO, "reap unlink failed")) as injected:
         # Storage errors may propagate or be left for a later explicit retry;
         # neither policy may report a successful removal.
@@ -779,7 +779,7 @@ def test_injected_directory_rename_during_failed_write_preserves_outside(quota_e
         directory.symlink_to(outside, target_is_directory=True)
         raise OSError(errno.EIO, "injected rename during interrupted write")
 
-    with patch("astrumweaver.audio.artifact_spool.os.write", side_effect=rename_then_fail) as injected:
+    with patch("tsumgi.audio.artifact_spool.os.write", side_effect=rename_then_fail) as injected:
         with pytest.raises(OSError):
             spool.stage(b"12345678", scope="owner")
         assert injected.called
@@ -811,9 +811,9 @@ def test_reap_refuses_foreign_owner_without_releasing_quota(quota_env):
     # Simulate ownership metadata only: changing UID would require privilege.
     # The file, directory, identity checks and quota operations remain real.
     clock.now = 110
-    with patch("astrumweaver.audio.artifact_spool.os.stat",
+    with patch("tsumgi.audio.artifact_spool.os.stat",
                side_effect=lambda *a, **kw: foreign_owner(real_stat(*a, **kw))):
-        with patch("astrumweaver.audio.artifact_spool.os.fstat",
+        with patch("tsumgi.audio.artifact_spool.os.fstat",
                    side_effect=lambda *a, **kw: foreign_owner(real_fstat(*a, **kw))):
             assert spool.reap_expired() == 0
     assert observations

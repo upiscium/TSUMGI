@@ -14,7 +14,7 @@
         config.allowUnfree = true;
       };
 
-      astrumweaver = pkgs.callPackage ./nix/package.nix { };
+      tsumgi = pkgs.callPackage ./nix/package.nix { };
       integration = pkgs.callPackage ./nix/integration-package.nix { };
       runtimeLlamaCpp = runtimePkgs.llama-cpp-cuda;
       qwen38LlamaCore = runtimePkgs.callPackage ./nix/qwen38-llama-cpp.nix { };
@@ -29,18 +29,18 @@
         source = self;
       };
       control = pkgs.callPackage ./nix/control-support.nix {
-        inherit astrumweaver integration;
+        inherit tsumgi integration;
       };
       worker = pkgs.callPackage ./nix/worker-support.nix {
-        inherit astrumweaver integration;
+        inherit tsumgi integration;
       };
       installer = pkgs.callPackage ./nix/installer-support.nix {
-        inherit astrumweaver integration runtimeProfileSupport;
+        inherit tsumgi integration runtimeProfileSupport;
       };
       generatedNixosCheck = pkgs.writeShellApplication {
         name = "check-generated-nixos";
         runtimeInputs = [
-          (pkgs.python312.withPackages (_: [ astrumweaver ]))
+          (pkgs.python312.withPackages (_: [ tsumgi ]))
           pkgs.nix
         ];
         text = ''
@@ -58,10 +58,19 @@
           driverBridge = cudaPkgs.callPackage ./nix/decision-llama-driver-bridge.nix {
             inherit core;
           };
+          # The heavy llama.cpp build keeps the store-path name it had before the
+          # rename (`tsumgi-llama-decision-cuda-sm*`), so hosts that already
+          # hold it do not recompile CUDA llama.cpp. Its metadata therefore sits under
+          # share/tsumgi; this alias republishes it under share/tsumgi, where the
+          # code reads it.
+          metadata = cudaPkgs.runCommand "tsumgi-d1-decision-metadata-sm${cudaArch}" { } ''
+            mkdir -p "$out/share/tsumgi"
+            cp ${core}/share/tsumgi/* "$out/share/tsumgi/"
+          '';
         in
         cudaPkgs.buildEnv {
-          name = "astrumweaver-d1-decision-cuda-sm${cudaArch}-runtime";
-          paths = [ core driverBridge ];
+          name = "tsumgi-d1-decision-cuda-sm${cudaArch}-runtime";
+          paths = [ core driverBridge metadata ];
         };
       fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
         if [ "$1" = "--query-gpu=uuid" ]; then
@@ -86,7 +95,7 @@
               fsType = "tmpfs";
             };
 
-            services.astrumweaver.control = {
+            services.tsumgi.control = {
               enable = true;
               package = control;
               clientAuth = "none";
@@ -96,7 +105,7 @@
               };
             };
 
-            services.astrumweaver.worker = {
+            services.tsumgi.worker = {
               enable = true;
               package = worker;
               workerId = "smoke-worker";
@@ -106,7 +115,7 @@
               gpuUuids = [ "GPU-example-smoke" ];
               totalVramMb = 16384;
               maxSingleGpuVramMb = 16384;
-              executorFactory = "astrumweaver.executors.structured_echo:create_executor";
+              executorFactory = "tsumgi.executors.structured_echo:create_executor";
               nvidiaSmiPackage = fakeNvidia;
               borrowable.enable = true;
             };
@@ -125,7 +134,7 @@
               fsType = "tmpfs";
             };
 
-            services.astrumweaver.worker = {
+            services.tsumgi.worker = {
               enable = true;
               package = worker;
               workerId = "runtime-smoke-worker";
@@ -171,7 +180,7 @@
           ({ ... }: {
             system.stateVersion = "26.05";
             boot.isContainer = true;
-            services.astrumweaver.worker = {
+            services.tsumgi.worker = {
               enable = true;
               gpuIsolation.enable = true;
             };
@@ -185,32 +194,32 @@
         gpuIsolationNoGpuSmoke.config.assertions;
       borrowableModePackages = builtins.filter (
         package:
-          nixpkgs.lib.getName package == "astrumweaver-gpu-mode"
+          nixpkgs.lib.getName package == "tsumgi-gpu-mode"
       ) moduleSmoke.config.environment.systemPackages;
       borrowableMode = builtins.head borrowableModePackages;
       runtimeWorkerExec =
-        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStart;
+        runtimeModuleSmoke.config.systemd.services.tsumgi-worker.serviceConfig.ExecStart;
       runtimeWorkerPath = nixpkgs.lib.makeBinPath
-        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.path;
+        runtimeModuleSmoke.config.systemd.services.tsumgi-worker.path;
       runtimeDevicePolicy =
-        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.DevicePolicy;
+        runtimeModuleSmoke.config.systemd.services.tsumgi-worker.serviceConfig.DevicePolicy;
       runtimeDeviceAllow =
-        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.DeviceAllow;
+        runtimeModuleSmoke.config.systemd.services.tsumgi-worker.serviceConfig.DeviceAllow;
       runtimeEnvironment =
-        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.Environment;
+        runtimeModuleSmoke.config.systemd.services.tsumgi-worker.serviceConfig.Environment;
       runtimeWorkerPreflight =
-        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStartPre;
+        runtimeModuleSmoke.config.systemd.services.tsumgi-worker.serviceConfig.ExecStartPre;
       runtimeIsolationPreflight =
-        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker-gpu-isolation-preflight.serviceConfig.ExecStart;
+        runtimeModuleSmoke.config.systemd.services.tsumgi-worker-gpu-isolation-preflight.serviceConfig.ExecStart;
     in
     {
       packages.${system} = {
-        inherit astrumweaver control worker installer integration;
+        inherit tsumgi control worker installer integration;
         runtime-llama-cpp = runtimeLlamaCpp;
         runtime-qwen38-llama-cpp = runtimeQwen38;
         decision-llama-cuda-sm61 = decisionLlamaCuda "61";
         decision-llama-cuda-sm86 = decisionLlamaCuda "86";
-        default = astrumweaver;
+        default = tsumgi;
       };
 
       lib.mkVoicevoxCpuBundle = { pkgs, archive, rightsReviewSha256 }:
@@ -240,7 +249,7 @@
       nixosConfigurations.smoke = moduleSmoke;
 
       checks.${system} = {
-        inherit astrumweaver control worker installer integration;
+        inherit tsumgi control worker installer integration;
 
         setup-permissions = import ./nix/tests/setup-permissions.nix {
           inherit pkgs integration;
@@ -270,29 +279,29 @@
           inherit pkgs control;
         };
 
-        installation-surface = pkgs.runCommand "astrumweaver-installation-surface" { } ''
-          test -x ${installer}/bin/astrumweaver-setup-tui
-          test -x ${installer}/bin/astrumweaver-control
-          test -x ${installer}/bin/astrumweaver-migrate
-          test -x ${installer}/bin/astrumweaver-worker
-          test -x ${installer}/bin/astrumweaver-setup-control-plane
-          test -x ${installer}/bin/astrumweaver-setup-gpu-worker
-          test -x ${installer}/bin/astrumweaver-gpu-isolation-probe
-          test -x ${installer}/bin/astrumweaver-runtime-profile
-          ${installer}/bin/astrumweaver-runtime-profile --help >/dev/null
-          ${installer}/bin/astrumweaver-runtime-profile status llama-cpp >/dev/null 2>&1 || test "$?" = 1
-          ${installer}/bin/astrumweaver-runtime-profile status qwen38-llama-cpp >/dev/null 2>&1 || test "$?" = 1
+        installation-surface = pkgs.runCommand "tsumgi-installation-surface" { } ''
+          test -x ${installer}/bin/tsumgi-setup-tui
+          test -x ${installer}/bin/tsumgi-control
+          test -x ${installer}/bin/tsumgi-migrate
+          test -x ${installer}/bin/tsumgi-worker
+          test -x ${installer}/bin/tsumgi-setup-control-plane
+          test -x ${installer}/bin/tsumgi-setup-gpu-worker
+          test -x ${installer}/bin/tsumgi-gpu-isolation-probe
+          test -x ${installer}/bin/tsumgi-runtime-profile
+          ${installer}/bin/tsumgi-runtime-profile --help >/dev/null
+          ${installer}/bin/tsumgi-runtime-profile status llama-cpp >/dev/null 2>&1 || test "$?" = 1
+          ${installer}/bin/tsumgi-runtime-profile status qwen38-llama-cpp >/dev/null 2>&1 || test "$?" = 1
           # The retired Bonsai target must hit the unsupported-package exit 2.
-          if ${installer}/bin/astrumweaver-runtime-profile status bonsai-llama-cpp >/dev/null 2>&1; then exit 1; else test "$?" = 2; fi
-          test -x ${control}/bin/astrumweaver-control
-          test -x ${control}/bin/astrumweaver-migrate
-          test -x ${control}/bin/astrumweaver-setup-control-plane
-          test -x ${worker}/bin/astrumweaver-worker
-          test -x ${worker}/bin/astrumweaver-setup-gpu-worker
-          test -x ${worker}/bin/astrumweaver-gpu-isolation-probe
-          test -x ${worker}/bin/astrumweaver-setup-tui
-          test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
-          test -x ${worker}/bin/astrumweaver-opencode-chat-accept
+          if ${installer}/bin/tsumgi-runtime-profile status bonsai-llama-cpp >/dev/null 2>&1; then exit 1; else test "$?" = 2; fi
+          test -x ${control}/bin/tsumgi-control
+          test -x ${control}/bin/tsumgi-migrate
+          test -x ${control}/bin/tsumgi-setup-control-plane
+          test -x ${worker}/bin/tsumgi-worker
+          test -x ${worker}/bin/tsumgi-setup-gpu-worker
+          test -x ${worker}/bin/tsumgi-gpu-isolation-probe
+          test -x ${worker}/bin/tsumgi-setup-tui
+          test -x ${worker}/bin/tsumgi-runtime-deployment-accept
+          test -x ${worker}/bin/tsumgi-opencode-chat-accept
 
           # Execute the actual packaged TUI wrapper through a profile-like
           # symlink.  The wrapper must pass that lexical bin directory into
@@ -305,14 +314,14 @@
           PROFILE="$TEST_ROOT/installer-profile"
           MINIMAL_PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin
           PATH="$MINIMAL_PATH" \
-            "$PROFILE/bin/astrumweaver-setup-tui" --check-packaging \
+            "$PROFILE/bin/tsumgi-setup-tui" --check-packaging \
             > "$TEST_ROOT/packaging-a"
           grep -Fq "packaged tool authority: $PROFILE/bin" "$TEST_ROOT/packaging-a"
-          grep -Fq "astrumweaver-worker: $PROFILE/bin/astrumweaver-worker" "$TEST_ROOT/packaging-a"
-          grep -Fq "astrumweaver-control: $PROFILE/bin/astrumweaver-control" "$TEST_ROOT/packaging-a"
+          grep -Fq "tsumgi-worker: $PROFILE/bin/tsumgi-worker" "$TEST_ROOT/packaging-a"
+          grep -Fq "tsumgi-control: $PROFILE/bin/tsumgi-control" "$TEST_ROOT/packaging-a"
           (
             cd "$TEST_ROOT"
-            PATH="$PROFILE/bin:$MINIMAL_PATH" astrumweaver-setup-tui --check-packaging \
+            PATH="$PROFILE/bin:$MINIMAL_PATH" tsumgi-setup-tui --check-packaging \
               > "$TEST_ROOT/packaging-bare"
           )
           grep -Fq "packaged tool authority: $PROFILE/bin" "$TEST_ROOT/packaging-bare"
@@ -329,19 +338,19 @@ id = "profile-convergence-worker"
 class = "modern-single"
 gpu_uuids = ["GPU-profile-convergence"]
 EOF
-          "$PROFILE/bin/astrumweaver-setup-control-plane" \
+          "$PROFILE/bin/tsumgi-setup-control-plane" \
             --config "$TEST_ROOT/input/control.toml" \
-            --executable "$PROFILE/bin/astrumweaver-control" \
+            --executable "$PROFILE/bin/tsumgi-control" \
             --root "$TEST_ROOT/root"
-          "$PROFILE/bin/astrumweaver-setup-gpu-worker" \
+          "$PROFILE/bin/tsumgi-setup-gpu-worker" \
             --config "$TEST_ROOT/input/worker.toml" \
-            --executable "$PROFILE/bin/astrumweaver-worker" \
+            --executable "$PROFILE/bin/tsumgi-worker" \
             --root "$TEST_ROOT/root"
-          cp "$TEST_ROOT/root/etc/systemd/system/astrumweaver-control.service" "$TEST_ROOT/control-a"
-          cp "$TEST_ROOT/root/etc/systemd/system/astrumweaver-worker.service" "$TEST_ROOT/worker-a"
-          cp "$TEST_ROOT/root/usr/local/libexec/astrumweaver/gpu-device-map" "$TEST_ROOT/gpu-map-a"
-          grep -Fq "ExecStart=$PROFILE/bin/astrumweaver-control " "$TEST_ROOT/control-a"
-          grep -Fq "ExecStart=$PROFILE/bin/astrumweaver-worker " "$TEST_ROOT/worker-a"
+          cp "$TEST_ROOT/root/etc/systemd/system/tsumgi-control.service" "$TEST_ROOT/control-a"
+          cp "$TEST_ROOT/root/etc/systemd/system/tsumgi-worker.service" "$TEST_ROOT/worker-a"
+          cp "$TEST_ROOT/root/usr/local/libexec/tsumgi/gpu-device-map" "$TEST_ROOT/gpu-map-a"
+          grep -Fq "ExecStart=$PROFILE/bin/tsumgi-control " "$TEST_ROOT/control-a"
+          grep -Fq "ExecStart=$PROFILE/bin/tsumgi-worker " "$TEST_ROOT/worker-a"
           ! grep -Fq "/nix/store/" "$TEST_ROOT/control-a"
           ! grep -Fq "/nix/store/" "$TEST_ROOT/worker-a"
           ! grep -Fq "/nix/store/" "$TEST_ROOT/gpu-map-a"
@@ -349,22 +358,22 @@ EOF
           rm -f "$PROFILE"
           ln -s "$TEST_ROOT/installer-generation-b" "$PROFILE"
           PATH="$MINIMAL_PATH" \
-            "$PROFILE/bin/astrumweaver-setup-tui" --check-packaging \
+            "$PROFILE/bin/tsumgi-setup-tui" --check-packaging \
             > "$TEST_ROOT/packaging-b"
           grep -Fq "packaged tool authority: $PROFILE/bin" "$TEST_ROOT/packaging-b"
-          "$PROFILE/bin/astrumweaver-setup-control-plane" \
+          "$PROFILE/bin/tsumgi-setup-control-plane" \
             --config "$TEST_ROOT/input/control.toml" \
-            --executable "$PROFILE/bin/astrumweaver-control" \
+            --executable "$PROFILE/bin/tsumgi-control" \
             --root "$TEST_ROOT/root"
-          "$PROFILE/bin/astrumweaver-setup-gpu-worker" \
+          "$PROFILE/bin/tsumgi-setup-gpu-worker" \
             --config "$TEST_ROOT/input/worker.toml" \
-            --executable "$PROFILE/bin/astrumweaver-worker" \
+            --executable "$PROFILE/bin/tsumgi-worker" \
             --root "$TEST_ROOT/root"
-          cmp "$TEST_ROOT/control-a" "$TEST_ROOT/root/etc/systemd/system/astrumweaver-control.service"
-          cmp "$TEST_ROOT/worker-a" "$TEST_ROOT/root/etc/systemd/system/astrumweaver-worker.service"
-          cmp "$TEST_ROOT/gpu-map-a" "$TEST_ROOT/root/usr/local/libexec/astrumweaver/gpu-device-map"
+          cmp "$TEST_ROOT/control-a" "$TEST_ROOT/root/etc/systemd/system/tsumgi-control.service"
+          cmp "$TEST_ROOT/worker-a" "$TEST_ROOT/root/etc/systemd/system/tsumgi-worker.service"
+          cmp "$TEST_ROOT/gpu-map-a" "$TEST_ROOT/root/usr/local/libexec/tsumgi/gpu-device-map"
 
-          if PATH="$MINIMAL_PATH" "$PROFILE/bin/astrumweaver-runtime-deployment-accept" \
+          if PATH="$MINIMAL_PATH" "$PROFILE/bin/tsumgi-runtime-deployment-accept" \
             --gpu-uuid GPU-profile-convergence \
             --revision deadbeef12345678 \
             --deployment-path systemd \
@@ -378,22 +387,22 @@ EOF
           test "$(readlink "$PROFILE")" = "$TEST_ROOT/installer-generation-b"
           touch "$out"
         '';
-        hardware-accept-cli = pkgs.runCommand "astrumweaver-hardware-accept-cli" { } ''
-          test -x ${worker}/bin/astrumweaver-hardware-accept
-          ${worker}/bin/astrumweaver-hardware-accept --help >/dev/null
+        hardware-accept-cli = pkgs.runCommand "tsumgi-hardware-accept-cli" { } ''
+          test -x ${worker}/bin/tsumgi-hardware-accept
+          ${worker}/bin/tsumgi-hardware-accept --help >/dev/null
           touch "$out"
         '';
-        runtime-deployment-accept-cli = pkgs.runCommand "astrumweaver-runtime-deployment-accept-cli" { } ''
-          test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
-          ${worker}/bin/astrumweaver-runtime-deployment-accept --help >/dev/null
+        runtime-deployment-accept-cli = pkgs.runCommand "tsumgi-runtime-deployment-accept-cli" { } ''
+          test -x ${worker}/bin/tsumgi-runtime-deployment-accept
+          ${worker}/bin/tsumgi-runtime-deployment-accept --help >/dev/null
           touch "$out"
         '';
-        opencode-chat-accept-cli = pkgs.runCommand "astrumweaver-opencode-chat-accept-cli" { } ''
-          test -x ${worker}/bin/astrumweaver-opencode-chat-accept
-          ${worker}/bin/astrumweaver-opencode-chat-accept --help >/dev/null
+        opencode-chat-accept-cli = pkgs.runCommand "tsumgi-opencode-chat-accept-cli" { } ''
+          test -x ${worker}/bin/tsumgi-opencode-chat-accept
+          ${worker}/bin/tsumgi-opencode-chat-accept --help >/dev/null
           touch "$out"
         '';
-        runtime-module-eval = pkgs.runCommand "astrumweaver-runtime-module-eval" {
+        runtime-module-eval = pkgs.runCommand "tsumgi-runtime-module-eval" {
           inherit
             runtimeWorkerExec
             runtimeWorkerPath
@@ -405,7 +414,7 @@ EOF
           runtimeEnvironmentText = nixpkgs.lib.concatStringsSep "\n" runtimeEnvironment;
         } ''
           test -n "$runtimeWorkerExec"
-          printf "%s" "$runtimeWorkerExec" | grep astrumweaver-worker >/dev/null
+          printf "%s" "$runtimeWorkerExec" | grep tsumgi-worker >/dev/null
           printf "%s" "$runtimeWorkerPath" | grep ollama >/dev/null
           workerConfig="$(printf "%s" "$runtimeWorkerExec" | sed -n 's/.*--config \([^ ]*\).*/\1/p')"
           test -n "$workerConfig"
@@ -416,12 +425,12 @@ EOF
           printf "%s" "$runtimeDeviceAllowText" | grep '/dev/nvidia7 rw' >/dev/null
           printf "%s" "$runtimeDeviceAllowText" | grep '/dev/nvidiactl rw' >/dev/null
           printf "%s" "$runtimeEnvironmentText" | grep 'CUDA_VISIBLE_DEVICES=GPU-example-smoke' >/dev/null
-          printf "%s" "$runtimeEnvironmentText" | grep 'ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access' >/dev/null
-          printf "%s" "$runtimeEnvironmentText" | grep 'ASTRUMWEAVER_GPU_DEVICE_MAP=' >/dev/null
-          printf "%s" "$runtimeEnvironmentText" | grep 'ASTRUMWEAVER_GPU_WORKER_CONFIG=' >/dev/null
-          printf "%s" "$runtimeEnvironmentText" | grep 'ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=' >/dev/null
-          printf "%s" "$runtimeEnvironmentText" | grep 'ASTRUMWEAVER_NVIDIA_SMI=' >/dev/null
-          printf "%s" "$runtimeWorkerPreflight" | grep -E '^\+/nix/store/[a-z0-9]{32}-astrumweaver-gpu-preflight/bin/astrumweaver-gpu-preflight /nix/store/[a-z0-9]{32}-astrumweaver-gpu-uuids$' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'TSUMGI_GPU_PREFLIGHT_MODE=isolated-access' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'TSUMGI_GPU_DEVICE_MAP=' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'TSUMGI_GPU_WORKER_CONFIG=' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'TSUMGI_GPU_DEVICE_MAP_COMMAND=' >/dev/null
+          printf "%s" "$runtimeEnvironmentText" | grep 'TSUMGI_NVIDIA_SMI=' >/dev/null
+          printf "%s" "$runtimeWorkerPreflight" | grep -E '^\+/nix/store/[a-z0-9]{32}-tsumgi-gpu-preflight/bin/tsumgi-gpu-preflight /nix/store/[a-z0-9]{32}-tsumgi-gpu-uuids$' >/dev/null
           printf "%s" "$runtimeIsolationPreflight" | grep 'gpu-device-map verify' >/dev/null
           printf "%s\n%s\n%s\n%s\n%s\n" \
             "$runtimeWorkerExec" "$runtimeWorkerPath" "$workerConfig" \
@@ -430,14 +439,14 @@ EOF
         '';
         gpu-isolation-requires-gpu =
           assert gpuIsolationNoGpuRejected;
-          pkgs.runCommand "astrumweaver-gpu-isolation-requires-gpu" { } ''
+          pkgs.runCommand "tsumgi-gpu-isolation-requires-gpu" { } ''
             touch "$out"
           '';
-        module-eval = pkgs.runCommand "astrumweaver-module-eval" {
-          controlExec = moduleSmoke.config.systemd.services.astrumweaver-control.serviceConfig.ExecStart;
-          controlClientAuth = moduleSmoke.config.services.astrumweaver.control.clientAuth;
-          workerExec = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStart;
-          workerPreflight = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStartPre;
+        module-eval = pkgs.runCommand "tsumgi-module-eval" {
+          controlExec = moduleSmoke.config.systemd.services.tsumgi-control.serviceConfig.ExecStart;
+          controlClientAuth = moduleSmoke.config.services.tsumgi.control.clientAuth;
+          workerExec = moduleSmoke.config.systemd.services.tsumgi-worker.serviceConfig.ExecStart;
+          workerPreflight = moduleSmoke.config.systemd.services.tsumgi-worker.serviceConfig.ExecStartPre;
           modeTool = borrowableMode;
         } ''
           test -n "$controlExec"
@@ -448,9 +457,9 @@ EOF
           grep -q 'client_auth = "none"' "$controlConfig"
           test -n "$workerExec"
           test -n "$workerPreflight"
-          test -x "$modeTool/bin/astrumweaver-gpu-mode"
-          printf "%s" "$controlExec" | grep -q astrumweaver-control
-          printf "%s" "$workerExec" | grep -q astrumweaver-worker
+          test -x "$modeTool/bin/tsumgi-gpu-mode"
+          printf "%s" "$controlExec" | grep -q tsumgi-control
+          printf "%s" "$workerExec" | grep -q tsumgi-worker
           printf "%s\n%s\n%s\n%s\n" "$controlExec" "$workerExec" "$workerPreflight" "$modeTool" > "$out"
         '';
       };

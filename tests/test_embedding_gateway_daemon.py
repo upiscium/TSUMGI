@@ -4,15 +4,15 @@ import json
 
 import pytest
 
-from astrumweaver.control.daemon import build_app
-from astrumweaver.gateway.embedding import (
+from tsumgi.control.daemon import build_app
+from tsumgi.gateway.embedding import (
     EMBEDDING_CATALOG_SCHEMA,
     EMBEDDING_OPERATION_SCHEMA,
     LLAMA_CPP_EMBEDDING_ADAPTER,
     EmbeddingSpaceIdentity,
     text_policy_digest,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,
@@ -96,11 +96,11 @@ def catalog_document() -> dict:
 
 def base_environment(monkeypatch) -> None:
     monkeypatch.setenv(
-        "ASTRUMWEAVER_DATABASE_URL",
-        "postgresql://example.invalid/astrumweaver",
+        "TSUMGI_DATABASE_URL",
+        "postgresql://example.invalid/tsumgi",
     )
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker-secret")
-    monkeypatch.delenv("ASTRUMWEAVER_CLIENT_TOKEN", raising=False)
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "worker-secret")
+    monkeypatch.delenv("TSUMGI_CLIENT_TOKEN", raising=False)
 
 
 def test_control_daemon_mounts_embedding_gateway_only_when_enabled(

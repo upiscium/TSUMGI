@@ -10,21 +10,21 @@ import tomllib
 
 import pytest
 
-from astrumweaver.contracts import ResourceShape, WorkerSpec
-from astrumweaver.runtime.contracts import RuntimeHostFacts
-from astrumweaver.runtime.deployment import managed_runtime_from_deployment
-from astrumweaver.runtime.providers import voicevox_release as release
-from astrumweaver.runtime.providers.voicevox_manifest import ARCHIVE_SHA256, VoicevoxProviderConfig
-from astrumweaver.setup import (
+from tsumgi.contracts import ResourceShape, WorkerSpec
+from tsumgi.runtime.contracts import RuntimeHostFacts
+from tsumgi.runtime.deployment import managed_runtime_from_deployment
+from tsumgi.runtime.providers import voicevox_release as release
+from tsumgi.runtime.providers.voicevox_manifest import ARCHIVE_SHA256, VoicevoxProviderConfig
+from tsumgi.setup import (
     ActionReceipt, DeploymentPath, SetupActionKind, SetupActionResultStatus,
     SetupApproval, SetupApprovalError, SetupHostSnapshot, SetupPlan, SetupPlanGoal,
     SystemdSetupDriver, apply_plan, dry_run_plan,
 )
-from astrumweaver.setup.voicevox_staging import (
+from tsumgi.setup.voicevox_staging import (
     VoicevoxStagingDriver, VoicevoxStagingError, VoicevoxStagingRollbackError,
     build_voicevox_staging_plan,
 )
-from astrumweaver.worker import daemon
+from tsumgi.worker import daemon
 
 
 def _sha(data):
@@ -42,7 +42,7 @@ def request_data(tmp_path, monkeypatch):
     monkeypatch.setattr(release, "EXECUTABLE_SHA256", _sha((engine / "run").read_bytes()))
     monkeypatch.setattr(release, "MODEL_SHA256", _sha((engine / "model/0.vvm").read_bytes()))
     config = VoicevoxProviderConfig(
-        enabled=True, engine_root=str(engine), private_home="/var/lib/astrumweaver-audio/staged/home",
+        enabled=True, engine_root=str(engine), private_home="/var/lib/tsumgi-audio/staged/home",
         port=19001, archive_sha256=ARCHIVE_SHA256,
         rights_review_sha256="sha256:" + "a" * 64,
         validation_evidence_sha256="sha256:" + "b" * 64,
@@ -58,9 +58,9 @@ def request_data(tmp_path, monkeypatch):
             DeploymentPath.SYSTEMD, "debian", service_manager="systemd", package_manager="nix",
         ),
         "service_user": "audio-stage", "service_group": "audio-stage",
-        "environment_file": "/etc/astrumweaver/audio-voicevox.env",
+        "environment_file": "/etc/tsumgi/audio-voicevox.env",
         "control_url": "http://127.0.0.1:19000",
-        "worker_executable": "/reviewed/bin/astrumweaver-worker",
+        "worker_executable": "/reviewed/bin/tsumgi-worker",
         "bundle_receipt_path": str(receipt),
     }
 
@@ -145,7 +145,7 @@ def test_apply_roundtrip_is_offline_idempotent_and_never_activates(
         for field in (
             "User=audio-stage", "Group=audio-stage", "UMask=0077", "Restart=no",
             "KillMode=control-group", "ProtectSystem=strict", "ProtectHome=true",
-            "EnvironmentFile=/etc/astrumweaver/audio-voicevox.env",
+            "EnvironmentFile=/etc/tsumgi/audio-voicevox.env",
         ):
             assert unit.count(field) == 1
         assert "StateDirectory=" not in unit and "WantedBy=" not in unit
@@ -153,7 +153,7 @@ def test_apply_roundtrip_is_offline_idempotent_and_never_activates(
 
 
 @pytest.mark.parametrize(("field", "value"), [
-    ("service_user", "0"), ("service_user", "root"), ("service_user", "astrumweaver"),
+    ("service_user", "0"), ("service_user", "root"), ("service_user", "tsumgi"),
     ("service_group", "0"), ("service_group", "root"),
     ("environment_file", "/etc/../tmp/environment"), ("environment_file", "/tmp/environment"),
     ("worker_executable", "/reviewed/bin/worker --unsafe"),

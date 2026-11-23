@@ -3,12 +3,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.control.api import create_app
-from astrumweaver.control.repository import InMemoryControlRepository
-from astrumweaver.executors.structured_echo import StructuredEchoExecutor
-from astrumweaver.worker import ControlClient, WorkerRuntime
-from astrumweaver.worker.health import create_health_app
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.control.api import create_app
+from tsumgi.control.repository import InMemoryControlRepository
+from tsumgi.executors.structured_echo import StructuredEchoExecutor
+from tsumgi.worker import ControlClient, WorkerRuntime
+from tsumgi.worker.health import create_health_app
 
 
 @pytest.mark.asyncio

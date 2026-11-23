@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository
+from tsumgi.control import InMemoryControlRepository
 from audio_epoch_acceptance import E1, make_harness, snapshot_repository
 from worker_identity_cases import OWN, WORKERS, WORKER_ID, WorkerIdentityCases
 
@@ -30,9 +30,9 @@ class TestMemoryWorkerIdentity(WorkerIdentityCases):
     async def test_control_client_keeps_worker_wire_compatibility(self, identity_harness):
         import httpx
 
-        from astrumweaver.worker.client import ControlClient, ControlTransportError
-        from astrumweaver.execution import JobResult
-        from astrumweaver.transport import worker_registration_from_dict
+        from tsumgi.worker.client import ControlClient, ControlTransportError
+        from tsumgi.execution import JobResult
+        from tsumgi.transport import worker_registration_from_dict
         from audio_epoch_acceptance import registration
 
         h = identity_harness

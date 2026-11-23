@@ -11,20 +11,20 @@ import tempfile
 
 
 def generate_cases(directory: Path) -> list[dict]:
-    from astrumweaver.runtime.providers.parakeet_manifest import ParakeetManifestConfig
-    from astrumweaver.runtime.providers.style_bert_vits2_manifest import StyleBertManifestConfig
-    from astrumweaver.runtime.providers.voicevox_manifest import ARCHIVE_SHA256, VoicevoxProviderConfig
-    from astrumweaver.runtime.deployment import RuntimeDeploymentSpec
-    from astrumweaver.runtime.providers.parakeet_manifest import DEMAND as PARAKEET_DEMAND
-    from astrumweaver.runtime.providers.style_bert_vits2_manifest import _DEMAND as STYLE_DEMAND
-    from astrumweaver.runtime.providers.voicevox_manifest import _DEMAND as VOICEVOX_DEMAND
+    from tsumgi.runtime.providers.parakeet_manifest import ParakeetManifestConfig
+    from tsumgi.runtime.providers.style_bert_vits2_manifest import StyleBertManifestConfig
+    from tsumgi.runtime.providers.voicevox_manifest import ARCHIVE_SHA256, VoicevoxProviderConfig
+    from tsumgi.runtime.deployment import RuntimeDeploymentSpec
+    from tsumgi.runtime.providers.parakeet_manifest import DEMAND as PARAKEET_DEMAND
+    from tsumgi.runtime.providers.style_bert_vits2_manifest import _DEMAND as STYLE_DEMAND
+    from tsumgi.runtime.providers.voicevox_manifest import _DEMAND as VOICEVOX_DEMAND
 
     directory.mkdir(parents=True, exist_ok=True)
     fake = "sha256:" + "a" * 64
     configs = {
         "voicevox": VoicevoxProviderConfig(
             engine_root="/var/lib/reviewed-voicevox/engine",
-            private_home="/var/lib/astrumweaver-audio/voicevox/home", port=19001,
+            private_home="/var/lib/tsumgi-audio/voicevox/home", port=19001,
             archive_sha256=ARCHIVE_SHA256, rights_review_sha256=fake,
             validation_evidence_sha256="sha256:" + "b" * 64, enabled=True),
         "style-bert-vits2": StyleBertManifestConfig(
@@ -33,7 +33,7 @@ def generate_cases(directory: Path) -> list[dict]:
             dependency_lock_path="/var/lib/reviewed-jvnv/requirements.lock",
             dictionary_directory="/var/lib/reviewed-jvnv/dictionary",
             dictionary_sha256="sha256:" + "c" * 64,
-            private_home="/var/lib/astrumweaver-audio/style-bert-vits2/home",
+            private_home="/var/lib/tsumgi-audio/style-bert-vits2/home",
             rights_review_sha256=fake, validation_evidence_sha256="sha256:" + "d" * 64,
             enabled=True),
         "parakeet-ja": ParakeetManifestConfig(
@@ -41,7 +41,7 @@ def generate_cases(directory: Path) -> list[dict]:
             interpreter_path="/var/lib/reviewed-parakeet/venv/bin/python",
             base_python_root="/var/lib/reviewed-parakeet/python",
             dependency_lock_path="/var/lib/reviewed-parakeet/requirements.lock",
-            private_home="/var/lib/astrumweaver-audio/parakeet-ja/home",
+            private_home="/var/lib/tsumgi-audio/parakeet-ja/home",
             gpu_uuid="GPU-12345678-1234-1234-1234-123456789abc",
             rights_review_sha256=fake, validation_evidence_sha256="sha256:" + "e" * 64,
             enabled=True),
@@ -102,9 +102,9 @@ def check(source: Path, directory: Path) -> None:
             raise RuntimeError(f"reviewed runtime/serving JSON differs: {case['name']}")
         # Round-trip the exact evaluated manifests through the production
         # daemon loaders and construct the managed runtime, but never start it.
-        from astrumweaver.worker import daemon
-        from astrumweaver.runtime.deployment import managed_runtime_from_deployment
-        from astrumweaver.runtime.contracts import RuntimeHostFacts
+        from tsumgi.worker import daemon
+        from tsumgi.runtime.deployment import managed_runtime_from_deployment
+        from tsumgi.runtime.contracts import RuntimeHostFacts
         reviewed_dir = directory / case["name"]
         reviewed_dir.mkdir()
         runtime_path = reviewed_dir / "runtime.json"
@@ -139,7 +139,7 @@ def main() -> int:
         if args.generate_only:
             print(f"generated_fixtures={len(generate_cases(args.generate_only.resolve()))}; nix_evaluation=NOT_RUN")
         else:
-            with tempfile.TemporaryDirectory(prefix="astrumweaver-audio-nixos-") as tmp:
+            with tempfile.TemporaryDirectory(prefix="tsumgi-audio-nixos-") as tmp:
                 check(source, Path(tmp))
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(str(exc), file=sys.stderr)

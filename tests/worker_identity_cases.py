@@ -4,7 +4,7 @@ from __future__ import annotations
 from audio_epoch_acceptance import (
     BASE, CLIENT, E1, E2, WORKER_ID, WAV, JOB_EVENTS_EXTENSION, envelope, registration,
 )
-from astrumweaver.transport import SERVING_EXTENSION
+from tsumgi.transport import SERVING_EXTENSION
 
 OWN = "synthetic-owner-worker-token-" + "a" * 32
 OTHER = "synthetic-other-worker-token-" + "b" * 32

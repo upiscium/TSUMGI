@@ -12,17 +12,17 @@ from uuid import UUID
 import httpx
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository
-from astrumweaver.control.api import create_app
-from astrumweaver.runtime import RuntimeHostFacts
-from astrumweaver.runtime.deployment import RuntimeDeploymentSpec, provider_from_deployment
-from astrumweaver.runtime.contracts import (
+from tsumgi.control import InMemoryControlRepository
+from tsumgi.control.api import create_app
+from tsumgi.runtime import RuntimeHostFacts
+from tsumgi.runtime.deployment import RuntimeDeploymentSpec, provider_from_deployment
+from tsumgi.runtime.contracts import (
     ExecutionDemand, GPUTopology, ModelDemand, ModelTopology, ResidencyPolicy,
 )
-from astrumweaver.runtime.providers import voicevox_managed, voicevox_manifest
-from astrumweaver.serving import ServingDeploymentDeclaration
-from astrumweaver.worker import daemon
-from astrumweaver.worker.client import ControlClient
+from tsumgi.runtime.providers import voicevox_managed, voicevox_manifest
+from tsumgi.serving import ServingDeploymentDeclaration
+from tsumgi.worker import daemon
+from tsumgi.worker.client import ControlClient
 
 
 ARCHIVE = "sha256:483633de02700cd918731538543a22ce895877aeb09450a990ff38af6e4c26c0"
@@ -215,7 +215,7 @@ def _setup(tmp_path, monkeypatch, *, hold_start=False, hold_metadata=False, fail
     monkeypatch.setattr(daemon.uvicorn, "Server", FakeHealthServer)
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(loop, "add_signal_handler", lambda *_a: None)
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "synthetic-token")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "synthetic-token")
     return control, process, engine, declaration, clients
 
 

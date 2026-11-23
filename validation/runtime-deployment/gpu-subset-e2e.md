@@ -1,4 +1,4 @@
-# AstrumWeaver Runtime Deployment GPU Isolation Evidence
+# TSUMGI Runtime Deployment GPU Isolation Evidence
 
 This file is intentionally redacted. It contains no hostname, IP address, Worker ID, GPU UUID, device ordinal, credential, private URL, or GPU model.
 
@@ -6,7 +6,7 @@ This file is intentionally redacted. It contains no hostname, IP address, Worker
 | --- | --- |
 | Evidence version | runtime-deployment-v2 |
 | Date (UTC) | 2026-10-01 |
-| AstrumWeaver revision | bd69d77f6b5f75d8cafaaafecf7b94ba218fa52b |
+| TSUMGI revision | bd69d77f6b5f75d8cafaaafecf7b94ba218fa52b |
 | Deployment path | systemd |
 | Outcome | FAIL_CLOSED |
 | Host-visible GPU count | 2 |

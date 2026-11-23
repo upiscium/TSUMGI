@@ -37,11 +37,11 @@ def test_shell_preflight_invokes_isolated_access_mapper(tmp_path: Path) -> None:
     env = dict(os.environ)
     env.update(
         {
-            "ASTRUMWEAVER_GPU_PREFLIGHT_MODE": "isolated-access",
-            "ASTRUMWEAVER_GPU_DEVICE_MAP": str(reviewed),
-            "ASTRUMWEAVER_GPU_WORKER_CONFIG": str(config),
-            "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND": str(mapper),
-            "ASTRUMWEAVER_NVIDIA_SMI": str(nvidia_smi),
+            "TSUMGI_GPU_PREFLIGHT_MODE": "isolated-access",
+            "TSUMGI_GPU_DEVICE_MAP": str(reviewed),
+            "TSUMGI_GPU_WORKER_CONFIG": str(config),
+            "TSUMGI_GPU_DEVICE_MAP_COMMAND": str(mapper),
+            "TSUMGI_NVIDIA_SMI": str(nvidia_smi),
             "CUDA_VISIBLE_DEVICES": "GPU-selected",
             "ARGS_FILE": str(args_file),
         }
@@ -73,8 +73,8 @@ def test_shell_preflight_isolated_access_requires_explicit_map(
     expected = tmp_path / "expected"
     expected.write_text("GPU-selected\n", encoding="utf-8")
     env = dict(os.environ)
-    env["ASTRUMWEAVER_GPU_PREFLIGHT_MODE"] = "isolated-access"
-    env.pop("ASTRUMWEAVER_GPU_DEVICE_MAP", None)
+    env["TSUMGI_GPU_PREFLIGHT_MODE"] = "isolated-access"
+    env.pop("TSUMGI_GPU_DEVICE_MAP", None)
 
     result = subprocess.run(
         ["bash", str(PREFLIGHT), str(expected)],
@@ -94,8 +94,8 @@ def test_shell_preflight_rejects_unknown_mode(tmp_path: Path) -> None:
     nvidia_smi = tmp_path / "nvidia-smi"
     _write_executable(nvidia_smi, "#!/usr/bin/env bash\nexit 0\n")
     env = dict(os.environ)
-    env["ASTRUMWEAVER_GPU_PREFLIGHT_MODE"] = "unknown"
-    env["ASTRUMWEAVER_NVIDIA_SMI"] = str(nvidia_smi)
+    env["TSUMGI_GPU_PREFLIGHT_MODE"] = "unknown"
+    env["TSUMGI_NVIDIA_SMI"] = str(nvidia_smi)
 
     result = subprocess.run(
         ["bash", str(PREFLIGHT), str(expected)],

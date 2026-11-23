@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from astrumweaver.runtime.providers.parakeet_managed import ParakeetManagedRuntime
+from tsumgi.runtime.providers.parakeet_managed import ParakeetManagedRuntime
 
 
 class Config:

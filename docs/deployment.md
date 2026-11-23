@@ -30,8 +30,8 @@ Issue #6 owns **host integration**, while the Nix/release package supplies the d
 
 The packaged role executable must already be available on the target node:
 
-- `astrumweaver-control`
-- `astrumweaver-worker`
+- `tsumgi-control`
+- `tsumgi-worker`
 
 The Nix flake provides immutable TSUMGI Control/Worker daemon packages and integration assets; see [Nix Packaging and NixOS Modules](nix.md).
 
@@ -49,10 +49,10 @@ reviewed migration; it is never silently overwritten.
 
 RuntimeBackend ownership is separate from the role profiles. The standard
 generic-systemd llama.cpp path is
-`/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp`; the installer-packaged
+`/nix/var/nix/profiles/tsumgi-runtime-llama-cpp`; the installer-packaged
 runtime-profile manager reconciles it to the reviewed candidate and the Worker
 manifest persists
-`/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server`.
+`/nix/var/nix/profiles/tsumgi-runtime-llama-cpp/bin/llama-server`.
 Consequently a root-shell `PATH` entry cannot satisfy or replace the reviewed
 runtime package. See
 [Installation — RuntimeBackend Nix profile](installation.md#runtimebackend-nix-profile).
@@ -64,23 +64,23 @@ NixOS modules are unchanged and keep their existing configurable `user`,
 `group`, and state-directory behavior; this section does not claim global
 NixOS isolation.
 
-The helpers share `/etc/astrumweaver` as `root:astrumweaver-config` with mode
-`0710`. `astrumweaver-config` is a **traverse-only** supplementary group:
+The helpers share `/etc/tsumgi` as `root:tsumgi-config` with mode
+`0710`. `tsumgi-config` is a **traverse-only** supplementary group:
 neither role is granted the other role's private group. Each role-managed file
 is `root:<role-group>` with mode `0640`.
 
-- Control defaults to `User=Group=astrumweaver-control` and state/home
-  `/var/lib/astrumweaver-control`.
-- Worker remains `User=Group=astrumweaver` and state/home
-  `/var/lib/astrumweaver`, preserving its runtime layout.
+- Control defaults to `User=Group=tsumgi-control` and state/home
+  `/var/lib/tsumgi-control`.
+- Worker remains `User=Group=tsumgi` and state/home
+  `/var/lib/tsumgi`, preserving its runtime layout.
 
 Distinct custom `--user` accounts are supported, but equal Control and Worker
 values are rejected. An existing account must have the same-name group as its
 primary group, with the matching GID. If an empty same-name group was
 pre-provisioned, the helper reuses it with `useradd --gid`; peer/private groups
 are not reused. Both units contain
-`SupplementaryGroups=astrumweaver-config`. The exact base units are the
-[Control template](../systemd/astrumweaver-control.service.in) and [Worker template](../systemd/astrumweaver-worker.service.in).
+`SupplementaryGroups=tsumgi-config`. The exact base units are the
+[Control template](../systemd/tsumgi-control.service.in) and [Worker template](../systemd/tsumgi-worker.service.in).
 
 ## Control Plane
 
@@ -96,11 +96,11 @@ sudo ./setup/setup-control-plane.sh \
 The script:
 
 - requires an existing Linux/systemd host
-- installs configuration under `/etc/astrumweaver/`
-- creates the `astrumweaver-control` service account and same-name group when
+- installs configuration under `/etc/tsumgi/`
+- creates the `tsumgi-control` service account and same-name group when
   needed (or uses the reviewed `--user` account)
-- installs `astrumweaver-control.service`
-- creates/uses `/var/lib/astrumweaver-control/`
+- installs `tsumgi-control.service`
+- creates/uses `/var/lib/tsumgi-control/`
 - optionally enables and starts the service
 
 It does not provision PostgreSQL itself. The configured Control Plane must point at an already-available durable database.
@@ -108,10 +108,10 @@ It does not provision PostgreSQL itself. The configured Control Plane must point
 Before first Control startup, apply the packaged schema explicitly:
 
 ```sh
-ASTRUMWEAVER_DATABASE_URL='postgresql://...' astrumweaver-migrate
+TSUMGI_DATABASE_URL='postgresql://...' tsumgi-migrate
 ```
 
-NixOS deployments may instead opt in to `services.astrumweaver.control.migrateOnStart = true`; the default remains `false` because schema mutation is an explicit authority.
+NixOS deployments may instead opt in to `services.tsumgi.control.migrateOnStart = true`; the default remains `false` because schema mutation is an explicit authority.
 
 ## GPU Worker
 
@@ -130,16 +130,16 @@ argument, so preflight/isolation state cannot diverge from the Worker contract.
 
 The script installs:
 
-- `/etc/astrumweaver/worker.toml`
-- optional `/etc/astrumweaver/worker.env`
-- `/etc/astrumweaver/gpu-uuids` derived from `worker.toml`
-- `/usr/local/libexec/astrumweaver/gpu-preflight`
-- `/etc/systemd/system/astrumweaver-worker.service`
+- `/etc/tsumgi/worker.toml`
+- optional `/etc/tsumgi/worker.env`
+- `/etc/tsumgi/gpu-uuids` derived from `worker.toml`
+- `/usr/local/libexec/tsumgi/gpu-preflight`
+- `/etc/systemd/system/tsumgi-worker.service`
 
-The Worker account and `/var/lib/astrumweaver/` layout are intentionally
+The Worker account and `/var/lib/tsumgi/` layout are intentionally
 preserved. Its role files remain readable by the Worker private group, while
 the shared configuration directory grants only traversal through
-`astrumweaver-config`.
+`tsumgi-config`.
 
 For a live install it verifies `nvidia-smi` before the worker can be started.
 
@@ -161,14 +161,14 @@ A generic systemd Worker can persist an already-reviewed
 `RuntimeDeploymentSpec` alongside the Worker configuration:
 
 ```sh
-sudo astrumweaver-setup-gpu-worker \
+sudo tsumgi-setup-gpu-worker \
   --config ./worker.toml \
   --environment-file ./worker.env \
   --runtime-manifest ./runtime-deployment.json
 ```
 
 The manifest is installed as
-`/etc/astrumweaver/runtime-deployment.json` and passed explicitly to the
+`/etc/tsumgi/runtime-deployment.json` and passed explicitly to the
 Worker daemon. It contains provider identity, non-secret provider
 configuration and execution demand; secret values remain in the protected
 EnvironmentFile.
@@ -182,16 +182,16 @@ For interactive application of a SetupPlan, use the first-party systemd
 driver:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
-  --driver astrumweaver.setup.systemd:create_systemd_driver
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-tui \
+  --driver tsumgi.setup.systemd:create_systemd_driver
 ```
 
 The runtime driver does not guess installers. Package installation and
 download/conversion actions remain BLOCKED unless the operator supplies a
 reviewed argv command through
-`ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON`,
-`ASTRUMWEAVER_RUNTIME_DOWNLOADERS_JSON`, or
-`ASTRUMWEAVER_RUNTIME_CONVERTERS_JSON`.
+`TSUMGI_RUNTIME_INSTALLERS_JSON`,
+`TSUMGI_RUNTIME_DOWNLOADERS_JSON`, or
+`TSUMGI_RUNTIME_CONVERTERS_JSON`.
 
 ## Exact GPU identity
 
@@ -252,19 +252,19 @@ This policy prevents a generic bootstrap command from unexpectedly changing work
 ## Migrating an older generic systemd installation
 
 This procedure is for an older generic install where Control and Worker used a
-shared `astrumweaver` identity/state layout. It is intentionally manual:
+shared `tsumgi` identity/state layout. It is intentionally manual:
 preserve the existing executable paths, credentials, state, and reviewed
 drop-ins. Do not silently remove secrets or state, and do not remove the
 existing Worker account. In a full Control + Worker migration, the old
-`/var/lib/astrumweaver` remains Worker state; do not blanket-rename or
+`/var/lib/tsumgi` remains Worker state; do not blanket-rename or
 `chown` it. Any Control-owned data must be identified and moved deliberately.
 
 1. Stop **both** units and verify that each is inactive before restarting
    anything:
 
    ```sh
-   sudo systemctl stop astrumweaver-control.service astrumweaver-worker.service
-   for unit in astrumweaver-control.service astrumweaver-worker.service; do
+   sudo systemctl stop tsumgi-control.service tsumgi-worker.service
+   for unit in tsumgi-control.service tsumgi-worker.service; do
      state="$(sudo systemctl is-active "$unit" 2>/dev/null || true)"
      printf '%s: %s\n' "$unit" "$state"
      test "$state" = inactive || exit 1
@@ -275,66 +275,66 @@ existing Worker account. In a full Control + Worker migration, the old
    root-only backup:
 
    ```sh
-   sudo chown root:root /etc/astrumweaver/control.toml /etc/astrumweaver/control.env
-   sudo chmod 0600 /etc/astrumweaver/control.toml /etc/astrumweaver/control.env
-   sudo install -d -o root -g root -m 0700 /root/astrumweaver-role-migration
+   sudo chown root:root /etc/tsumgi/control.toml /etc/tsumgi/control.env
+   sudo chmod 0600 /etc/tsumgi/control.toml /etc/tsumgi/control.env
+   sudo install -d -o root -g root -m 0700 /root/tsumgi-role-migration
    sudo install -o root -g root -m 0600 \
-     /etc/astrumweaver/control.toml /root/astrumweaver-role-migration/control.toml
+     /etc/tsumgi/control.toml /root/tsumgi-role-migration/control.toml
    sudo install -o root -g root -m 0600 \
-     /etc/astrumweaver/control.env /root/astrumweaver-role-migration/control.env
+     /etc/tsumgi/control.env /root/tsumgi-role-migration/control.env
    ```
 
 3. Edit the existing Control unit; do not replace it with a newly generated
    unit:
 
    ```sh
-   sudoedit /etc/systemd/system/astrumweaver-control.service
+   sudoedit /etc/systemd/system/tsumgi-control.service
    ```
 
    Change the role identity and state, inserting the supplementary group
-   **immediately after `Group=`** exactly as in the [Control unit template](../systemd/astrumweaver-control.service.in):
+   **immediately after `Group=`** exactly as in the [Control unit template](../systemd/tsumgi-control.service.in):
 
    ```ini
-   User=astrumweaver-control
-   Group=astrumweaver-control
-   SupplementaryGroups=astrumweaver-config
+   User=tsumgi-control
+   Group=tsumgi-control
+   SupplementaryGroups=tsumgi-config
    ```
 
    Change the existing `StateDirectory=` value to
-   `StateDirectory=astrumweaver-control` in its existing location.
+   `StateDirectory=tsumgi-control` in its existing location.
 
    Preserve the existing `ExecStart=` command arguments and every other line.
-   If its executable token is an immutable `/nix/store/.../astrumweaver-control`
+   If its executable token is an immutable `/nix/store/.../tsumgi-control`
    path, replace only that token with the stable installer-profile path:
 
    ```ini
-   ExecStart=/nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-control --config /etc/astrumweaver/control.toml
+   ExecStart=/nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-control --config /etc/tsumgi/control.toml
    ```
 
    Otherwise preserve the reviewed existing executable path. Do not add a
    peer private group.
 
 4. Edit the existing Worker unit and insert the same line immediately after
-   its existing `Group=` line, matching the [Worker unit template](../systemd/astrumweaver-worker.service.in):
+   its existing `Group=` line, matching the [Worker unit template](../systemd/tsumgi-worker.service.in):
 
    ```sh
-   sudoedit /etc/systemd/system/astrumweaver-worker.service
+   sudoedit /etc/systemd/system/tsumgi-worker.service
    ```
 
    The relevant lines must be:
 
    ```ini
-   Group=astrumweaver
-   SupplementaryGroups=astrumweaver-config
+   Group=tsumgi
+   SupplementaryGroups=tsumgi-config
    ```
 
-   Keep `User=Group=astrumweaver`, its `StateDirectory=astrumweaver`, and all
+   Keep `User=Group=tsumgi`, its `StateDirectory=tsumgi`, and all
    existing `ExecStart=` command arguments. If its executable token is an
-   immutable `/nix/store/.../astrumweaver-worker` path, replace only that
+   immutable `/nix/store/.../tsumgi-worker` path, replace only that
    token with:
 
    ```ini
-   ExecStart=/nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-worker --config /etc/astrumweaver/worker.toml
+   ExecStart=/nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-worker --config /etc/tsumgi/worker.toml
    ```
 
    Otherwise preserve the reviewed existing executable path. Preserve all preflight,
@@ -345,26 +345,26 @@ existing Worker account. In a full Control + Worker migration, the old
 
 5. Reconcile Control **first**, without `--start`, using the existing
    executable path. Because the Worker unit is present, its live
-   `astrumweaver` account must still exist; the Control helper then creates the
-   new `astrumweaver-control` account/group and state:
+   `tsumgi` account must still exist; the Control helper then creates the
+   new `tsumgi-control` account/group and state:
 
    ```sh
-   sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-control-plane \
-     --config /etc/astrumweaver/control.toml \
-     --environment-file /etc/astrumweaver/control.env \
-     --user astrumweaver-control \
-     --executable /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-control
+   sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-control-plane \
+     --config /etc/tsumgi/control.toml \
+     --environment-file /etc/tsumgi/control.env \
+     --user tsumgi-control \
+     --executable /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-control
    ```
 
    Then reconcile Worker, again without `--start`, with the original reviewed
    runtime manifest/isolation inputs when applicable:
 
    ```sh
-   sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-gpu-worker \
-     --config /etc/astrumweaver/worker.toml \
-     --environment-file /etc/astrumweaver/worker.env \
-     --user astrumweaver \
-     --executable /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-worker
+   sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-gpu-worker \
+     --config /etc/tsumgi/worker.toml \
+     --environment-file /etc/tsumgi/worker.env \
+     --user tsumgi \
+     --executable /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-worker
    ```
 
    The Worker helper now sees the live Control peer. Pass the existing
@@ -378,13 +378,13 @@ existing Worker account. In a full Control + Worker migration, the old
 
    ```sh
    sudo systemctl daemon-reload
-   sudo systemctl start astrumweaver-control.service
-   sudo systemctl start astrumweaver-worker.service
+   sudo systemctl start tsumgi-control.service
+   sudo systemctl start tsumgi-worker.service
    ```
 
 ### Control-only legacy state
 
-If there is no Worker unit but `/var/lib/astrumweaver` exists, the Control
+If there is no Worker unit but `/var/lib/tsumgi` exists, the Control
 helper rejects it as orphaned legacy state. This is not permission repair: do
 not delete it or blanket-`chown` it. Stop Control, verify it is inactive, and
 confirm there is no Worker unit, process, or operator-managed Worker before
@@ -393,22 +393,22 @@ a root-only local backup of the legacy directory, then—and only then—rename
 that directory to a non-existing review/quarantine path:
 
 ```sh
-sudo systemctl stop astrumweaver-control.service
-test "$(sudo systemctl is-active astrumweaver-control.service 2>/dev/null || true)" = inactive
-sudo install -d -o root -g root -m 0700 /root/astrumweaver-role-migration
-sudo tar -C /var/lib/astrumweaver \
-  -cf /root/astrumweaver-role-migration/legacy-state.tar .
-sudo chown root:root /root/astrumweaver-role-migration/legacy-state.tar
-sudo chmod 0600 /root/astrumweaver-role-migration/legacy-state.tar
-sudo test ! -e /var/lib/astrumweaver-legacy-review || exit 1
-sudo test ! -L /var/lib/astrumweaver-legacy-review || exit 1
-sudo mv -- /var/lib/astrumweaver /var/lib/astrumweaver-legacy-review
-sudo chown root:root /var/lib/astrumweaver-legacy-review
-sudo chmod 0700 /var/lib/astrumweaver-legacy-review
+sudo systemctl stop tsumgi-control.service
+test "$(sudo systemctl is-active tsumgi-control.service 2>/dev/null || true)" = inactive
+sudo install -d -o root -g root -m 0700 /root/tsumgi-role-migration
+sudo tar -C /var/lib/tsumgi \
+  -cf /root/tsumgi-role-migration/legacy-state.tar .
+sudo chown root:root /root/tsumgi-role-migration/legacy-state.tar
+sudo chmod 0600 /root/tsumgi-role-migration/legacy-state.tar
+sudo test ! -e /var/lib/tsumgi-legacy-review || exit 1
+sudo test ! -L /var/lib/tsumgi-legacy-review || exit 1
+sudo mv -- /var/lib/tsumgi /var/lib/tsumgi-legacy-review
+sudo chown root:root /var/lib/tsumgi-legacy-review
+sudo chmod 0700 /var/lib/tsumgi-legacy-review
 ```
 
 After the Control unit edit above, rerun only the Control helper. It creates
-`/var/lib/astrumweaver-control`; manually review the quarantine and move only
+`/var/lib/tsumgi-control`; manually review the quarantine and move only
 data confirmed to be Control-owned into the new path, with deliberate
 per-entry ownership/mode changes. If a Worker cannot be ruled out, stop here
 and use the full migration procedure instead.
@@ -464,7 +464,7 @@ Environment files may contain deployment secrets and therefore:
 - are installed mode `0640`, owned by `root:<role-group>`
 - are readable by root and only their corresponding role account
 
-The shared configuration group can traverse `/etc/astrumweaver` but cannot
+The shared configuration group can traverse `/etc/tsumgi` but cannot
 read these files. Splitting files does not revoke values already exposed:
 rotate existing database or authority credentials if compromise is suspected.
 

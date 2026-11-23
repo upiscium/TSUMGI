@@ -40,7 +40,7 @@ let
     system.stateVersion = "26.05";
     boot.isContainer = true;
     fileSystems."/" = { device = "none"; fsType = "tmpfs"; };
-    services.astrumweaver.worker = {
+    services.tsumgi.worker = {
       enable = lib.mkDefault true;
       package = pkgs.coreutils;
       workerId = "audio-module-test";
@@ -51,7 +51,7 @@ let
   };
   evaluate = options: extra: (nixpkgs.lib.nixosSystem {
     inherit system;
-    modules = [ base { services.astrumweaver.worker = options; } extra ];
+    modules = [ base { services.tsumgi.worker = options; } extra ];
   }).config;
   baseline = evaluate { } { };
   audioWith = provider: overrides: extra:
@@ -71,7 +71,7 @@ let
           inherit provider;
           providerConfig = {
             enabled = true;
-            private_home = "/var/lib/astrumweaver-audio/${provider}";
+            private_home = "/var/lib/tsumgi-audio/${provider}";
           } // lib.optionalAttrs stt { gpu_uuid = gpu; };
           packages = [ ];
           modelRef = if stt then "nvidia/parakeet-tdt_ctc-0.6b-ja"
@@ -96,7 +96,7 @@ let
   tts = audio "voicevox" { };
   sbv = audio "style-bert-vits2" { };
   parakeet = audio "parakeet-ja" { };
-  serviceOf = cfg: cfg.systemd.services.astrumweaver-worker;
+  serviceOf = cfg: cfg.systemd.services.tsumgi-worker;
   accepted = cfg: builtins.all (entry: entry.assertion) cfg.assertions;
   rejectedFor = prefix: cfg: builtins.any
     (entry: !entry.assertion && lib.hasPrefix prefix entry.message)
@@ -116,7 +116,7 @@ let
     { settings.worker.id = "override"; }
     { settings = { }; extraArgs = [ "--config" "/other.toml" ]; }
     { executorSettings.extra = "override"; }
-    { user = "astrumweaver"; }
+    { user = "tsumgi"; }
     { user = "root"; }
     { user = "0"; }
     { user = "1000"; }
@@ -124,7 +124,7 @@ let
     { group = "0"; }
     { group = "1000"; }
     { runtime.providerConfig.private_home = "/tmp/audio"; }
-    { runtime.providerConfig.private_home = "/var/lib/astrumweaver-audio/../unsafe"; }
+    { runtime.providerConfig.private_home = "/var/lib/tsumgi-audio/../unsafe"; }
     { environmentFile = "/nix/store/secret.env"; }
     { environmentFile = null; }
     { environmentFile = "/run/../etc/audio.env"; }
@@ -177,22 +177,22 @@ let
 in
 assert accepted baseline;
 assert (serviceOf baseline).serviceConfig.Restart == "on-failure";
-assert !(baseline.system.build ? astrumweaverAudioWorkerConfig);
+assert !(baseline.system.build ? tsumgiAudioWorkerConfig);
 assert accepted tts && accepted sbv && accepted parakeet;
 assert (serviceOf tts).serviceConfig.Restart == "no";
 assert (serviceOf tts).serviceConfig.User == "audio-test";
 assert (serviceOf tts).serviceConfig.Group == "audio-test";
-assert (serviceOf tts).serviceConfig.WorkingDirectory == "/var/lib/astrumweaver-audio/voicevox";
-assert (serviceOf tts).serviceConfig.ReadWritePaths == [ "/var/lib/astrumweaver-audio/voicevox" ];
+assert (serviceOf tts).serviceConfig.WorkingDirectory == "/var/lib/tsumgi-audio/voicevox";
+assert (serviceOf tts).serviceConfig.ReadWritePaths == [ "/var/lib/tsumgi-audio/voicevox" ];
 assert (serviceOf tts).serviceConfig.StateDirectory == [ ];
 assert (serviceOf tts).serviceConfig.RuntimeDirectoryMode == "0700";
 assert (serviceOf tts).serviceConfig.UMask == "0077";
 assert (serviceOf tts).serviceConfig.KillMode == "control-group";
 assert tts.users.users.audio-test.home == "/var/empty" && !tts.users.users.audio-test.createHome;
-assert tts.system.build.astrumweaverAudioWorkerConfig.reviewed.serving == declaration "voicevox" "audio.synthesize" "openai-audio-speech-v1";
-assert parakeet.system.build.astrumweaverAudioWorkerConfig.reviewed.runtime.demand.min_single_gpu_vram_mb == 11264;
+assert tts.system.build.tsumgiAudioWorkerConfig.reviewed.serving == declaration "voicevox" "audio.synthesize" "openai-audio-speech-v1";
+assert parakeet.system.build.tsumgiAudioWorkerConfig.reviewed.runtime.demand.min_single_gpu_vram_mb == 11264;
 assert accepted retainedDisabled;
-assert !(retainedDisabled.system.build ? astrumweaverAudioWorkerConfig);
+assert !(retainedDisabled.system.build ? tsumgiAudioWorkerConfig);
 assert (serviceOf retainedDisabled).serviceConfig
   == (serviceOf baseline).serviceConfig;
 assert (serviceOf retainedDisabled).after == (serviceOf baseline).after;
@@ -202,11 +202,11 @@ assert retainedDisabled.systemd.tmpfiles.rules == baseline.systemd.tmpfiles.rule
 assert accepted lazyDisabled;
 assert (serviceOf lazyDisabled).serviceConfig == (serviceOf baseline).serviceConfig;
 assert (serviceOf lazyDisabled).path == (serviceOf baseline).path;
-assert !(lazyDisabled.system.build ? astrumweaverAudioWorkerConfig);
+assert !(lazyDisabled.system.build ? tsumgiAudioWorkerConfig);
 assert accepted nonAudio;
 assert builtins.elem pkgs.hello (serviceOf nonAudio).path;
 assert (serviceOf nonAudio).serviceConfig.Restart == "on-failure";
-assert !(nonAudio.system.build ? astrumweaverAudioWorkerConfig);
+assert !(nonAudio.system.build ? tsumgiAudioWorkerConfig);
 assert builtins.all (overrides: rejected (change overrides)) badTts;
 assert builtins.all (serving: rejected (change { serving.declaration = serving; })) badServing;
 assert builtins.all (overrides: rejected (audio "parakeet-ja" overrides)) parakeetBad;
@@ -215,30 +215,30 @@ assert rejectedFor "gpuIsolation.deviceMap values" (audio "parakeet-ja" {
 });
 assert accepted (audio "parakeet-ja" { gpuIsolation.deviceMap.${gpu} = "/dev/nvidia1"; });
 assert rejected (audioWith "parakeet-ja" { } {
-  systemd.services.astrumweaver-worker.serviceConfig.DevicePolicy = lib.mkForce "auto";
+  systemd.services.tsumgi-worker.serviceConfig.DevicePolicy = lib.mkForce "auto";
 });
 assert rejected (audioWith "parakeet-ja" { } {
-  systemd.services.astrumweaver-worker.serviceConfig.DeviceAllow = lib.mkForce [ "/dev/nvidia1 rw" ];
+  systemd.services.tsumgi-worker.serviceConfig.DeviceAllow = lib.mkForce [ "/dev/nvidia1 rw" ];
 });
 assert rejected (audioWith "voicevox" { } {
-  systemd.services.astrumweaver-worker.serviceConfig.User = lib.mkForce "nobody";
+  systemd.services.tsumgi-worker.serviceConfig.User = lib.mkForce "nobody";
 });
 assert rejected (audioWith "voicevox" { } {
-  systemd.services.astrumweaver-worker.serviceConfig.ExecStart = lib.mkForce "/bin/true";
+  systemd.services.tsumgi-worker.serviceConfig.ExecStart = lib.mkForce "/bin/true";
 });
 assert rejected (audioWith "voicevox" { } {
-  systemd.services.astrumweaver-worker.serviceConfig.WorkingDirectory = lib.mkForce "/tmp";
+  systemd.services.tsumgi-worker.serviceConfig.WorkingDirectory = lib.mkForce "/tmp";
 });
 assert rejected (audioWith "voicevox" { } {
-  systemd.services.astrumweaver-worker.serviceConfig.DynamicUser = lib.mkForce true;
+  systemd.services.tsumgi-worker.serviceConfig.DynamicUser = lib.mkForce true;
 });
 assert rejected (audioWith "voicevox" { } {
-  systemd.services.astrumweaver-worker.serviceConfig.Restart = lib.mkForce "on-failure";
+  systemd.services.tsumgi-worker.serviceConfig.Restart = lib.mkForce "on-failure";
 });
 assert rejected (audioWith "voicevox" { } {
   users.users.audio-test.uid = lib.mkForce 0;
 });
-assert !(evaluate { enable = false; } { }).systemd.services ? astrumweaver-worker;
+assert !(evaluate { enable = false; } { }).systemd.services ? tsumgi-worker;
 assert rejected (evaluate {
   runtime.enable = false;
   runtime.provider = "voicevox";
@@ -251,7 +251,7 @@ assert accepted (evaluate {
   capabilities = [ "llm.chat" ];
   serving.declaration = declaration "voicevox" "audio.synthesize" "openai-audio-speech-v1";
 } { });
-pkgs.runCommand "astrumweaver-audio-worker-module-evaluation" { } ''
+pkgs.runCommand "tsumgi-audio-worker-module-evaluation" { } ''
   mkdir -p "$out"
   printf '%s\n' 'NixOS audio Worker source-module assertions passed at evaluation' > "$out/evidence"
 ''

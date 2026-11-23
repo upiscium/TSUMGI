@@ -4,12 +4,12 @@
 { writeShellApplication, coreutils, core }:
 
 writeShellApplication {
-  name = "astrumweaver-llama-server";
+  name = "tsumgi-llama-server";
   runtimeInputs = [ coreutils ];
   text = ''
     set -euo pipefail
 
-    driver="''${ASTRUMWEAVER_LIBCUDA_SO:-}"
+    driver="''${TSUMGI_LIBCUDA_SO:-}"
     if [[ -z "$driver" ]]; then
       for candidate in \
         /run/opengl-driver/lib/libcuda.so.1 \
@@ -22,16 +22,16 @@ writeShellApplication {
       done
     fi
     if [[ -z "$driver" || ! -f "$driver" ]]; then
-      echo "astrumweaver-llama-server: cuda_driver_library_unavailable" >&2
+      echo "tsumgi-llama-server: cuda_driver_library_unavailable" >&2
       exit 65
     fi
     driver="$(readlink -f -- "$driver")"
     if [[ "$driver" == */stubs/* ]]; then
-      echo "astrumweaver-llama-server: cuda_stub_is_not_a_driver" >&2
+      echo "tsumgi-llama-server: cuda_stub_is_not_a_driver" >&2
       exit 65
     fi
 
-    private="$(mktemp -d -t astrumweaver-cuda-bridge.XXXXXXXX)"
+    private="$(mktemp -d -t tsumgi-cuda-bridge.XXXXXXXX)"
     chmod 700 "$private"
     ln -s -- "$driver" "$private/libcuda.so.1"
     # The managed Worker carries Control authority in its environment.

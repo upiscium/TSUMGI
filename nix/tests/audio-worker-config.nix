@@ -19,7 +19,7 @@ let
             system.stateVersion = "26.05";
             boot.isContainer = true;
             fileSystems."/" = { device = "none"; fsType = "tmpfs"; };
-            services.astrumweaver.worker = {
+            services.tsumgi.worker = {
               enable = true;
               package = pkgs.coreutils; # Not executed: no fake native qualification.
               workerId = case.worker.worker_id;
@@ -61,8 +61,8 @@ let
         ];
       };
       cfg = host.config;
-      unit = cfg.systemd.services.astrumweaver-worker.serviceConfig;
-      bundle = cfg.system.build.astrumweaverAudioWorkerConfig;
+      unit = cfg.systemd.services.tsumgi-worker.serviceConfig;
+      bundle = cfg.system.build.tsumgiAudioWorkerConfig;
       inherit (bundle) reviewed artifacts;
       # Exact store derivation outputs, not suffixes: these same artifacts are
       # the linkFarm entries. This remains evaluation, not artifact realization.
@@ -70,7 +70,7 @@ let
         settings.runtime.manifest == artifacts."runtime.json"
         && settings.serving.manifest == artifacts."serving.json"
         && command == lib.escapeShellArgs [
-          "${cfg.services.astrumweaver.worker.package}/bin/astrumweaver-worker"
+          "${cfg.services.tsumgi.worker.package}/bin/tsumgi-worker"
           "--config" artifacts."worker.toml"
         ];
       wrongReference = field: path: lib.recursiveUpdate reviewed.settings {
@@ -82,15 +82,15 @@ let
       assertionsPassed = builtins.all (entry: entry.assertion) cfg.assertions;
       serviceContracts =
         referencesMatch reviewed.settings unit.ExecStart
-        && artifacts."runtime.json" == pkgs.writeText "astrumweaver-runtime-deployment.json"
+        && artifacts."runtime.json" == pkgs.writeText "tsumgi-runtime-deployment.json"
           (builtins.toJSON case.runtime)
-        && artifacts."serving.json" == pkgs.writeText "astrumweaver-serving-deployment.json"
+        && artifacts."serving.json" == pkgs.writeText "tsumgi-serving-deployment.json"
           (builtins.toJSON case.serving)
         && !(referencesMatch
-          (wrongReference "runtime" "/unrelated/astrumweaver-runtime-deployment.json") unit.ExecStart)
+          (wrongReference "runtime" "/unrelated/tsumgi-runtime-deployment.json") unit.ExecStart)
         && !(referencesMatch
-          (wrongReference "serving" "/unrelated/astrumweaver-serving-deployment.json") unit.ExecStart)
-        && !(referencesMatch reviewed.settings "/unrelated/astrumweaver-worker.toml")
+          (wrongReference "serving" "/unrelated/tsumgi-serving-deployment.json") unit.ExecStart)
+        && !(referencesMatch reviewed.settings "/unrelated/tsumgi-worker.toml")
         && unit.User == case.worker.user && unit.Group == case.worker.group
         && unit.EnvironmentFile == case.worker.environment_file
         && unit.WorkingDirectory == case.provider_config.private_home

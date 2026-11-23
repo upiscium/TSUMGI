@@ -92,14 +92,14 @@ For a simple local PostgreSQL installation where you have the usual
 `postgres` administrator account, one possible bootstrap is:
 
 ```sh
-sudo -u postgres createuser --pwprompt astrumweaver
-sudo -u postgres createdb --owner astrumweaver astrumweaver
+sudo -u postgres createuser --pwprompt tsumgi
+sudo -u postgres createdb --owner tsumgi tsumgi
 ```
 
 Then the Control connection string has the general shape:
 
 ```text
-postgresql://astrumweaver:PASSWORD@DB_HOST:5432/astrumweaver
+postgresql://tsumgi:PASSWORD@DB_HOST:5432/tsumgi
 ```
 
 This is only a database bootstrap example. PostgreSQL authentication,
@@ -107,7 +107,7 @@ backups, TLS, HA, and network policy remain deployment/operator
 responsibilities.
 
 TSUMGI schema creation/upgrades are separate: run
-`astrumweaver-migrate`, or explicitly enable the NixOS
+`tsumgi-migrate`, or explicitly enable the NixOS
 `migrateOnStart` option described below.
 
 ## Where configuration files live
@@ -118,15 +118,15 @@ The final paths differ by deployment method.
 
 With the NixOS modules, **do not create `control.toml` or `worker.toml`
 manually**. Non-secret configuration is declared in Nix under
-`services.astrumweaver.control` / `services.astrumweaver.worker`; the module
+`services.tsumgi.control` / `services.tsumgi.worker`; the module
 generates the TOML in the Nix store and points the systemd service at it.
 
 Secret environment files are ordinary host files outside the Nix store. The
 examples in this guide use:
 
 ```text
-/etc/astrumweaver/control.env
-/etc/astrumweaver/worker.env
+/etc/tsumgi/control.env
+/etc/tsumgi/worker.env
 ```
 
 and reference those exact paths through `environmentFile`.
@@ -138,10 +138,10 @@ For the setup wrappers, `control.toml`, `control.env`, `worker.toml`, and
 convenient, for example a temporary setup directory in your home directory:
 
 ```text
-~/astrumweaver-setup/control.toml
-~/astrumweaver-setup/control.env
-~/astrumweaver-setup/worker.toml
-~/astrumweaver-setup/worker.env
+~/tsumgi-setup/control.toml
+~/tsumgi-setup/control.env
+~/tsumgi-setup/worker.toml
+~/tsumgi-setup/worker.env
 ```
 
 Pass those paths to the setup wrapper with `--config` and
@@ -149,20 +149,20 @@ Pass those paths to the setup wrapper with `--config` and
 locations:
 
 ```text
-/etc/astrumweaver/control.toml
-/etc/astrumweaver/control.env
-/etc/astrumweaver/worker.toml
-/etc/astrumweaver/worker.env
+/etc/tsumgi/control.toml
+/etc/tsumgi/control.env
+/etc/tsumgi/worker.toml
+/etc/tsumgi/worker.env
 ```
 
 A RuntimeProvider deployment manifest, when used, is installed as:
 
 ```text
-/etc/astrumweaver/runtime-deployment.json
+/etc/tsumgi/runtime-deployment.json
 ```
 
 After a successful generic-systemd install, systemd reads the canonical
-`/etc/astrumweaver/` copies, not the original setup-directory files.
+`/etc/tsumgi/` copies, not the original setup-directory files.
 
 Keep `*.env` files out of Git. They contain authority/database credentials.
 
@@ -171,27 +171,27 @@ helpers only**. The NixOS modules are unchanged and retain their existing
 configurable `user`, `group`, and state-directory behavior; this is not a claim
 of global NixOS role isolation.
 
-For generic systemd, `/etc/astrumweaver` is shared as `root:astrumweaver-config`
-with mode `0710`: `astrumweaver-config` is a **traverse-only** supplementary
+For generic systemd, `/etc/tsumgi` is shared as `root:tsumgi-config`
+with mode `0710`: `tsumgi-config` is a **traverse-only** supplementary
 group, not a file-reading group. Role-managed files are `root:<role-group>`
 with mode `0640`, so Control and Worker cannot read each other's files. The
 defaults are deliberately different:
 
-- Control uses `astrumweaver-control` for both `User=` and `Group=`, and
-  `/var/lib/astrumweaver-control` for its state and home.
-- Worker remains `astrumweaver` for both `User=` and `Group=`, and keeps
-  `/var/lib/astrumweaver` for its state and home so existing runtime behavior is
+- Control uses `tsumgi-control` for both `User=` and `Group=`, and
+  `/var/lib/tsumgi-control` for its state and home.
+- Worker remains `tsumgi` for both `User=` and `Group=`, and keeps
+  `/var/lib/tsumgi` for its state and home so existing runtime behavior is
   preserved.
 
-Both services have `SupplementaryGroups=astrumweaver-config`; neither service
+Both services have `SupplementaryGroups=tsumgi-config`; neither service
 gets the other role's private group. Distinct custom `--user` accounts are
 supported, in either install order, but equal Control and Worker values are
 rejected. An existing live account must have the same-name group as its
 primary group, with the matching GID. If the account is absent but that
 same-name group was pre-provisioned and is empty,
 the helper reuses it with `useradd --gid`; it does not reuse a peer or shared
-role group. See the exact [Control unit template](../systemd/astrumweaver-control.service.in)
-and [Worker unit template](../systemd/astrumweaver-worker.service.in).
+role group. See the exact [Control unit template](../systemd/tsumgi-control.service.in)
+and [Worker unit template](../systemd/tsumgi-worker.service.in).
 
 ## Option A — NixOS
 
@@ -201,15 +201,15 @@ Add TSUMGI as a flake input:
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    astrumweaver.url = "github:upiscium/TSUMGI";
+    tsumgi.url = "github:upiscium/TSUMGI";
   };
 
-  outputs = { self, nixpkgs, astrumweaver, ... }: {
+  outputs = { self, nixpkgs, tsumgi, ... }: {
     nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
 
       modules = [
-        astrumweaver.nixosModules.default
+        tsumgi.nixosModules.default
         ./configuration.nix
       ];
     };
@@ -225,7 +225,7 @@ Minimal Control module:
 
 ```nix
 {
-  services.astrumweaver.control = {
+  services.tsumgi.control = {
     enable = true;
 
     clientAuth = "bearer"; # secure default; use "none" only intentionally
@@ -235,7 +235,7 @@ Minimal Control module:
       port = 9000;
     };
 
-    environmentFile = "/etc/astrumweaver/control.env";
+    environmentFile = "/etc/tsumgi/control.env";
 
     # Convenient for a first deployment. Production operators may prefer
     # explicit migration execution instead.
@@ -248,30 +248,30 @@ Create the local protected configuration directory if this is the first
 TSUMGI service on the host:
 
 ```sh
-sudo install -d -m 0750 /etc/astrumweaver
+sudo install -d -m 0750 /etc/tsumgi
 ```
 
-Then create `/etc/astrumweaver/control.env` outside the Nix store.
+Then create `/etc/tsumgi/control.env` outside the Nix store.
 For `clientAuth = "bearer"`:
 
 ```text
-ASTRUMWEAVER_DATABASE_URL=postgresql://USER:PASSWORD@DB_HOST:5432/astrumweaver
-ASTRUMWEAVER_CLIENT_TOKEN=REPLACE_WITH_CLIENT_TOKEN
-ASTRUMWEAVER_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
+TSUMGI_DATABASE_URL=postgresql://USER:PASSWORD@DB_HOST:5432/tsumgi
+TSUMGI_CLIENT_TOKEN=REPLACE_WITH_CLIENT_TOKEN
+TSUMGI_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
 ```
 
 For `clientAuth = "none"`, omit the Client token entirely:
 
 ```text
-ASTRUMWEAVER_DATABASE_URL=postgresql://USER:PASSWORD@DB_HOST:5432/astrumweaver
-ASTRUMWEAVER_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
+TSUMGI_DATABASE_URL=postgresql://USER:PASSWORD@DB_HOST:5432/tsumgi
+TSUMGI_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
 ```
 
 Protect it:
 
 ```sh
-sudo chown root:root /etc/astrumweaver/control.env
-sudo chmod 600 /etc/astrumweaver/control.env
+sudo chown root:root /etc/tsumgi/control.env
+sudo chmod 600 /etc/tsumgi/control.env
 ```
 
 ### Minimal Worker
@@ -281,7 +281,7 @@ mixing TSUMGI installation problems with model-runtime problems.
 
 ```nix
 {
-  services.astrumweaver.worker = {
+  services.tsumgi.worker = {
     enable = true;
 
     workerId = "worker-smoke";
@@ -295,17 +295,17 @@ mixing TSUMGI installation problems with model-runtime problems.
     maxSingleGpuVramMb = 0;
 
     executorFactory =
-      "astrumweaver.executors.structured_echo:create_executor";
+      "tsumgi.executors.structured_echo:create_executor";
 
-    environmentFile = "/etc/astrumweaver/worker.env";
+    environmentFile = "/etc/tsumgi/worker.env";
   };
 }
 ```
 
-Create `/etc/astrumweaver/worker.env`:
+Create `/etc/tsumgi/worker.env`:
 
 ```text
-ASTRUMWEAVER_WORKER_TOKEN=REPLACE_WITH_THE_SAME_WORKER_TOKEN_USED_BY_CONTROL
+TSUMGI_WORKER_TOKEN=REPLACE_WITH_THE_SAME_WORKER_TOKEN_USED_BY_CONTROL
 ```
 
 Then rebuild:
@@ -343,19 +343,19 @@ Install the combined first-run package:
 ```sh
 NIX_BIN="$(command -v nix)"
 sudo "$NIX_BIN" profile add \
-  --profile /nix/var/nix/profiles/astrumweaver-installer \
+  --profile /nix/var/nix/profiles/tsumgi-installer \
   github:upiscium/TSUMGI#installer
 ```
 
 Then run:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-tui
 ```
 
 The first-run Control phase asks for `bearer` or `none`. Bearer is the
 default. If `none` is selected, the TUI does not generate, request, or write
-an `ASTRUMWEAVER_CLIENT_TOKEN`; only the Worker authority token remains in
+an `TSUMGI_CLIENT_TOKEN`; only the Worker authority token remains in
 the protected Control environment file.
 
 The installer-profile TUI entrypoint is a packaging wrapper. It passes the
@@ -382,7 +382,7 @@ generate or enter distinct authority tokens
         ↓
 write canonical Control config/env
         ↓
-run astrumweaver-migrate
+run tsumgi-migrate
         ↓
 install/start Control and wait for /v1/ready
         ↓
@@ -409,9 +409,9 @@ For an already-installed generic-systemd Worker where you only want
 RuntimeProvider setup, use:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-tui \
   --mode runtime \
-  --driver astrumweaver.setup.systemd:create_systemd_driver
+  --driver tsumgi.setup.systemd:create_systemd_driver
 ```
 
 This mode migrates the installed canonical smoke Worker rather than asking you
@@ -436,7 +436,7 @@ When the TUI selects `llama-cpp`, the first-party systemd driver uses the
 packaged runtime-profile manager to reconcile:
 
 ```text
-/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp
+/nix/var/nix/profiles/tsumgi-runtime-llama-cpp
 ```
 
 against the exact TSUMGI candidate that provided the TUI. That candidate
@@ -452,7 +452,7 @@ plain `llama-cpp` nixpkgs default.
 The Worker deployment manifest stores the stable executable path:
 
 ```text
-/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server
+/nix/var/nix/profiles/tsumgi-runtime-llama-cpp/bin/llama-server
 ```
 
 The package preflight verifies the dedicated profile's Nix provenance. An
@@ -467,7 +467,7 @@ rerun converges to satisfied state.
 You can inspect the profile explicitly:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-runtime-profile \
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-runtime-profile \
   status llama-cpp
 ```
 
@@ -475,7 +475,7 @@ After intentionally upgrading the TSUMGI installer profile to a newer
 candidate, explicitly move the runtime profile to that same candidate with:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-runtime-profile \
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-runtime-profile \
   upgrade llama-cpp
 ```
 
@@ -483,7 +483,7 @@ The runtime profile has its own Nix generations. To return to its previous
 generation:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-runtime-profile \
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-runtime-profile \
   rollback llama-cpp
 ```
 
@@ -494,11 +494,11 @@ keep the corresponding TSUMGI candidate/runtime contract aligned as
 well.
 
 Do not add unrelated packages to the
-`astrumweaver-runtime-llama-cpp` profile. TSUMGI owns that profile as a
+`tsumgi-runtime-llama-cpp` profile. TSUMGI owns that profile as a
 single-runtime boundary.
 
-The `ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON` and
-`ASTRUMWEAVER_RUNTIME_VERIFIERS_JSON` argv maps remain available for
+The `TSUMGI_RUNTIME_INSTALLERS_JSON` and
+`TSUMGI_RUNTIME_VERIFIERS_JSON` argv maps remain available for
 advanced/custom deployments and for providers without a first-party managed
 Nix RuntimeBackend. They are not the normal llama.cpp installation path.
 
@@ -508,21 +508,21 @@ Nix RuntimeBackend. They are not the normal llama.cpp installation path.
 ```sh
 NIX_BIN="$(command -v nix)"
 sudo "$NIX_BIN" profile add \
-  --profile /nix/var/nix/profiles/astrumweaver-control \
+  --profile /nix/var/nix/profiles/tsumgi-control \
   github:upiscium/TSUMGI#control
 ```
 
 The profile contains:
 
-- `astrumweaver-control`
-- `astrumweaver-migrate`
-- `astrumweaver-setup-control-plane`
+- `tsumgi-control`
+- `tsumgi-migrate`
+- `tsumgi-setup-control-plane`
 - host-integration assets
 
 Check it:
 
 ```sh
-/nix/var/nix/profiles/astrumweaver-control/bin/astrumweaver-control --help
+/nix/var/nix/profiles/tsumgi-control/bin/tsumgi-control --help
 ```
 
 Prepare a non-secret `control.toml`:
@@ -540,30 +540,30 @@ access_log = false
 Prepare `control.env`:
 
 ```text
-ASTRUMWEAVER_DATABASE_URL=postgresql://USER:PASSWORD@DB_HOST:5432/astrumweaver
-ASTRUMWEAVER_CLIENT_TOKEN=REPLACE_WITH_CLIENT_TOKEN
-ASTRUMWEAVER_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
+TSUMGI_DATABASE_URL=postgresql://USER:PASSWORD@DB_HOST:5432/tsumgi
+TSUMGI_CLIENT_TOKEN=REPLACE_WITH_CLIENT_TOKEN
+TSUMGI_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
 ```
 
-Apply database migrations before first startup on an **explicitly authorized target**. The migrator reads `ASTRUMWEAVER_DATABASE_URL` from its environment. **Do not embed a password-bearing connection URL in a `sudo env ...` command**: it can enter shell history and process arguments. Prepare a **root-owned, mode-0700 directory** under `/run`, then copy only the trusted input `control.env` into it as a **root-owned, mode-0600** file. Its parent directory must not be writable by untrusted users:
+Apply database migrations before first startup on an **explicitly authorized target**. The migrator reads `TSUMGI_DATABASE_URL` from its environment. **Do not embed a password-bearing connection URL in a `sudo env ...` command**: it can enter shell history and process arguments. Prepare a **root-owned, mode-0700 directory** under `/run`, then copy only the trusted input `control.env` into it as a **root-owned, mode-0600** file. Its parent directory must not be writable by untrusted users:
 
 ```sh
-sudo install -d -o root -g root -m 0700 /run/astrumweaver-bootstrap
-sudo install -o root -g root -m 0600 ./control.env /run/astrumweaver-bootstrap/control.env
+sudo install -d -o root -g root -m 0700 /run/tsumgi-bootstrap
+sudo install -o root -g root -m 0600 ./control.env /run/tsumgi-bootstrap/control.env
 sudo systemd-run --wait --collect --pipe \
-  --property=EnvironmentFile=/run/astrumweaver-bootstrap/control.env \
-  /nix/var/nix/profiles/astrumweaver-control/bin/astrumweaver-migrate
+  --property=EnvironmentFile=/run/tsumgi-bootstrap/control.env \
+  /nix/var/nix/profiles/tsumgi-control/bin/tsumgi-migrate
 ```
 
-This passes only an absolute **file path** to the privileged transient systemd service; the database secret is not passed as a command-line argument. The source `control.env` must itself be trusted, protected and outside Git; do not copy its contents into logs. After the migration attempt is finished and its result recorded, remove the **temporary** bootstrap copy and directory (`sudo rm -- /run/astrumweaver-bootstrap/control.env` then `sudo rmdir -- /run/astrumweaver-bootstrap`). Preserve the separate input `./control.env` until its reviewed service installation step completes. Do not interpret the example as authorization to mutate an already-running site. Existing deployments require the [operator rollout/backup/rollback GO](operator-rollout-gates.md) **before** a database migration or service switch. The recommended [first-run setup TUI](setup-tui.md) automates the normal credential-safe bootstrap path.
+This passes only an absolute **file path** to the privileged transient systemd service; the database secret is not passed as a command-line argument. The source `control.env` must itself be trusted, protected and outside Git; do not copy its contents into logs. After the migration attempt is finished and its result recorded, remove the **temporary** bootstrap copy and directory (`sudo rm -- /run/tsumgi-bootstrap/control.env` then `sudo rmdir -- /run/tsumgi-bootstrap`). Preserve the separate input `./control.env` until its reviewed service installation step completes. Do not interpret the example as authorization to mutate an already-running site. Existing deployments require the [operator rollout/backup/rollback GO](operator-rollout-gates.md) **before** a database migration or service switch. The recommended [first-run setup TUI](setup-tui.md) automates the normal credential-safe bootstrap path.
 
 Install and start the service:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-control/bin/astrumweaver-setup-control-plane \
+sudo /nix/var/nix/profiles/tsumgi-control/bin/tsumgi-setup-control-plane \
   --config ./control.toml \
   --environment-file ./control.env \
-  --executable /nix/var/nix/profiles/astrumweaver-control/bin/astrumweaver-control \
+  --executable /nix/var/nix/profiles/tsumgi-control/bin/tsumgi-control \
   --start
 ```
 
@@ -574,14 +574,14 @@ Install the Worker package:
 ```sh
 NIX_BIN="$(command -v nix)"
 sudo "$NIX_BIN" profile add \
-  --profile /nix/var/nix/profiles/astrumweaver-worker \
+  --profile /nix/var/nix/profiles/tsumgi-worker \
   github:upiscium/TSUMGI#worker
 ```
 
 Check it:
 
 ```sh
-/nix/var/nix/profiles/astrumweaver-worker/bin/astrumweaver-worker --help
+/nix/var/nix/profiles/tsumgi-worker/bin/tsumgi-worker --help
 ```
 
 The current packaged generic setup wrapper is GPU-worker oriented. Confirm the
@@ -608,7 +608,7 @@ health_host = "127.0.0.1"
 health_port = 9100
 
 [executor]
-factory = "astrumweaver.executors.structured_echo:create_executor"
+factory = "tsumgi.executors.structured_echo:create_executor"
 
 [executor.settings]
 ```
@@ -616,22 +616,22 @@ factory = "astrumweaver.executors.structured_echo:create_executor"
 Create `worker.env`:
 
 ```text
-ASTRUMWEAVER_WORKER_TOKEN=REPLACE_WITH_THE_SAME_WORKER_TOKEN_USED_BY_CONTROL
+TSUMGI_WORKER_TOKEN=REPLACE_WITH_THE_SAME_WORKER_TOKEN_USED_BY_CONTROL
 ```
 
 Install the service:
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-worker/bin/astrumweaver-setup-gpu-worker \
+sudo /nix/var/nix/profiles/tsumgi-worker/bin/tsumgi-setup-gpu-worker \
   --config ./worker.toml \
   --environment-file ./worker.env \
-  --executable /nix/var/nix/profiles/astrumweaver-worker/bin/astrumweaver-worker \
+  --executable /nix/var/nix/profiles/tsumgi-worker/bin/tsumgi-worker \
   --start
 ```
 
 The setup wrapper reads the selected GPU UUID sequence only from
 `worker.toml`'s `[worker].gpu_uuids`. There is intentionally no separate
-`--gpu-uuid` setup argument; `/etc/astrumweaver/gpu-uuids` is generated from
+`--gpu-uuid` setup argument; `/etc/tsumgi/gpu-uuids` is generated from
 that canonical Worker configuration for systemd preflight/isolation.
 
 `--gpu-isolation auto` is the default. If the host exposes additional GPUs,
@@ -653,7 +653,7 @@ then use the reviewed RuntimeProvider setup path described in
 Update the flake input and rebuild:
 
 ```sh
-nix flake update astrumweaver
+nix flake update tsumgi
 sudo nixos-rebuild switch --flake .#my-host
 ```
 
@@ -666,7 +666,7 @@ For the TUI-first installation, upgrade the combined installer profile:
 ```sh
 NIX_BIN="$(command -v nix)"
 sudo "$NIX_BIN" profile upgrade \
-  --profile /nix/var/nix/profiles/astrumweaver-installer \
+  --profile /nix/var/nix/profiles/tsumgi-installer \
   --all
 ```
 
@@ -675,26 +675,26 @@ If you intentionally installed separate role profiles, upgrade them instead:
 ```sh
 NIX_BIN="$(command -v nix)"
 sudo "$NIX_BIN" profile upgrade \
-  --profile /nix/var/nix/profiles/astrumweaver-control \
+  --profile /nix/var/nix/profiles/tsumgi-control \
   --all
 
 NIX_BIN="$(command -v nix)"
 sudo "$NIX_BIN" profile upgrade \
-  --profile /nix/var/nix/profiles/astrumweaver-worker \
+  --profile /nix/var/nix/profiles/tsumgi-worker \
   --all
 ```
 
 If the new Control binary contains new database migrations, run
-`astrumweaver-migrate` before considering Control ready.
+`tsumgi-migrate` before considering Control ready.
 
 ### Retrying an interrupted generic systemd first-run
 
 **Do not use these retry commands to overwrite an existing live site without the same [#124 operator GO/NO-GO](operator-rollout-gates.md).** Preserve the previously installed executable, credential and database restore targets before reapplying a setup plan or restarting a service. This section is for the generic systemd helpers. Control defaults to the
-`astrumweaver-control` user/group and `/var/lib/astrumweaver-control`; Worker
-remains `astrumweaver` and `/var/lib/astrumweaver`. The shared
-`/etc/astrumweaver` directory is `root:astrumweaver-config 0710` (traverse
+`tsumgi-control` user/group and `/var/lib/tsumgi-control`; Worker
+remains `tsumgi` and `/var/lib/tsumgi`. The shared
+`/etc/tsumgi` directory is `root:tsumgi-config 0710` (traverse
 only), while each role-managed file is `root:<role-group> 0640`. Both units
-use `SupplementaryGroups=astrumweaver-config`, never the peer's private group.
+use `SupplementaryGroups=tsumgi-config`, never the peer's private group.
 
 Distinct custom `--user NAME` values are supported in either install order;
 equal values are rejected before the second role changes anything. A live
@@ -710,12 +710,12 @@ across all configured NSS sources: setup cannot certify non-enumerable remote
 accounts or protect against a privileged administrator later granting access.
 When both units already exist, each helper also requires the peer unit's live
 user. Account and state migration is deliberate manual work; do not remove the
-existing `astrumweaver` Worker account to make a retry pass.
+existing `tsumgi` Worker account to make a retry pass.
 
 Updating a Nix profile only updates binaries; it does not repair host files.
 Re-running the updated setup helpers with the same reviewed inputs is the
-normal fresh/retry path: it repairs `/etc/astrumweaver` to
-`root:astrumweaver-config 0710`, state to the selected role ownership with
+normal fresh/retry path: it repairs `/etc/tsumgi` to
+`root:tsumgi-config 0710`, state to the selected role ownership with
 mode `0750`, and role config/env/GPU/runtime files to `root:<role-group> 0640`.
 No world-readable permissions are needed.
 
@@ -724,30 +724,30 @@ content. In particular, an old role unit from the shared-account templates is
 not silently replaced; follow the [manual role-separation migration](deployment.md#migrating-an-older-generic-systemd-installation)
 instead. Do not regenerate Control tokens or discard existing secrets merely
 to retry. For an earlier failed **smoke** install, stop the Worker and review
-`/etc/astrumweaver/worker.toml` locally:
+`/etc/tsumgi/worker.toml` locally:
 
 ```sh
-sudo systemctl stop astrumweaver-worker.service
-sudoedit /etc/astrumweaver/worker.toml
+sudo systemctl stop tsumgi-worker.service
+sudoedit /etc/tsumgi/worker.toml
 ```
 
 Only when `[executor].factory` is
-`astrumweaver.executors.structured_echo:create_executor`, set
+`tsumgi.executors.structured_echo:create_executor`, set
 `[worker].capabilities = ["debug.echo"]`. Preserve GPU ownership, identity,
 Control URL and all other reviewed settings. Do not make this change to a
 RuntimeProvider configuration. Then reconcile using the existing protected
 files (omit the Control command on a Worker-only host):
 
 ```sh
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-control-plane \
-  --config /etc/astrumweaver/control.toml \
-  --environment-file /etc/astrumweaver/control.env \
-  --executable /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-control
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-control-plane \
+  --config /etc/tsumgi/control.toml \
+  --environment-file /etc/tsumgi/control.env \
+  --executable /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-control
 
-sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-gpu-worker \
-  --config /etc/astrumweaver/worker.toml \
-  --environment-file /etc/astrumweaver/worker.env \
-  --executable /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-worker \
+sudo /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-setup-gpu-worker \
+  --config /etc/tsumgi/worker.toml \
+  --environment-file /etc/tsumgi/worker.env \
+  --executable /nix/var/nix/profiles/tsumgi-installer/bin/tsumgi-worker \
   --start
 ```
 
@@ -755,7 +755,7 @@ Use each role's distinct reviewed `--user` if customized. If an installed unit u
 different executable profile, keep that original stable executable path while
 upgrading its profile, or explicitly review a unit migration; setup will not
 silently replace it. For runtime retry, also pass the existing reviewed
-`--runtime-manifest /etc/astrumweaver/runtime-deployment.json`; keep existing
+`--runtime-manifest /etc/tsumgi/runtime-deployment.json`; keep existing
 isolation policy (`--gpu-isolation on` if explicitly enabled).
 After reconciliation, restart already-running affected services to pick up
 the updated binaries/configuration. If Control migration never completed,

@@ -57,9 +57,9 @@ exit 0
     env = dict(os.environ)
     env.update(
         {
-            "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND": str(mapper),
-            "ASTRUMWEAVER_NVIDIA_SMI": str(nvidia_smi),
-            "ASTRUMWEAVER_SYSTEMD_RUN": str(systemd_run),
+            "TSUMGI_GPU_DEVICE_MAP_COMMAND": str(mapper),
+            "TSUMGI_NVIDIA_SMI": str(nvidia_smi),
+            "TSUMGI_SYSTEMD_RUN": str(systemd_run),
         }
     )
     return env
@@ -108,7 +108,7 @@ def test_probe_reports_isolation_unavailable_without_raw_private_output(
     env = _environment(
         tmp_path,
         systemd_run_body="""
-echo '[astrumweaver-gpu-device-map] ISOLATION_UNAVAILABLE: internal detail' >&2
+echo '[tsumgi-gpu-device-map] ISOLATION_UNAVAILABLE: internal detail' >&2
 exit 1
 """,
     )

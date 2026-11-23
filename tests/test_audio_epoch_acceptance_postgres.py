@@ -1,7 +1,7 @@
 """Real PostgreSQL 17 acceptance for audio runtime-epoch scenarios.
 
 Skipped PostgreSQL cases are NOT_VERIFIED. An acceptance run must set
-ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES=1. These cases have no xfail
+TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES=1. These cases have no xfail
 markers; --runxfail is still appropriate when collecting acceptance evidence.
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from astrumweaver.control import PostgresControlRepository
+from tsumgi.control import PostgresControlRepository
 from audio_epoch_acceptance import (
     EpochAcceptanceCases,
     make_harness,
@@ -21,9 +21,9 @@ from test_audio_artifact_authority_postgres import isolated_database
 
 
 def _strict_mode() -> bool:
-    value = os.environ.get("ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES", "0")
+    value = os.environ.get("TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES", "0")
     if value not in {"0", "1"}:
-        pytest.fail("ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES must be 0 or 1")
+        pytest.fail("TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES must be 0 or 1")
     return value == "1"
 
 
@@ -34,10 +34,10 @@ def postgres17_database(request):
         if strict:
             pytest.fail("Required PostgreSQL acceptance prerequisite missing: psycopg")
         pytest.skip("NOT_VERIFIED: psycopg driver unavailable")
-    if not os.environ.get("ASTRUMWEAVER_TEST_DATABASE_URL"):
+    if not os.environ.get("TSUMGI_TEST_DATABASE_URL"):
         if strict:
             pytest.fail("Required PostgreSQL acceptance prerequisite missing: test database URL")
-        pytest.skip("NOT_VERIFIED: ASTRUMWEAVER_TEST_DATABASE_URL absent")
+        pytest.skip("NOT_VERIFIED: TSUMGI_TEST_DATABASE_URL absent")
 
     try:
         dsn = request.getfixturevalue("isolated_database")

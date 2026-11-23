@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from astrumweaver.setup import SetupAction, SetupActionKind, SetupActionState, SystemdSetupDriver
-from astrumweaver.setup.filesystem import SetupFilesystem, UnsafeSetupPath
+from tsumgi.setup import SetupAction, SetupActionKind, SetupActionState, SystemdSetupDriver
+from tsumgi.setup.filesystem import SetupFilesystem, UnsafeSetupPath
 
 
 def action(kind=SetupActionKind.ENSURE_PACKAGE, **payload):
@@ -119,7 +119,7 @@ def test_exclusive_temp_creation_never_truncates_collision(fs, tmp_path, monkeyp
     outside.write_text("sentinel")
     collision = fs.root / ".receipt.fixed.tmp"
     collision.symlink_to(outside)
-    monkeypatch.setattr("astrumweaver.setup.filesystem.secrets.token_hex", lambda _: "fixed")
+    monkeypatch.setattr("tsumgi.setup.filesystem.secrets.token_hex", lambda _: "fixed")
     with pytest.raises(FileExistsError):
         fs.write_text(fs.root / "receipt", "new")
     assert outside.read_text() == "sentinel"
@@ -190,7 +190,7 @@ def test_invalid_path_is_rejected(fs, path):
 def test_package_legacy_marker_is_neither_trusted_nor_written(tmp_path, monkeypatch):
     import hashlib
     root = tmp_path / "root"
-    legacy = root / "var/lib/astrumweaver/runtime/llama-cpp/packages"
+    legacy = root / "var/lib/tsumgi/runtime/llama-cpp/packages"
     legacy.mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.write_text("sentinel")
@@ -199,15 +199,15 @@ def test_package_legacy_marker_is_neither_trusted_nor_written(tmp_path, monkeypa
     driver = SystemdSetupDriver(root=root, installers={"llama-cpp": ("reviewed-installer",)})
     state = {"available": False}
     monkeypatch.setattr(driver, "_provider_executable_available", lambda *_: state["available"])
-    monkeypatch.setattr("astrumweaver.setup.systemd.subprocess.run", lambda *a, **k: state.update(available=True))
+    monkeypatch.setattr("tsumgi.setup.systemd.subprocess.run", lambda *a, **k: state.update(available=True))
     task = action()
     assert driver.inspect(task).state is SetupActionState.NEEDS_APPLY
     assert driver.apply(task).changed
     receipt = driver._receipt_path(task)
-    assert receipt.is_relative_to(root / "var/lib/astrumweaver-setup")
+    assert receipt.is_relative_to(root / "var/lib/tsumgi-setup")
     assert json.loads(receipt.read_text())["version"] == 1
     assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
-    assert stat.S_IMODE((root / "var/lib/astrumweaver-setup").stat().st_mode) == 0o700
+    assert stat.S_IMODE((root / "var/lib/tsumgi-setup").stat().st_mode) == 0o700
     assert marker.is_symlink() and outside.read_text() == "sentinel"
     state["available"] = False
     assert driver.inspect(task).state is SetupActionState.NEEDS_APPLY
@@ -222,14 +222,14 @@ def test_poisoned_new_receipt_path_blocks_before_installer(tmp_path, monkeypatch
     outside.mkdir()
     (outside / "sentinel").write_text("keep")
     target.parent.mkdir(parents=True)
-    (driver.root / "var/lib/astrumweaver-setup").chmod(0o700)
+    (driver.root / "var/lib/tsumgi-setup").chmod(0o700)
     if where == "target":
         target.symlink_to(outside / "sentinel")
     else:
         target.parent.rmdir()
         target.parent.symlink_to(outside, target_is_directory=True)
     monkeypatch.setattr(driver, "_provider_executable_available", lambda *_: False)
-    monkeypatch.setattr("astrumweaver.setup.systemd.subprocess.run", lambda *a, **k: pytest.fail("installer must not run"))
+    monkeypatch.setattr("tsumgi.setup.systemd.subprocess.run", lambda *a, **k: pytest.fail("installer must not run"))
     assert driver.inspect(task).state is SetupActionState.BLOCKED
     with pytest.raises(RuntimeError):
         driver.apply(task)
@@ -239,7 +239,7 @@ def test_poisoned_new_receipt_path_blocks_before_installer(tmp_path, monkeypatch
 def test_success_exit_without_prerequisite_does_not_write_receipt(tmp_path, monkeypatch):
     driver = SystemdSetupDriver(root=tmp_path / "root", installers={"llama-cpp": ("installer",)})
     monkeypatch.setattr(driver, "_provider_executable_available", lambda *_: False)
-    monkeypatch.setattr("astrumweaver.setup.systemd.subprocess.run", lambda *a, **k: None)
+    monkeypatch.setattr("tsumgi.setup.systemd.subprocess.run", lambda *a, **k: None)
     with pytest.raises(RuntimeError, match="still unavailable"):
         driver.apply(action())
     assert not driver._receipt_path(action()).exists()
@@ -263,7 +263,7 @@ def test_remote_model_receipt_never_substitutes_for_current_verification(tmp_pat
         assert kwargs["timeout"] == 10.0
         return subprocess.CompletedProcess(argv, 0 if state["present"] else 1)
 
-    monkeypatch.setattr("astrumweaver.setup.systemd.subprocess.run", run)
+    monkeypatch.setattr("tsumgi.setup.systemd.subprocess.run", run)
     assert driver.apply(task).changed
     assert driver.inspect(task).state is SetupActionState.SATISFIED
     state["present"] = False
@@ -286,7 +286,7 @@ def test_runtime_directory_link_cannot_change_target_permissions(tmp_path):
     root = tmp_path / "root"
     outside = tmp_path / "outside"
     outside.mkdir(mode=0o700)
-    target = root / "var/lib/astrumweaver/runtime/llama-cpp"
+    target = root / "var/lib/tsumgi/runtime/llama-cpp"
     target.parent.mkdir(parents=True)
     target.symlink_to(outside, target_is_directory=True)
     driver = SystemdSetupDriver(root=root)
@@ -301,8 +301,8 @@ def test_config_partial_failure_restores_earlier_write(tmp_path, monkeypatch):
     root = tmp_path / "root"
     root.mkdir()
     driver = SystemdSetupDriver(root=root)
-    first = root / "etc/astrumweaver/runtime-deployment.json"
-    second = root / "etc/astrumweaver/runtime/exllamav3/config.yml"
+    first = root / "etc/tsumgi/runtime-deployment.json"
+    second = root / "etc/tsumgi/runtime/exllamav3/config.yml"
     driver.filesystem.write_text(first, "previous", mode=0o640)
     task = action(SetupActionKind.RENDER_CONFIG, runtime_deployment={"provider_id": "exllamav3"}, configuration={})
     monkeypatch.setattr(driver, "_render_targets", lambda _: ((first, "desired"), (second, "config")))
@@ -325,7 +325,7 @@ def test_config_rollback_rejects_replaced_target(tmp_path):
     driver = SystemdSetupDriver(root=root)
     task = action(SetupActionKind.RENDER_CONFIG, runtime_deployment={"provider_id": "llama-cpp"}, configuration={})
     receipt = driver.apply(task)
-    target = root / "etc/astrumweaver/runtime-deployment.json"
+    target = root / "etc/tsumgi/runtime-deployment.json"
     outside = tmp_path / "outside"
     outside.write_text("sentinel")
     target.unlink()
@@ -339,7 +339,7 @@ def test_bridge_rejects_unsafe_ancestor(tmp_path):
     root = tmp_path / "root"
     outside = tmp_path / "outside"
     outside.mkdir()
-    parent = root / "etc/astrumweaver"
+    parent = root / "etc/tsumgi"
     parent.mkdir(parents=True)
     (parent / "runtime").symlink_to(outside, target_is_directory=True)
     lib = tmp_path / "libcuda.so.1"
@@ -347,7 +347,7 @@ def test_bridge_rejects_unsafe_ancestor(tmp_path):
     driver = SystemdSetupDriver(root=root, nvidia_driver_library=lib)
     task = action(
         SetupActionKind.ENSURE_NVIDIA_DRIVER_BRIDGE,
-        soname="libcuda.so.1", bridge_directory="/etc/astrumweaver/runtime/nvidia-driver",
+        soname="libcuda.so.1", bridge_directory="/etc/tsumgi/runtime/nvidia-driver",
     )
     assert driver.inspect(task).state is SetupActionState.BLOCKED
     with pytest.raises(RuntimeError):

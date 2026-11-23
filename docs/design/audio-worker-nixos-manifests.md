@@ -8,7 +8,7 @@ package; merely selecting its name does not provide its implementation.
 
 ## Explicit configuration
 
-`services.astrumweaver.worker.runtime.enable` remains **false by default**.
+`services.tsumgi.worker.runtime.enable` remains **false by default**.
 An audio provider additionally requires literal `runtime.providerConfig.enabled
 = true`, the provider's exact execution demand, and a reviewed
 `serving.declaration` (the JSON value produced by the matching provider's
@@ -26,7 +26,7 @@ control/UVM nodes, not another physical GPU. Existing Python compatibility,
 asset, serving-identity and native
 readiness checks still run before registration.
 
-Provide a dedicated static user (not `root` or the shared `astrumweaver` user),
+Provide a dedicated static user (not `root` or the shared `tsumgi` user),
 a protected plain `/etc/...` or `/run/...` `environmentFile`, and loopback
 Control/health endpoints. User/group values must be names matching
 `[a-z_][a-z0-9_-]{0,31}`, not numeric IDs; explicit UID/GID zero is also rejected.
@@ -35,7 +35,7 @@ For this bounded lane use only the typed options:
 Non-audio package selection and existing untyped settings are unchanged.
 
 All three provider configurations name a separately provisioned, empty `0700`
-`private_home` beneath `/var/lib/astrumweaver-audio/`. The unit uses that exact
+`private_home` beneath `/var/lib/tsumgi-audio/`. The unit uses that exact
 working directory and writable path, `UMask=0077`, no shared `StateDirectory`,
 no automatic user-home creation, `Restart=no`, and `KillMode=control-group`.
 The module does **not** create, rotate, erase, or repair this private directory
@@ -66,7 +66,7 @@ runtime is rejected rather than silently falling back.
 
 ## Evidence and remaining gates
 
-`system.build.astrumweaverAudioWorkerConfig` exposes the three configuration
+`system.build.tsumgiAudioWorkerConfig` exposes the three configuration
 artifacts for review, with `.reviewed` containing their actual serialization
 inputs and `.artifacts` the exact linkFarm entries. Evaluation checks the
 Worker's configured paths against those entries and the JSON derivation
@@ -97,7 +97,7 @@ nix eval --offline --no-update-lock-file --no-write-lock-file \
     inherit (checks) audio-worker-module audio-control-module runtime-module-eval module-eval;
   }'
 PYTHONPATH=src python -B tools/check_audio_worker_nixos.py
-env -u ASTRUMWEAVER_TEST_DATABASE_URL PYTHONPATH=src \
+env -u TSUMGI_TEST_DATABASE_URL PYTHONPATH=src \
   python -B -m pytest -q -p no:cacheprovider
 ```
 

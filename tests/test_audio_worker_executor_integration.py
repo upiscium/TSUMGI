@@ -9,15 +9,15 @@ from dataclasses import replace
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.audio.artifact_spool import ArtifactSpool
-from astrumweaver.audio.input_channel import AudioInputChannel
-from astrumweaver.audio.output_channel import AudioOutputChannel
-from astrumweaver.control import InMemoryControlRepository, JobSubmission, JobStatus, WorkerRegistration, WorkerState
-from astrumweaver.control.api import create_app
-from astrumweaver.execution import ArtifactRef, JobResult, ResidencyReport
-from astrumweaver.worker.client import ControlClient, ControlTransportError
-from astrumweaver.worker.runtime import WorkerRuntime, require_audio_executor
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.audio.artifact_spool import ArtifactSpool
+from tsumgi.audio.input_channel import AudioInputChannel
+from tsumgi.audio.output_channel import AudioOutputChannel
+from tsumgi.control import InMemoryControlRepository, JobSubmission, JobStatus, WorkerRegistration, WorkerState
+from tsumgi.control.api import create_app
+from tsumgi.execution import ArtifactRef, JobResult, ResidencyReport
+from tsumgi.worker.client import ControlClient, ControlTransportError
+from tsumgi.worker.runtime import WorkerRuntime, require_audio_executor
 from test_audio_artifact_authority import EPOCH, serving_values
 from test_audio_input_channel import WAV
 
@@ -506,7 +506,7 @@ async def test_delayed_media_post_keeps_real_heartbeat_and_drain_allows_owned_co
             assert transport.transfer_statuses == [201]
             # Existing drain prevents new claims without withdrawing the
             # authority of an attempt already held before drain.
-            from astrumweaver.control.repository import NoCompatibleDeployment
+            from tsumgi.control.repository import NoCompatibleDeployment
             with pytest.raises(NoCompatibleDeployment):
                 repo.submit_job(JobSubmission(
                     capability="audio.synthesize", serving=binding,
@@ -568,7 +568,7 @@ async def test_delayed_media_response_never_publishes_after_stop_or_cancel(tmp_p
                 # A delayed POST may stage a bounded private receipt before
                 # Worker-local stop is observed; that is NOT publication.
                 # Orphan expiry/reaping is the separate #174 retention gate.
-                from astrumweaver.control.repository import NotFoundError
+                from tsumgi.control.repository import NotFoundError
                 assert len(output._staged) <= 1
                 for artifact_id in output._staged:
                     with pytest.raises(NotFoundError):

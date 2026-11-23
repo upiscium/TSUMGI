@@ -1,12 +1,12 @@
 """Lock ordering and reference-repository ownership contracts."""
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.control import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.control import (
     ConflictError, InMemoryControlRepository, WorkerHeartbeat,
     WorkerRegistration, WorkerState,
 )
-from astrumweaver.control import postgres
+from tsumgi.control import postgres
 
 
 class Connection:

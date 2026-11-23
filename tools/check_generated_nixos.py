@@ -16,9 +16,9 @@ from typing import Any
 
 
 def generate_cases(directory: Path) -> list[dict[str, Any]]:
-    from astrumweaver import ResourceShape, WorkerSpec
-    from astrumweaver.control.auth import ClientAuthMode
-    from astrumweaver.setup.first_run import (
+    from tsumgi import ResourceShape, WorkerSpec
+    from tsumgi.control.auth import ClientAuthMode
+    from tsumgi.setup.first_run import (
         ControlBootstrapSpec, FirstRunExecutionMode, FirstRunRole,
         render_nixos_bootstrap_snippet,
     )
@@ -44,7 +44,7 @@ def generate_cases(directory: Path) -> list[dict[str, Any]]:
         ("combined-vllm-none", "both", "none", "vllm", "pkgs.vllm", gpu),
         # The evaluator exposes a real Ollama derivation at this test overlay
         # path. This checks nested pkgs references, not a free myPkgs binding.
-        ("runtime-overlay", "worker", "bearer", "ollama", "pkgs.astrumweaverTestPackages.runtime", gpu),
+        ("runtime-overlay", "worker", "bearer", "ollama", "pkgs.tsumgiTestPackages.runtime", gpu),
         ("literal-data", "both", "none", "ollama", "pkgs.ollama", gpu),
     ]
     cases = []
@@ -54,8 +54,8 @@ def generate_cases(directory: Path) -> list[dict[str, Any]]:
         is_runtime = provider is not None
         if is_runtime:
             spec = replace(spec, capabilities=frozenset({"llm.chat", "text.generate"}))
-        control_env = "/etc/astrumweaver/control.env"
-        worker_env = "/etc/astrumweaver/worker.env"
+        control_env = "/etc/tsumgi/control.env"
+        worker_env = "/etc/tsumgi/worker.env"
         model = {
             "model_ref": "/srv/models/evaluation-only",
             "model_format": {"ollama": "ollama", "vllm": "safetensors", "llama-cpp": "gguf"}.get(provider, "ollama"),
@@ -104,7 +104,7 @@ def generate_cases(directory: Path) -> list[dict[str, Any]]:
                 "totalVramMb": spec.resources.total_vram_mb,
                 "maxSingleGpuVramMb": spec.resources.max_single_gpu_vram_mb,
                 "environmentFile": worker_env,
-                "executorFactory": "" if is_runtime else "astrumweaver.executors.structured_echo:create_executor",
+                "executorFactory": "" if is_runtime else "tsumgi.executors.structured_echo:create_executor",
                 "runtime": None if not is_runtime else {
                     "provider": provider, "modelRef": model["model_ref"], "modelFormat": model["model_format"],
                     "modelTopology": "dense", "estimatedModelSizeMb": 400, "residencyPolicy": "prefer_vram",
@@ -191,7 +191,7 @@ def main() -> int:
             cases = generate_cases(args.generate_only.resolve())
             print(f"generated_fixtures={len(cases)}; nix_evaluation=NOT_RUN")
         else:
-            with tempfile.TemporaryDirectory(prefix="astrumweaver-nixos-eval-") as directory:
+            with tempfile.TemporaryDirectory(prefix="tsumgi-nixos-eval-") as directory:
                 check(source, Path(directory))
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(str(exc), file=sys.stderr)

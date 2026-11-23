@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from astrumweaver.validation.gpu_mapping import (
+from tsumgi.validation.gpu_mapping import (
     GpuMappingError,
     _minor_query_is_explicitly_unsupported,
     _query_primary_mapping,

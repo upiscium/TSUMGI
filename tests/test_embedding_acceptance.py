@@ -4,12 +4,12 @@ import json
 
 import httpx
 
-from astrumweaver.gateway.embedding import (
+from tsumgi.gateway.embedding import (
     LLAMA_CPP_EMBEDDING_ADAPTER,
     EmbeddingSpaceIdentity,
     text_policy_digest,
 )
-from astrumweaver.validation.embedding import (
+from tsumgi.validation.embedding import (
     EmbeddingAcceptanceError,
     EmbeddingAcceptanceRunner,
     render_embedding_acceptance_markdown,
@@ -75,7 +75,7 @@ def response(vectors):
             for index, vector in enumerate(vectors)
         ],
         "usage": {"prompt_tokens": 1, "total_tokens": 1},
-        "x_astrumweaver": {
+        "x_tsumgi": {
             "embedding_space_id": space().embedding_space_id,
         },
     }
@@ -92,7 +92,7 @@ def runner(tmp_path, handler):
         serving_contract_revision=CONTRACT_REVISION,
         embedding_space_id=accepted.embedding_space_id,
         incompatible_space_id=INCOMPATIBLE_SPACE,
-        astrumweaver_revision="deadbeef12345678",
+        tsumgi_revision="deadbeef12345678",
         fixture=fixture(tmp_path),
         minimum_margin=0.10,
         timeout_seconds=30,
@@ -116,8 +116,8 @@ def test_real_acceptance_runner_exercises_live_incompatible_space_rejection(tmp_
                     "data": [
                         {
                             "id": "notes-embed-v1",
-                            "object": "astrumweaver.embedding_space",
-                            "x_astrumweaver": {
+                            "object": "tsumgi.embedding_space",
+                            "x_tsumgi": {
                                 "embedding_space_id": accepted.embedding_space_id,
                                 "profile_revision": PROFILE_REVISION,
                                 "deployment_revision": DEPLOYMENT_REVISION,
@@ -136,7 +136,7 @@ def test_real_acceptance_runner_exercises_live_incompatible_space_rejection(tmp_
 
         if request.method == "POST" and request.url.path == "/v1/embeddings":
             body = json.loads(request.content)
-            pin = body["x_astrumweaver_embedding_space_id"]
+            pin = body["x_tsumgi_embedding_space_id"]
             if pin == INCOMPATIBLE_SPACE:
                 return httpx.Response(
                     409,
@@ -150,14 +150,14 @@ def test_real_acceptance_runner_exercises_live_incompatible_space_rejection(tmp_
                 )
 
             assert pin == accepted.embedding_space_id
-            input_type = body["x_astrumweaver_input_type"]
+            input_type = body["x_tsumgi_input_type"]
             vectors = (
                 [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
                 if input_type == "document"
                 else [[1.0, 0.0, 0.0]]
             )
             value = response(vectors)
-            value["x_astrumweaver"]["input_type"] = input_type
+            value["x_tsumgi"]["input_type"] = input_type
             return httpx.Response(200, json=value)
 
         raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
@@ -173,7 +173,7 @@ def test_real_acceptance_runner_exercises_live_incompatible_space_rejection(tmp_
     assert len(calls) == 4
 
     negative_body = json.loads(calls[-1].content)
-    assert negative_body["x_astrumweaver_embedding_space_id"] == INCOMPATIBLE_SPACE
+    assert negative_body["x_tsumgi_embedding_space_id"] == INCOMPATIBLE_SPACE
 
 
 def test_real_acceptance_runner_fails_if_gateway_accepts_incompatible_space(tmp_path):
@@ -188,7 +188,7 @@ def test_real_acceptance_runner_fails_if_gateway_accepts_incompatible_space(tmp_
                     "data": [
                         {
                             "id": "notes-embed-v1",
-                            "x_astrumweaver": {
+                            "x_tsumgi": {
                                 "embedding_space_id": accepted.embedding_space_id,
                                 "profile_revision": PROFILE_REVISION,
                                 "deployment_revision": DEPLOYMENT_REVISION,
@@ -200,14 +200,14 @@ def test_real_acceptance_runner_fails_if_gateway_accepts_incompatible_space(tmp_
                 },
             )
         body = json.loads(request.content)
-        input_type = body["x_astrumweaver_input_type"]
+        input_type = body["x_tsumgi_input_type"]
         vectors = (
             [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
             if len(body["input"]) == 2
             else [[1.0, 0.0, 0.0]]
         )
         value = response(vectors)
-        value["x_astrumweaver"]["input_type"] = input_type
+        value["x_tsumgi"]["input_type"] = input_type
         return httpx.Response(200, json=value)
 
     try:
@@ -230,7 +230,7 @@ def test_embedding_acceptance_public_evidence_omits_private_values(tmp_path):
                     "data": [
                         {
                             "id": "notes-embed-v1",
-                            "x_astrumweaver": {
+                            "x_tsumgi": {
                                 "embedding_space_id": accepted.embedding_space_id,
                                 "profile_revision": PROFILE_REVISION,
                                 "deployment_revision": DEPLOYMENT_REVISION,
@@ -242,19 +242,19 @@ def test_embedding_acceptance_public_evidence_omits_private_values(tmp_path):
                 },
             )
         body = json.loads(request.content)
-        if body["x_astrumweaver_embedding_space_id"] == INCOMPATIBLE_SPACE:
+        if body["x_tsumgi_embedding_space_id"] == INCOMPATIBLE_SPACE:
             return httpx.Response(
                 409,
                 json={"error": {"code": "embedding_space_mismatch"}},
             )
-        input_type = body["x_astrumweaver_input_type"]
+        input_type = body["x_tsumgi_input_type"]
         vectors = (
             [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
             if len(body["input"]) == 2
             else [[1.0, 0.0, 0.0]]
         )
         value = response(vectors)
-        value["x_astrumweaver"]["input_type"] = input_type
+        value["x_tsumgi"]["input_type"] = input_type
         return httpx.Response(200, json=value)
 
     markdown = render_embedding_acceptance_markdown(

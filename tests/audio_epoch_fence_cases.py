@@ -7,11 +7,11 @@ from uuid import uuid4
 
 import pytest
 
-from astrumweaver.control import (
+from tsumgi.control import (
     ConflictError, JobSubmission, NoCompatibleDeployment, NotFoundError,
     WorkerHeartbeat, WorkerRegistration, WorkerState,
 )
-from astrumweaver.execution import JobResult
+from tsumgi.execution import JobResult
 from test_audio_artifact_authority import (
     EPOCH, NEXT_EPOCH, authorize, credentials, serving_values, setup_claim, snapshot,
 )
@@ -191,7 +191,7 @@ class AudioEpochFenceCases:
         assert snapshot(repo, claim) == before
 
     def test_unfenced_audio_keeps_ordinary_renewal_and_artifactless_completion(self, authority_repo, clock):
-        from astrumweaver.control import WorkerState
+        from tsumgi.control import WorkerState
 
         repo = authority_repo
         claim = setup_claim(repo, clock.now)
@@ -207,7 +207,7 @@ class AudioEpochFenceCases:
         assert completed.status.value == "succeeded"
 
     def test_only_fenced_matching_worker_is_not_admitted(self, authority_repo, clock):
-        from astrumweaver.control import WorkerState
+        from tsumgi.control import WorkerState
 
         repo = authority_repo
         setup_claim(repo, clock.now)
@@ -224,7 +224,7 @@ class AudioEpochFenceCases:
             repo.claim_next_job("owner", runtime_instance_epoch=EPOCH, now=clock.now)
 
     def test_unbound_worker_is_not_fenceable(self, authority_repo, clock):
-        from astrumweaver import ResourceShape, WorkerSpec
+        from tsumgi import ResourceShape, WorkerSpec
 
         spec = WorkerSpec(
             worker_id="unbound", worker_class="cpu-test", resources=ResourceShape(),
@@ -242,7 +242,7 @@ class AudioEpochFenceCases:
     def test_mixed_capabilities_and_multiple_contracts_are_not_fenceable(self, authority_repo, clock):
         from dataclasses import replace
 
-        from astrumweaver import ResourceShape, WorkerSpec
+        from tsumgi import ResourceShape, WorkerSpec
 
         repo = authority_repo
         _, serving = serving_values("audio.synthesize")

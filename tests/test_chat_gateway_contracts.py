@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from astrumweaver.gateway.chat import (
+from tsumgi.gateway.chat import (
     CHAT_CATALOG_SCHEMA,
     CHAT_OPERATION_SCHEMA,
     FREETOKEN_CHAT_ADAPTER,
@@ -15,7 +15,7 @@ from astrumweaver.gateway.chat import (
     compile_chat_request,
     normalize_chat_completion,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,
@@ -111,8 +111,8 @@ def test_catalog_round_trip_and_models_expose_profile_binding_metadata():
                 "id": "local-code-v1",
                 "object": "model",
                 "created": 1,
-                "owned_by": "astrumweaver",
-                "x_astrumweaver": {
+                "owned_by": "tsumgi",
+                "x_tsumgi": {
                     "profile_revision": loaded.resolved.profile_revision,
                     "deployment_revision": loaded.resolved.deployment.revision,
                     "serving_contract_revision": loaded.resolved.contract.revision,

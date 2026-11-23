@@ -8,7 +8,7 @@ Base: `98d4f0c631e2acc18985f4b206bc1b1d1c80d0f9`.
 
 ## Scope and non-claims
 
-`astrumweaver.gateway.audio` is a pure configuration/catalog/validation module.
+`tsumgi.gateway.audio` is a pure configuration/catalog/validation module.
 It imports no audio artifact, Control, Worker, transport or runtime modules.
 It adds **no HTTP endpoints**, multipart parser, binary transfer, model loading,
 runtime discovery, Job submission, admission, lease, claim or persistence code.

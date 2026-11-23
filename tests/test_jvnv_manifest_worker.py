@@ -13,21 +13,21 @@ from uuid import UUID
 import httpx
 import pytest
 
-from astrumweaver.audio import ArtifactSpool, AudioOutputChannel
-from astrumweaver.control import InMemoryControlRepository, JobStatus
-from astrumweaver.control.api import create_app
-from astrumweaver.gateway.audio import AudioGatewayProfile, AudioProfileCatalog, VoiceAlias
-from astrumweaver.gateway.audio_ingress import AudioIngressLimits
-from astrumweaver.gateway.audio_speech_api import AudioSpeechLimits, create_audio_speech_router
-from astrumweaver.runtime import RuntimeHostFacts
-from astrumweaver.runtime.deployment import RuntimeDeploymentSpec
-from astrumweaver.runtime.contracts import (
+from tsumgi.audio import ArtifactSpool, AudioOutputChannel
+from tsumgi.control import InMemoryControlRepository, JobStatus
+from tsumgi.control.api import create_app
+from tsumgi.gateway.audio import AudioGatewayProfile, AudioProfileCatalog, VoiceAlias
+from tsumgi.gateway.audio_ingress import AudioIngressLimits
+from tsumgi.gateway.audio_speech_api import AudioSpeechLimits, create_audio_speech_router
+from tsumgi.runtime import RuntimeHostFacts
+from tsumgi.runtime.deployment import RuntimeDeploymentSpec
+from tsumgi.runtime.contracts import (
     ExecutionDemand, GPUTopology, ModelDemand, ModelTopology, ResidencyPolicy,
 )
-from astrumweaver.runtime.providers import jvnv_assets, style_bert_vits2_manifest, voicevox_manifest
-from astrumweaver.serving import LogicalServingProfile, ServingDeploymentDeclaration, resolve_profile
-from astrumweaver.worker import daemon
-from astrumweaver.worker.client import ControlClient
+from tsumgi.runtime.providers import jvnv_assets, style_bert_vits2_manifest, voicevox_manifest
+from tsumgi.serving import LogicalServingProfile, ServingDeploymentDeclaration, resolve_profile
+from tsumgi.worker import daemon
+from tsumgi.worker.client import ControlClient
 
 
 RIGHTS = "sha256:" + "1" * 64
@@ -174,7 +174,7 @@ def _setup(tmp_path: Path, monkeypatch, *, hold=False, fault="none"):
         assert argv[0] == str(interp) and "-I" in argv and Path(argv[-1]).name == "jvnv_child.py"
         assert kwargs["cwd"] == kwargs["env"]["HOME"] == kwargs["env"]["TMPDIR"] == str(private)
         assert kwargs["env"]["CUDA_VISIBLE_DEVICES"] == "" and kwargs["env"]["HF_HUB_OFFLINE"] == "1"
-        assert "ASTRUMWEAVER_WORKER_TOKEN" not in kwargs["env"]
+        assert "TSUMGI_WORKER_TOKEN" not in kwargs["env"]
         child = await real_spawn(sys.executable, "-I", "-u", "-c",
                                  CHILD.replace("__FAULT__", repr(fault)), **kwargs)
         children.append(child)
@@ -185,7 +185,7 @@ def _setup(tmp_path: Path, monkeypatch, *, hold=False, fault="none"):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     monkeypatch.setattr(daemon, "discover_runtime_host_facts",
                         lambda: RuntimeHostFacts(cpu_count=4, host_ram_mb=8192, architecture="x86_64"))
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "synthetic-token")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "synthetic-token")
     # Keep the lease shorter than the request deadline: otherwise the
     # repository correctly caps both the initial expiry and its renewal.
     repo = InMemoryControlRepository(lease_seconds=5)

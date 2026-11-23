@@ -18,9 +18,9 @@ from test_voicevox_provider import (
     config as pinned_adapter,
 )
 
-from astrumweaver.execution import JobExecutionError
-from astrumweaver.runtime.providers.voicevox import VoicevoxExecutor
-from astrumweaver.runtime.providers.voicevox_http import (
+from tsumgi.execution import JobExecutionError
+from tsumgi.runtime.providers.voicevox import VoicevoxExecutor
+from tsumgi.runtime.providers.voicevox_http import (
     VoicevoxHttpConfig,
     VoicevoxHttpError,
     VoicevoxLoopbackHttpApi,
@@ -418,8 +418,8 @@ async def test_synthetic_owned_runtime_with_real_tcp_transport_and_fake_process(
 
     from test_voicevox_managed_runtime import FakeProcess, make_spec
 
-    from astrumweaver.runtime.contracts import RuntimeHealthState
-    from astrumweaver.runtime.providers.voicevox_managed import (
+    from tsumgi.runtime.contracts import RuntimeHealthState
+    from tsumgi.runtime.providers.voicevox_managed import (
         VoicevoxOwnedManagedRuntime,
     )
 

@@ -9,9 +9,9 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from astrumweaver.control import InMemoryControlRepository, daemon
-from astrumweaver.control.api import create_app
-from astrumweaver.control.worker_auth import WorkerCredentials
+from tsumgi.control import InMemoryControlRepository, daemon
+from tsumgi.control.api import create_app
+from tsumgi.control.worker_auth import WorkerCredentials
 from audio_epoch_acceptance import E1, WORKER_ID, registration
 from test_audio_voice_api import make_profile
 
@@ -31,10 +31,10 @@ def private_credentials(tmp_path, workers):
 
 
 def configure(tmp_path, monkeypatch, text):
-    monkeypatch.setenv("ASTRUMWEAVER_DATABASE_URL", "postgresql://unused.invalid/auth-config")
-    monkeypatch.setenv("ASTRUMWEAVER_CLIENT_TOKEN", CLIENT)
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", SHARED)
-    monkeypatch.setenv("ASTRUMWEAVER_AUDIO_EPOCH_OPERATOR_TOKEN", OPERATOR)
+    monkeypatch.setenv("TSUMGI_DATABASE_URL", "postgresql://unused.invalid/auth-config")
+    monkeypatch.setenv("TSUMGI_CLIENT_TOKEN", CLIENT)
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", SHARED)
+    monkeypatch.setenv("TSUMGI_AUDIO_EPOCH_OPERATOR_TOKEN", OPERATOR)
     path = tmp_path / "control.toml"
     path.write_text(text)
     return path
@@ -44,7 +44,7 @@ def test_strict_daemon_needs_no_shared_token_and_rejects_old_shared_token(tmp_pa
     credentials = private_credentials(tmp_path, CREDS)
     config = configure(tmp_path, monkeypatch, '[worker_auth]\nmode = "per-worker"\n'
                        f"credentials_file = {json.dumps(str(credentials))}\n")
-    monkeypatch.delenv("ASTRUMWEAVER_WORKER_TOKEN")
+    monkeypatch.delenv("TSUMGI_WORKER_TOKEN")
     repo = InMemoryControlRepository()
     monkeypatch.setattr(daemon, "PostgresControlRepository", lambda *a, **k: repo)
     with TestClient(daemon.build_app(str(config))) as client:

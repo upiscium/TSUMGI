@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from astrumweaver.gateway.decision import (
+from tsumgi.gateway.decision import (
     DECISION_CATALOG_SCHEMA,
     DECISION_OPERATION_SCHEMA,
     DECISION_SCORE_KIND,
@@ -18,7 +18,7 @@ from astrumweaver.gateway.decision import (
     normalize_decision_response,
     validate_decision_provider_response,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,
@@ -134,7 +134,7 @@ def provider_response(
     choice="0000",
 ):
     return {
-        "model": "astrumweaver",
+        "model": "tsumgi",
         "answers": {
             "decision": {
                 "type": "choice",
@@ -296,8 +296,8 @@ def test_normalized_response_maps_scores_and_abstains_without_failure():
         "status": "uncalibrated",
         "reference_sha256": None,
     }
-    assert accepted["x_astrumweaver"]["mode"] == "shadow"
-    assert accepted["x_astrumweaver"]["authority"] == "recommendation-only"
+    assert accepted["x_tsumgi"]["mode"] == "shadow"
+    assert accepted["x_tsumgi"]["authority"] == "recommendation-only"
 
     abstained = normalize_decision_response(
         provider_response((0.4, 0.35, 0.25)),

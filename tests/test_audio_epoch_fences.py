@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository
+from tsumgi.control import InMemoryControlRepository
 from audio_epoch_fence_cases import AudioEpochFenceCases, clock
 from test_audio_artifact_authority import EPOCH, serving_values, setup_claim
 

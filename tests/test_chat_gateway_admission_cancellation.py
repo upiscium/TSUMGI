@@ -7,9 +7,9 @@ import threading
 
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository, JobStatus
-from astrumweaver.gateway.api import ChatGatewayService
-from astrumweaver.gateway.chat import ChatProfileCatalog
+from tsumgi.control import InMemoryControlRepository, JobStatus
+from tsumgi.gateway.api import ChatGatewayService
+from tsumgi.gateway.chat import ChatProfileCatalog
 from test_chat_gateway_api import _ConnectedRequest, register_worker, serving_values
 
 

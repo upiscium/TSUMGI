@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository
+from tsumgi.control import InMemoryControlRepository
 from audio_epoch_acceptance import EpochAcceptanceCases, make_harness, snapshot_repository
 
 
@@ -31,12 +31,12 @@ class TestMemoryAudioEpochRehearsal(EpochAcceptanceCases):
 def test_postgres_acceptance_prerequisites_cannot_silently_pass(monkeypatch, strict, missing):
     from test_audio_epoch_acceptance_postgres import postgres17_database
 
-    monkeypatch.setenv("ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES", "1" if strict else "0")
+    monkeypatch.setenv("TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES", "1" if strict else "0")
     monkeypatch.setattr(importlib.util, "find_spec", lambda _: None if missing == "driver" else object())
     if missing == "dsn":
-        monkeypatch.delenv("ASTRUMWEAVER_TEST_DATABASE_URL", raising=False)
+        monkeypatch.delenv("TSUMGI_TEST_DATABASE_URL", raising=False)
     else:
-        monkeypatch.setenv("ASTRUMWEAVER_TEST_DATABASE_URL", "postgresql://must-not-connect.invalid/test")
+        monkeypatch.setenv("TSUMGI_TEST_DATABASE_URL", "postgresql://must-not-connect.invalid/test")
 
     def fixture(name):
         assert missing == "isolated_database" and name == "isolated_database"
@@ -52,6 +52,6 @@ def test_postgres_acceptance_prerequisites_cannot_silently_pass(monkeypatch, str
 
 def test_invalid_strict_mode_is_not_a_skip(monkeypatch):
     from test_audio_epoch_acceptance_postgres import _strict_mode
-    monkeypatch.setenv("ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES", "typo")
+    monkeypatch.setenv("TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES", "typo")
     with pytest.raises(pytest.fail.Exception):
         _strict_mode()

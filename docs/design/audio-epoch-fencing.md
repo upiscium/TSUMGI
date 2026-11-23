@@ -22,7 +22,7 @@ Management routes are absent by default. The standard Control daemon requires:
 enabled = true
 ```
 
-It also requires `ASTRUMWEAVER_AUDIO_EPOCH_OPERATOR_TOKEN`, a distinct
+It also requires `TSUMGI_AUDIO_EPOCH_OPERATOR_TOKEN`, a distinct
 16–512-character bearer token, separate from Worker, Control-client and
 Audio-Gateway-client tokens. A token in the environment alone does not enable
 the routes. Do not place credentials in TOML, URLs, receipts or public logs.
@@ -143,7 +143,7 @@ Tests include:
 Run against an explicitly disposable PostgreSQL 17 test server:
 
 ```sh
-ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES=1 PYTHONPATH=src \
+TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES=1 PYTHONPATH=src \
   python3 -m pytest -q --runxfail \
   tests/test_audio_epoch_acceptance.py \
   tests/test_audio_epoch_acceptance_postgres.py \
@@ -152,7 +152,7 @@ ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES=1 PYTHONPATH=src \
   tests/test_audio_epoch_fencing_api.py
 ```
 
-Supply `ASTRUMWEAVER_TEST_DATABASE_URL` securely. Each real-DB case creates,
+Supply `TSUMGI_TEST_DATABASE_URL` securely. Each real-DB case creates,
 migrates and drops only its fresh UUID-named database. A private local cluster
 may use an owner-only Unix socket with no TCP listener; durability checks
 must leave `fsync` and `synchronous_commit` enabled.
@@ -163,7 +163,7 @@ On PostgreSQL **17.11**, UTF8, with an owner-only Unix socket, no TCP listener,
 and `fsync=on` / `synchronous_commit=on`:
 
 - The eight-file fence/ASGI/output/artifact-authority regression run passed
-  **223 tests**, with `ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES=1` and
+  **223 tests**, with `TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES=1` and
   `--runxfail`; no skips or expected failures.
 - Full regression passed **3898 tests**, with **8 skips**, 1 Starlette
   deprecation warning and 8 passing subtests. The skips were six separate

@@ -6,11 +6,11 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
-from astrumweaver.control import InMemoryControlRepository, WorkerRegistration
-from astrumweaver.control.admin import create_admin_router, fit_inputs, worker_status
-from astrumweaver.control.models import utc_now
-from astrumweaver.control.model_check import (
+from tsumgi import AcceleratorDevice, ResourceShape, WorkerSpec
+from tsumgi.control import InMemoryControlRepository, WorkerRegistration
+from tsumgi.control.admin import create_admin_router, fit_inputs, worker_status
+from tsumgi.control.models import utc_now
+from tsumgi.control.model_check import (
     HuggingFaceClient,
     ModelCheckError,
     UpstreamError,
@@ -19,7 +19,7 @@ from astrumweaver.control.model_check import (
     parse_hf_reference,
     shard_group,
 )
-from astrumweaver.transport import TELEMETRY_METADATA_KEY
+from tsumgi.transport import TELEMETRY_METADATA_KEY
 
 GPU = "GPU-f78bcab4-245f-b3ff-5570-ed629b239331"
 

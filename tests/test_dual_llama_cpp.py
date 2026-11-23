@@ -8,17 +8,17 @@ from pathlib import Path
 
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.execution import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.execution import (
     JobExecutionError, JobRequest, JobResult, ResidencyItem, ResidencyReport,
 )
-from astrumweaver.runtime import (
+from tsumgi.runtime import (
     ExecutionDemand, GPUTopology, ModelDemand, ModelTopology, ResidencyPolicy,
     RuntimeCompatibilityContext, RuntimeDeploymentSpec, RuntimeHostFacts,
     managed_runtime_from_deployment, provider_from_deployment,
 )
-from astrumweaver.runtime.contracts import RuntimeHealth, RuntimeHealthState
-from astrumweaver.runtime.providers import (
+from tsumgi.runtime.contracts import RuntimeHealth, RuntimeHealthState
+from tsumgi.runtime.providers import (
     DUAL_LLAMA_CPP_PROVIDER_ID, DualLlamaCppManagedRuntime,
     DualLlamaCppProvider, DualLlamaCppProviderConfig, DualModelPin,
 )
@@ -30,7 +30,7 @@ def setup_pair(tmp_path: Path) -> tuple[DualLlamaCppProvider, RuntimeCompatibili
     embed.write_bytes(b"pinned-embedding-blob")
     decision.write_bytes(b"pinned-decision-blob")
     package = "/nix/store/" + "0" * 32 + "-pinned-test-llama"
-    executable = package + "/bin/astrumweaver-llama-server"
+    executable = package + "/bin/tsumgi-llama-server"
     config = DualLlamaCppProviderConfig(
         embedding_model={
             "model_ref": str(embed),
@@ -316,10 +316,10 @@ async def test_bad_pinned_model_digest_prevents_any_start(tmp_path):
 
 def test_worker_advertises_only_exact_dual_bundle_model_identity(tmp_path):
     from dataclasses import replace
-    from astrumweaver.serving import (
+    from tsumgi.serving import (
         DeploymentIdentity, ServingContract, ServingDeploymentDeclaration,
     )
-    from astrumweaver.worker.daemon import (
+    from tsumgi.worker.daemon import (
         _build_serving_advertisement, _require_runtime_concurrency,
     )
 
@@ -352,7 +352,7 @@ def test_worker_advertises_only_exact_dual_bundle_model_identity(tmp_path):
                 ServingContract(
                     deployment_revision=ident.revision,
                     capability="decision.system_one",
-                    operation_schema="astrumweaver-decisions-v1",
+                    operation_schema="tsumgi-decisions-v1",
                     validation_evidence_sha256="sha256:" + "f" * 64,
                     semantic_revision="sha256:" + "d" * 64,
                 ),
@@ -366,7 +366,7 @@ def test_worker_advertises_only_exact_dual_bundle_model_identity(tmp_path):
     assert active.deployment_revision == identity.revision
     assert active.runtime_instance.epoch
 
-    from astrumweaver.worker.daemon import _require_dual_serving_manifest
+    from tsumgi.worker.daemon import _require_dual_serving_manifest
     with pytest.raises(RuntimeError, match="reviewed serving manifest"):
         _require_dual_serving_manifest(deployment, None)
     _require_dual_serving_manifest(deployment, declaration(identity))
@@ -435,16 +435,16 @@ async def test_dual_release_and_stop_both_attempted_on_child_failures(tmp_path):
 
 def test_dual_gateway_catalogs_bind_distinct_child_semantics(tmp_path):
     from dataclasses import replace
-    from astrumweaver.gateway.embedding import (
+    from tsumgi.gateway.embedding import (
         EMBEDDING_OPERATION_SCHEMA, LLAMA_CPP_EMBEDDING_ADAPTER,
         EmbeddingGatewayError, EmbeddingGatewayProfile, EmbeddingSpaceIdentity,
         text_policy_digest,
     )
-    from astrumweaver.gateway.decision import (
+    from tsumgi.gateway.decision import (
         DECISION_OPERATION_SCHEMA, DECISION_SCORE_KIND, LLAMA_CPP_SCORE_SEMANTICS,
         LLAMA_CPP_SYSTEM_ONE_ADAPTER, DecisionGatewayProfile, DecisionSemanticsIdentity,
     )
-    from astrumweaver.serving import DeploymentIdentity, LogicalServingProfile, ServingContract
+    from tsumgi.serving import DeploymentIdentity, LogicalServingProfile, ServingContract
 
     provider, ctx = setup_pair(tmp_path)
     cfg = provider.config
@@ -580,8 +580,8 @@ def test_dual_gateway_catalogs_bind_distinct_child_semantics(tmp_path):
         provider_config=vars_config(composite),
         demand=ctx.demand,setup_intent=None,
     )
-    from astrumweaver.serving import ServingDeploymentDeclaration
-    from astrumweaver.worker.daemon import _build_serving_advertisement
+    from tsumgi.serving import ServingDeploymentDeclaration
+    from tsumgi.worker.daemon import _build_serving_advertisement
     declaration = ServingDeploymentDeclaration(
         deployment=dep, contracts=(emb_contract,dec_contract),
     )
@@ -640,7 +640,7 @@ def test_nix_output_with_traversal_not_admitted(tmp_path):
         replace(cfg, decision_provider=replace(
             cfg.decision_provider,
             package_reference=invalid,
-            executable=invalid+"/bin/astrumweaver-llama-server",
+            executable=invalid+"/bin/tsumgi-llama-server",
         ))
 
 
@@ -793,7 +793,7 @@ async def test_composite_subprocesses_require_distinct_private_bearer_files(tmp_
 @pytest.mark.asyncio
 async def test_native_http_client_bearer_header_is_scoped_to_private_child():
     import httpx
-    from astrumweaver.runtime.providers.llama_cpp import HttpLlamaCppApi
+    from tsumgi.runtime.providers.llama_cpp import HttpLlamaCppApi
     observed=[]
     def handler(req: httpx.Request):
         observed.append(req.headers.get("authorization"))

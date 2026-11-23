@@ -8,8 +8,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from astrumweaver.runtime import RuntimeDeploymentSpec, managed_runtime_from_deployment
-from astrumweaver.runtime.providers.llama_cpp import HttpLlamaCppApi
+from tsumgi.runtime import RuntimeDeploymentSpec, managed_runtime_from_deployment
+from tsumgi.runtime.providers.llama_cpp import HttpLlamaCppApi
 from test_dual_llama_cpp import setup_pair, vars_config
 
 

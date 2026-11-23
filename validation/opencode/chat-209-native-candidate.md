@@ -11,7 +11,7 @@
 ## Execution boundary
 
 This run is distinct from the earlier [temporary ingress-bridge experiment](chat-209-candidate-ingress.md).
-The candidate was the **actual packaged `astrumweaver-control`** binary from
+The candidate was the **actual packaged `tsumgi-control`** binary from
 the pinned PR commit, running the native `build_app`/FastAPI
 `/v1/models` and `/v1/chat/completions` routes. There was **no
 payload-rewriting shim** between OpenCode and candidate Control.
@@ -56,7 +56,7 @@ were **not** deleted or rolled back as part of candidate shutdown.
   Qwen and Bonsai retained their separate preexisting runtime profiles;
   no Worker or GPU process was upgraded or restarted.
 - Both candidate `GET /v1/models` logical serving profiles and their
-  complete advertised `x_astrumweaver` metadata matched production
+  complete advertised `x_tsumgi` metadata matched production
   exactly before chat admission. Each advertised `tools`,
   `total_tokens=8192`, `output_tokens=2048` and
   `request_bytes=65536`.

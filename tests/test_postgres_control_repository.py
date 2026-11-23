@@ -15,12 +15,12 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
-from astrumweaver import JobRequirements, JobResult, ResourceShape, WorkerSpec
-from astrumweaver.control.api import create_app
-from astrumweaver.control.migrate import apply_migrations
-from astrumweaver.transport import PROTOCOL_VERSION
+from tsumgi import JobRequirements, JobResult, ResourceShape, WorkerSpec
+from tsumgi.control.api import create_app
+from tsumgi.control.migrate import apply_migrations
+from tsumgi.transport import PROTOCOL_VERSION
 
-from astrumweaver.control import (
+from tsumgi.control import (
     ConflictError,
     JobStatus,
     JobSubmission,
@@ -33,10 +33,10 @@ from astrumweaver.control import (
 )
 
 
-DATABASE_URL = os.environ.get("ASTRUMWEAVER_TEST_DATABASE_URL")
+DATABASE_URL = os.environ.get("TSUMGI_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(
     not DATABASE_URL,
-    reason="ASTRUMWEAVER_TEST_DATABASE_URL is not configured",
+    reason="TSUMGI_TEST_DATABASE_URL is not configured",
 )
 
 
@@ -655,8 +655,8 @@ def test_postgres_ownership_race_harness_detects_missing_serialization():
 @pytest.mark.asyncio
 async def test_postgres_worker_heartbeat_survives_continuous_short_job_backlog():
     """Exercise real Worker -> HTTP API -> PostgreSQL for more than two TTLs."""
-    from astrumweaver.worker import ControlClient, WorkerRuntime
-    from astrumweaver import ResidencyReport
+    from tsumgi.worker import ControlClient, WorkerRuntime
+    from tsumgi import ResidencyReport
 
     assert DATABASE_URL is not None
     repo = PostgresControlRepository(DATABASE_URL, worker_ttl_seconds=1, lease_seconds=1)
@@ -718,8 +718,8 @@ async def test_postgres_worker_heartbeat_survives_continuous_short_job_backlog()
 
 @pytest.mark.asyncio
 async def test_postgres_runtime_observes_offline_without_implicit_gpu_reacquisition():
-    from astrumweaver.worker import ControlClient, WorkerRuntime
-    from astrumweaver.executors.structured_echo import StructuredEchoExecutor
+    from tsumgi.worker import ControlClient, WorkerRuntime
+    from tsumgi.executors.structured_echo import StructuredEchoExecutor
 
     assert DATABASE_URL is not None
     repo = PostgresControlRepository(DATABASE_URL)
@@ -759,7 +759,7 @@ async def test_postgres_post_start_runtime_failure_quarantines_worker(active):
     """Real Worker/API/PostgreSQL; provider health is a bounded test double."""
     from test_runtime_supervision import Managed, supervised
     from test_worker_liveness import SPEC, Executor, eventually, submit
-    from astrumweaver.runtime import RuntimeHealth, RuntimeHealthState
+    from tsumgi.runtime import RuntimeHealth, RuntimeHealthState
 
     assert DATABASE_URL is not None
     repo = PostgresControlRepository(DATABASE_URL)
@@ -790,7 +790,7 @@ async def test_postgres_post_start_runtime_failure_quarantines_worker(active):
 
 
 def test_postgres_explicit_stale_offline_recovery_and_active_lease_rejection():
-    from astrumweaver.control.repository import OFFLINE_REASON_KEY
+    from tsumgi.control.repository import OFFLINE_REASON_KEY
     assert DATABASE_URL is not None
     repo = PostgresControlRepository(DATABASE_URL, worker_ttl_seconds=1)
     registration = worker("pg-recovery", single_vram_mb=11000)
@@ -814,7 +814,7 @@ def test_postgres_explicit_stale_offline_recovery_and_active_lease_rejection():
 
 
 def test_postgres_draining_ttl_expiry_cannot_re_register_and_lazy_expiry_is_fenced():
-    from astrumweaver.control.repository import OFFLINE_REASON_KEY
+    from tsumgi.control.repository import OFFLINE_REASON_KEY
     assert DATABASE_URL is not None
     repo=PostgresControlRepository(DATABASE_URL,worker_ttl_seconds=1)
     registration=worker("pg-drain-ttl",single_vram_mb=10000)

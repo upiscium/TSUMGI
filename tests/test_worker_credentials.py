@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from astrumweaver.control.worker_auth import WorkerCredentials, load_worker_credentials
+from tsumgi.control.worker_auth import WorkerCredentials, load_worker_credentials
 
 TOKEN_A = "a" * 32
 TOKEN_B = "b" * 32

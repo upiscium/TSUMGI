@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrumweaver.runtime.providers import voicevox_service_view as view
+from tsumgi.runtime.providers import voicevox_service_view as view
 
 
 def _pin(data):
@@ -63,7 +63,7 @@ def _rewrite(path, data):
 
 
 def test_native_pins_and_copy_boundary():
-    from astrumweaver.runtime.providers.voicevox_manifest import EXECUTABLE_SHA256
+    from tsumgi.runtime.providers.voicevox_manifest import EXECUTABLE_SHA256
     assert "sha256:" + view._RUN[1] == EXECUTABLE_SHA256
     assert set(view._LIBC) == {
         "ld-linux-x86-64.so.2", "libc.so.6", "libdl.so.2", "libm.so.6",

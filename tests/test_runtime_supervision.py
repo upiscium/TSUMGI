@@ -13,13 +13,13 @@ import time
 import httpx
 import pytest
 
-from astrumweaver.control import ConflictError, JobStatus, WorkerRegistration, WorkerState, utc_now
-from astrumweaver.runtime import RuntimeHealth, RuntimeHealthState, RuntimeLifecycleManager, RuntimeLifecycleError
-from astrumweaver.worker import WorkerRuntime
-from astrumweaver.worker.health import create_health_app
-from astrumweaver.worker.supervision import RuntimeHealthSupervisor
+from tsumgi.control import ConflictError, JobStatus, WorkerRegistration, WorkerState, utc_now
+from tsumgi.runtime import RuntimeHealth, RuntimeHealthState, RuntimeLifecycleManager, RuntimeLifecycleError
+from tsumgi.worker import WorkerRuntime
+from tsumgi.worker.health import create_health_app
+from tsumgi.worker.supervision import RuntimeHealthSupervisor
 from test_worker_liveness import SPEC, Executor, ObservedClient, BlockOnce, eventually, submit
-from astrumweaver.control.repository import InMemoryControlRepository
+from tsumgi.control.repository import InMemoryControlRepository
 
 
 READY = RuntimeHealth(state=RuntimeHealthState.READY, ready=True)
@@ -182,10 +182,10 @@ async def test_failed_active_runtime_cancels_once_and_leaves_terminal_fencing_to
         assert repo.get_job(second.job_id).attempts == 0
         repo.recover_expired_jobs(now=claimed.lease_expires_at + timedelta(seconds=1))
         with pytest.raises(ConflictError):
-            repo.complete_job(first.job_id, __import__('astrumweaver').JobResult(text="stale"), worker_id=SPEC.worker_id, lease_token=claimed.lease_token)
+            repo.complete_job(first.job_id, __import__('tsumgi').JobResult(text="stale"), worker_id=SPEC.worker_id, lease_token=claimed.lease_token)
         await asyncio.sleep(0.05)
         assert repo.get_job(second.job_id).attempts == 0
-        assert not any(t.get_name() in {"astrumweaver-job-execution", "astrumweaver-runtime-failure"} for t in asyncio.all_tasks())
+        assert not any(t.get_name() in {"tsumgi-job-execution", "tsumgi-runtime-failure"} for t in asyncio.all_tasks())
 
 
 @pytest.mark.asyncio
@@ -354,7 +354,7 @@ async def test_new_invocation_requires_runtime_health_and_gpu_ownership_again():
     with pytest.raises(Exception) as raised:
         async with supervised(managed, repo):
             pass
-    from astrumweaver.worker import ControlTransportError
+    from tsumgi.worker import ControlTransportError
     assert isinstance(raised.value, ControlTransportError) and raised.value.status_code == 409
     repo.set_worker_state(competitor.worker_id, WorkerState.OFFLINE)
     managed = Managed()
@@ -469,7 +469,7 @@ async def test_real_owned_child_exit_reaches_worker_readiness_gate():
 
 @pytest.mark.asyncio
 async def test_managed_daemon_quarantines_without_restart_and_shutdown_joins_tasks(monkeypatch):
-    from astrumweaver.worker import daemon
+    from tsumgi.worker import daemon
 
     # The health probe below times out after 0.1 s. In the full suite a
     # generation-2 collection pauses the loop for about that long (measured
@@ -500,7 +500,7 @@ async def test_managed_daemon_quarantines_without_restart_and_shutdown_joins_tas
         clients.append(client)
         return client
 
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "test-worker-only")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "test-worker-only")
     monkeypatch.setattr(daemon, "_load_toml", lambda _: config)
     monkeypatch.setattr(daemon, "_build_spec", lambda _: SPEC)
     monkeypatch.setattr(daemon, "_load_runtime_deployment", lambda _: object())
@@ -532,7 +532,7 @@ async def test_managed_daemon_quarantines_without_restart_and_shutdown_joins_tas
         assert managed.stops == managed.releases == 1
         assert clients[0]._client.is_closed
         assert repo.get_worker(SPEC.worker_id).state is WorkerState.OFFLINE
-        assert not any(t.get_name().startswith("astrumweaver-") for t in asyncio.all_tasks())
+        assert not any(t.get_name().startswith("tsumgi-") for t in asyncio.all_tasks())
     finally:
         if not task.done():
             task.cancel()

@@ -28,7 +28,7 @@ def control_command(
     config: Path,
     staged: Path,
     *,
-    user: str = "astrumweaver-control",
+    user: str = "tsumgi-control",
     environment: Path | None = None,
 ) -> list[str]:
     command = [
@@ -37,7 +37,7 @@ def control_command(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-control",
+        "/usr/local/bin/tsumgi-control",
         "--user",
         user,
         "--root",
@@ -52,7 +52,7 @@ def worker_command(
     config: Path,
     staged: Path,
     *,
-    user: str = "astrumweaver",
+    user: str = "tsumgi",
     environment: Path | None = None,
     runtime_manifest: Path | None = None,
     isolation: bool = False,
@@ -63,7 +63,7 @@ def worker_command(
         "--config",
         str(config),
         "--executable",
-        "/usr/local/bin/astrumweaver-worker",
+        "/usr/local/bin/tsumgi-worker",
         "--user",
         user,
         "--root",
@@ -87,7 +87,7 @@ def write_control_inputs(tmp_path: Path) -> tuple[Path, Path]:
     config = tmp_path / "control.toml"
     config.write_text("[control]\nlisten = \"127.0.0.1:9000\"\n", encoding="utf-8")
     environment = tmp_path / "control.env"
-    environment.write_text("ASTRUMWEAVER_TEST=control\n", encoding="utf-8")
+    environment.write_text("TSUMGI_TEST=control\n", encoding="utf-8")
     return config, environment
 
 
@@ -99,7 +99,7 @@ def write_worker_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
         encoding="utf-8",
     )
     environment = tmp_path / "worker.env"
-    environment.write_text("ASTRUMWEAVER_TEST=worker\n", encoding="utf-8")
+    environment.write_text("TSUMGI_TEST=worker\n", encoding="utf-8")
     manifest = tmp_path / "runtime-deployment.json"
     manifest.write_text('{"schema_version":"v1","provider_id":"test"}\n', encoding="utf-8")
     return config, environment, manifest
@@ -110,25 +110,25 @@ def mode(path: Path) -> int:
 
 
 def assert_control_layout(staged: Path, user: str) -> None:
-    etc = staged / "etc/astrumweaver"
-    state = staged / "var/lib/astrumweaver-control"
+    etc = staged / "etc/tsumgi"
+    state = staged / "var/lib/tsumgi-control"
     assert mode(etc) == 0o710
     assert mode(state) == 0o750
     for path in (etc / "control.toml", etc / "control.env"):
         assert mode(path) == 0o640
 
-    unit = (staged / "etc/systemd/system/astrumweaver-control.service").read_text(
+    unit = (staged / "etc/systemd/system/tsumgi-control.service").read_text(
         encoding="utf-8"
     )
     assert f"User={user}" in unit
     assert f"Group={user}" in unit
-    assert "SupplementaryGroups=astrumweaver-config" in unit
-    assert "StateDirectory=astrumweaver-control" in unit
+    assert "SupplementaryGroups=tsumgi-config" in unit
+    assert "StateDirectory=tsumgi-control" in unit
 
 
 def assert_worker_layout(staged: Path, user: str) -> None:
-    etc = staged / "etc/astrumweaver"
-    state = staged / "var/lib/astrumweaver"
+    etc = staged / "etc/tsumgi"
+    state = staged / "var/lib/tsumgi"
     assert mode(etc) == 0o710
     assert mode(state) == 0o750
     for path in (
@@ -140,13 +140,13 @@ def assert_worker_layout(staged: Path, user: str) -> None:
     ):
         assert mode(path) == 0o640
 
-    unit = (staged / "etc/systemd/system/astrumweaver-worker.service").read_text(
+    unit = (staged / "etc/systemd/system/tsumgi-worker.service").read_text(
         encoding="utf-8"
     )
     assert f"User={user}" in unit
     assert f"Group={user}" in unit
-    assert "SupplementaryGroups=astrumweaver-config" in unit
-    assert "StateDirectory=astrumweaver" in unit
+    assert "SupplementaryGroups=tsumgi-config" in unit
+    assert "StateDirectory=tsumgi" in unit
 
 
 def assert_both_layout(staged: Path, control_user: str, worker_user: str) -> None:
@@ -165,10 +165,10 @@ def test_fresh_control_uses_isolated_default_identity_and_state(
     )
 
     assert result.returncode == 0, result.stderr
-    assert_control_layout(staged, "astrumweaver-control")
-    assert not (staged / "var/lib/astrumweaver").exists()
+    assert_control_layout(staged, "tsumgi-control")
+    assert not (staged / "var/lib/tsumgi").exists()
     assert not (
-        staged / "etc/systemd/system/astrumweaver-worker.service"
+        staged / "etc/systemd/system/tsumgi-worker.service"
     ).exists()
 
 
@@ -189,10 +189,10 @@ def test_fresh_worker_uses_isolated_default_identity_and_state(
     )
 
     assert result.returncode == 0, result.stderr
-    assert_worker_layout(staged, "astrumweaver")
-    assert not (staged / "var/lib/astrumweaver-control").exists()
+    assert_worker_layout(staged, "tsumgi")
+    assert not (staged / "var/lib/tsumgi-control").exists()
     assert not (
-        staged / "etc/systemd/system/astrumweaver-control.service"
+        staged / "etc/systemd/system/tsumgi-control.service"
     ).exists()
 
 
@@ -222,16 +222,16 @@ def test_both_default_roles_install_in_either_order(
     first = run(*commands[first_role])
     assert first.returncode == 0, first.stderr
     if first_role == "control":
-        assert_control_layout(staged, "astrumweaver-control")
-        assert not (staged / "var/lib/astrumweaver").exists()
+        assert_control_layout(staged, "tsumgi-control")
+        assert not (staged / "var/lib/tsumgi").exists()
     else:
-        assert_worker_layout(staged, "astrumweaver")
-        assert not (staged / "var/lib/astrumweaver-control").exists()
+        assert_worker_layout(staged, "tsumgi")
+        assert not (staged / "var/lib/tsumgi-control").exists()
 
     second_role = "worker" if first_role == "control" else "control"
     second = run(*commands[second_role])
     assert second.returncode == 0, second.stderr
-    assert_both_layout(staged, "astrumweaver-control", "astrumweaver")
+    assert_both_layout(staged, "tsumgi-control", "tsumgi")
 
 
 @pytest.mark.parametrize("first_role", ["control", "worker"])
@@ -296,7 +296,7 @@ def test_same_account_is_rejected_before_second_role_mutation(
     first = run(*commands[first_role])
     assert first.returncode == 0, first.stderr
 
-    etc = staged / "etc/astrumweaver"
+    etc = staged / "etc/tsumgi"
     etc.chmod(0o700)
     before_mode = mode(etc)
     second_role = "worker" if first_role == "control" else "control"
@@ -310,15 +310,15 @@ def test_same_account_is_rejected_before_second_role_mutation(
     )
     assert not missing_destination.exists()
     missing_state = staged / (
-        "var/lib/astrumweaver"
+        "var/lib/tsumgi"
         if second_role == "worker"
-        else "var/lib/astrumweaver-control"
+        else "var/lib/tsumgi-control"
     )
     assert not missing_state.exists()
     assert not (
         staged
         / "etc/systemd/system"
-        / f"astrumweaver-{second_role}.service"
+        / f"tsumgi-{second_role}.service"
     ).exists()
 
 
@@ -329,14 +329,14 @@ def test_legacy_control_state_and_units_fail_before_mutation(
 ) -> None:
     config, _ = write_control_inputs(tmp_path)
     staged = tmp_path / "root"
-    etc = staged / "etc/astrumweaver"
+    etc = staged / "etc/tsumgi"
     etc.mkdir(parents=True)
     etc.chmod(0o700)
     marker = etc / "unchanged"
     marker.write_text("sentinel\n", encoding="utf-8")
 
-    legacy_state = staged / "var/lib/astrumweaver"
-    unit = staged / "etc/systemd/system/astrumweaver-control.service"
+    legacy_state = staged / "var/lib/tsumgi"
+    unit = staged / "etc/systemd/system/tsumgi-control.service"
     if fixture == "shared-state":
         legacy_state.mkdir(parents=True)
         legacy_state.chmod(0o701)
@@ -345,9 +345,9 @@ def test_legacy_control_state_and_units_fail_before_mutation(
         unit.parent.mkdir(parents=True)
         unit.write_text(
             "[Service]\n"
-            "User=astrumweaver\n"
-            "Group=astrumweaver\n"
-            "StateDirectory=astrumweaver\n",
+            "User=tsumgi\n"
+            "Group=tsumgi\n"
+            "StateDirectory=tsumgi\n",
             encoding="utf-8",
         )
         unit.chmod(0o600)
@@ -362,7 +362,7 @@ def test_legacy_control_state_and_units_fail_before_mutation(
     assert marker.read_text(encoding="utf-8") == "sentinel\n"
     assert not (etc / "control.toml").exists()
     assert not (etc / "control.env").exists()
-    assert not (staged / "var/lib/astrumweaver-control").exists()
+    assert not (staged / "var/lib/tsumgi-control").exists()
     if fixture == "shared-state":
         assert mode(legacy_state) == before_state_mode
     else:
@@ -377,30 +377,30 @@ def test_malformed_group_and_dropin_overrides_fail_closed(
 ) -> None:
     config, _ = write_control_inputs(tmp_path)
     staged = tmp_path / "root"
-    etc = staged / "etc/astrumweaver"
+    etc = staged / "etc/tsumgi"
     etc.mkdir(parents=True)
     etc.chmod(0o700)
 
-    unit = staged / "etc/systemd/system/astrumweaver-control.service"
+    unit = staged / "etc/systemd/system/tsumgi-control.service"
     dropin = (
         staged
-        / "etc/systemd/system/astrumweaver-worker.service.d/override.conf"
+        / "etc/systemd/system/tsumgi-worker.service.d/override.conf"
     )
     if fixture == "malformed":
         unit.parent.mkdir(parents=True)
         unit.write_text(
             "[Service]\n"
-            "User=astrumweaver-control\n"
-            "Group=astrumweaver-control\n",
+            "User=tsumgi-control\n"
+            "Group=tsumgi-control\n",
             encoding="utf-8",
         )
     elif fixture == "group":
         unit.parent.mkdir(parents=True)
         unit.write_text(
             "[Service]\n"
-            "User=astrumweaver-control\n"
+            "User=tsumgi-control\n"
             "Group=other-service\n"
-            "StateDirectory=astrumweaver-control\n",
+            "StateDirectory=tsumgi-control\n",
             encoding="utf-8",
         )
     else:
@@ -422,7 +422,7 @@ def test_malformed_group_and_dropin_overrides_fail_closed(
     assert mode(etc) == 0o700
     assert not (etc / "control.toml").exists()
     assert not (etc / "control.env").exists()
-    assert not (staged / "var/lib/astrumweaver-control").exists()
+    assert not (staged / "var/lib/tsumgi-control").exists()
     if fixture == "dropin":
         assert not unit.exists()
         assert dropin.read_text(encoding="utf-8") == (
@@ -447,8 +447,8 @@ def test_retry_repairs_permissions_and_repeats_cleanly(tmp_path: Path) -> None:
     first = run(*command)
     assert first.returncode == 0, first.stderr
 
-    etc = staged / "etc/astrumweaver"
-    state = staged / "var/lib/astrumweaver"
+    etc = staged / "etc/tsumgi"
+    state = staged / "var/lib/tsumgi"
     protected = [
         etc / "worker.toml",
         etc / "worker.env",

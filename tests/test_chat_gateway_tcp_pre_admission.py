@@ -17,11 +17,11 @@ from datetime import timedelta
 import pytest
 import uvicorn
 
-from astrumweaver import JobResult
-from astrumweaver.control import InMemoryControlRepository, JobStatus, JobSubmission, utc_now
-from astrumweaver.control.api import create_app
-from astrumweaver.gateway.api import create_chat_router
-from astrumweaver.gateway.chat import ChatProfileCatalog
+from tsumgi import JobResult
+from tsumgi.control import InMemoryControlRepository, JobStatus, JobSubmission, utc_now
+from tsumgi.control.api import create_app
+from tsumgi.gateway.api import create_chat_router
+from tsumgi.gateway.chat import ChatProfileCatalog
 from test_chat_gateway_api import CLIENT_TOKEN, EPOCH, WORKER_TOKEN, register_worker, serving_values
 
 

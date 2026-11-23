@@ -12,7 +12,7 @@ let
       && !lib.hasSuffix "/" path
       && builtins.all (part: part != "." && part != "..") (lib.splitString "/" path));
   view = stdenvNoCC.mkDerivation {
-    pname = "astrumweaver-voicevox-service-view";
+    pname = "tsumgi-voicevox-service-view";
     version = "glibc-2.35-0ubuntu3.15-candidate";
 
     inherit libcArchive libcRoot engineRoot;
@@ -27,17 +27,17 @@ let
 
     installPhase = ''
       runHook preInstall
-      ${python3}/bin/python3 -I -B ${../src/astrumweaver/runtime/providers/voicevox_service_view.py} build \
+      ${python3}/bin/python3 -I -B ${../src/tsumgi/runtime/providers/voicevox_service_view.py} build \
         --libc-archive "$libcArchive" --libc-root "$libcRoot" \
         --engine-root "$engineRoot" --output "$out"
-      ${python3}/bin/python3 -I -B ${../src/astrumweaver/runtime/providers/voicevox_service_view.py} verify \
+      ${python3}/bin/python3 -I -B ${../src/tsumgi/runtime/providers/voicevox_service_view.py} verify \
         --output "$out"
       runHook postInstall
     '';
 
     passthru = {
       rootSubdirectory = "rootfs";
-      receiptSubpath = "share/astrumweaver/voicevox-service-view.json";
+      receiptSubpath = "share/tsumgi/voicevox-service-view.json";
       libcArchiveSha256 = "79e35256227e16a607c154cdeb8d76ff12d20e31de286ea7fd9ad3b96fe0452d";
       bootstrapZlibSha256 = "64c206f0146cc58bbddc4f22054436f4ff278f5a554aa3ce6921ddf7e9133370";
       nativeExecutionQualified = false;

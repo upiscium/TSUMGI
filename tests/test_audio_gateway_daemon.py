@@ -9,13 +9,13 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from astrumweaver.audio.input_channel import AudioInputChannel
-from astrumweaver.audio.output_channel import AudioOutputChannel
-from astrumweaver.control import InMemoryControlRepository
-from astrumweaver.control import audio_gateway_config as audio_config
-from astrumweaver.control import daemon
-from astrumweaver.control.auth import ClientAuthMode
-from astrumweaver.gateway.audio import AudioProfileCatalog
+from tsumgi.audio.input_channel import AudioInputChannel
+from tsumgi.audio.output_channel import AudioOutputChannel
+from tsumgi.control import InMemoryControlRepository
+from tsumgi.control import audio_gateway_config as audio_config
+from tsumgi.control import daemon
+from tsumgi.control.auth import ClientAuthMode
+from tsumgi.gateway.audio import AudioProfileCatalog
 from test_audio_voice_api import make_profile
 from test_audio_artifact_authority_postgres import isolated_database
 
@@ -53,10 +53,10 @@ def _toml(document):
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    monkeypatch.setenv("ASTRUMWEAVER_DATABASE_URL", "postgresql://unused.invalid/test")
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker-test-token")
-    monkeypatch.setenv("ASTRUMWEAVER_CLIENT_TOKEN", "control-test-token")
-    monkeypatch.setenv("ASTRUMWEAVER_AUDIO_CLIENT_TOKEN", TOKEN)
+    monkeypatch.setenv("TSUMGI_DATABASE_URL", "postgresql://unused.invalid/test")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "worker-test-token")
+    monkeypatch.setenv("TSUMGI_CLIENT_TOKEN", "control-test-token")
+    monkeypatch.setenv("TSUMGI_AUDIO_CLIENT_TOKEN", TOKEN)
     repository = InMemoryControlRepository()
     monkeypatch.setattr(daemon, "PostgresControlRepository", lambda *a, **kw: repository)
     catalog = tmp_path / "reviewed-audio.json"
@@ -118,13 +118,13 @@ def _stage_until_killed(config, ready, hold):
     import os
 
     from fastapi.testclient import TestClient
-    from astrumweaver.control import PostgresControlRepository
+    from tsumgi.control import PostgresControlRepository
     from test_audio_artifact_authority import setup_claim
     from test_audio_input_channel import WAV
     from test_audio_output_channel import output_url, worker_headers
 
     with TestClient(daemon.build_app(str(config))) as client:
-        repo = PostgresControlRepository(os.environ["ASTRUMWEAVER_DATABASE_URL"])
+        repo = PostgresControlRepository(os.environ["TSUMGI_DATABASE_URL"])
         claim = setup_claim(repo, datetime.now(UTC))
         for route, auth in (
             ("/v1/audio/inputs", {"Authorization": "Bearer control-test-token"}),
@@ -141,10 +141,10 @@ def test_standard_control_excludes_live_owner_and_recovers_after_crash(
     env, isolated_database, tmp_path, monkeypatch, busy_root,
 ):
     import multiprocessing
-    from astrumweaver.control import PostgresControlRepository
+    from tsumgi.control import PostgresControlRepository
     from test_audio_input_channel import WAV
 
-    monkeypatch.setenv("ASTRUMWEAVER_DATABASE_URL", isolated_database)
+    monkeypatch.setenv("TSUMGI_DATABASE_URL", isolated_database)
     monkeypatch.setattr(daemon, "PostgresControlRepository", PostgresControlRepository)
     env.config.write_text(_toml({"audio_gateway": env.policy}))
     ctx = multiprocessing.get_context("spawn")
@@ -175,7 +175,7 @@ def test_standard_control_excludes_live_owner_and_recovers_after_crash(
 
 
 def test_standard_control_leaves_legacy_spool_intact(env):
-    from astrumweaver.audio import ArtifactSpool
+    from tsumgi.audio import ArtifactSpool
     from test_audio_input_channel import WAV
 
     # An old/unlocked owner cannot be proven dead just because flock succeeds.
@@ -203,7 +203,7 @@ def test_disabled_has_no_audio_side_effects(env, monkeypatch, disabled):
     monkeypatch.setattr(audio_config, "_load_catalog", forbidden)
     monkeypatch.setattr(audio_config, "_check_root", forbidden)
     monkeypatch.setattr(audio_config, "ArtifactSpool", forbidden)
-    monkeypatch.delenv("ASTRUMWEAVER_AUDIO_CLIENT_TOKEN")
+    monkeypatch.delenv("TSUMGI_AUDIO_CLIENT_TOKEN")
     if disabled == "retained":
         disabled = deepcopy(env.policy)
         disabled["enabled"] = False
@@ -266,7 +266,7 @@ def test_enabled_constructs_exact_factories_with_same_repository_and_limits(env,
 @pytest.mark.asyncio
 async def test_audio_requires_dedicated_bearer_independently_of_control(env, monkeypatch, control_auth):
     if control_auth == "none":
-        monkeypatch.delenv("ASTRUMWEAVER_CLIENT_TOKEN")
+        monkeypatch.delenv("TSUMGI_CLIENT_TOKEN")
     app = env.build(control_auth=control_auth)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url="http://test") as client:
@@ -306,8 +306,8 @@ def test_enabled_none_control_auth_fails_before_spool_allocation(env):
 
 @pytest.mark.asyncio
 async def test_authenticated_post_routes_use_the_constructed_channels(env, monkeypatch):
-    from astrumweaver.gateway.audio_speech_api import AudioSpeechService
-    from astrumweaver.gateway.audio_transcriptions_api import AudioTranscriptionsService
+    from tsumgi.gateway.audio_speech_api import AudioSpeechService
+    from tsumgi.gateway.audio_transcriptions_api import AudioTranscriptionsService
     from test_audio_speech_api import WAV
 
     seen = []
@@ -344,9 +344,9 @@ async def test_authenticated_post_routes_use_the_constructed_channels(env, monke
                                    "control-test-token", "worker-test-token"])
 def test_missing_or_invalid_audio_token_never_falls_back(env, monkeypatch, token):
     if token is None:
-        monkeypatch.delenv("ASTRUMWEAVER_AUDIO_CLIENT_TOKEN")
+        monkeypatch.delenv("TSUMGI_AUDIO_CLIENT_TOKEN")
     else:
-        monkeypatch.setenv("ASTRUMWEAVER_AUDIO_CLIENT_TOKEN", token)
+        monkeypatch.setenv("TSUMGI_AUDIO_CLIENT_TOKEN", token)
     _invalid(env)
 
 
@@ -628,10 +628,10 @@ def test_base_app_factory_failure_rolls_back_audio_spools(env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_non_audio_worker_completion_does_not_touch_failed_audio_spool(env, monkeypatch):
-    from astrumweaver import ResourceShape, WorkerSpec
-    from astrumweaver.control import JobStatus, JobSubmission, WorkerRegistration
-    from astrumweaver.audio.artifact_spool import ArtifactSpool
-    from astrumweaver.transport import PROTOCOL_VERSION
+    from tsumgi import ResourceShape, WorkerSpec
+    from tsumgi.control import JobStatus, JobSubmission, WorkerRegistration
+    from tsumgi.audio.artifact_spool import ArtifactSpool
+    from tsumgi.transport import PROTOCOL_VERSION
 
     app = env.build()
     env.repository.register_worker(WorkerRegistration(spec=WorkerSpec(
@@ -665,10 +665,10 @@ async def test_non_audio_worker_completion_does_not_touch_failed_audio_spool(env
 
 @pytest.mark.asyncio
 async def test_audio_worker_completion_still_fails_closed_when_spool_is_broken(env, monkeypatch):
-    from astrumweaver.audio.artifact_spool import ArtifactSpool
-    from astrumweaver.control import JobStatus
-    from astrumweaver.control.models import utc_now
-    from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
+    from tsumgi.audio.artifact_spool import ArtifactSpool
+    from tsumgi.control import JobStatus
+    from tsumgi.control.models import utc_now
+    from tsumgi.transport import PROTOCOL_VERSION, SERVING_EXTENSION
     from test_audio_artifact_authority import EPOCH, setup_claim
 
     app = env.build()

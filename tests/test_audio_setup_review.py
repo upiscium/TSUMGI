@@ -5,17 +5,17 @@ import json
 
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.runtime import RuntimeHostFacts
-from astrumweaver.setup import SetupPlan
-from astrumweaver.setup.audio_review import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.runtime import RuntimeHostFacts
+from tsumgi.setup import SetupPlan
+from tsumgi.setup.audio_review import (
     AudioSetupReview,
     AudioSetupReviewError,
     review_audio_setup,
 )
-from astrumweaver.setup.contracts import DeploymentPath, SetupHostSnapshot
-from astrumweaver.serving import ServingDeploymentDeclaration
-from astrumweaver.gateway.audio import AudioProfileCatalog
+from tsumgi.setup.contracts import DeploymentPath, SetupHostSnapshot
+from tsumgi.serving import ServingDeploymentDeclaration
+from tsumgi.gateway.audio import AudioProfileCatalog
 from test_audio_gateway_contracts import profile
 
 

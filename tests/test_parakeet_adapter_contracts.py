@@ -7,8 +7,8 @@ import wave
 
 import pytest
 
-from astrumweaver.execution import JobExecutionError
-from astrumweaver.runtime.providers.parakeet import ParakeetExecutor
+from tsumgi.execution import JobExecutionError
+from tsumgi.runtime.providers.parakeet import ParakeetExecutor
 from test_parakeet import case, pcm
 
 

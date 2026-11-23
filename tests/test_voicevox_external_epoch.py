@@ -13,12 +13,12 @@ from dataclasses import replace
 
 import pytest
 
-from astrumweaver.gateway.audio import VoiceAlias
-from astrumweaver.runtime.providers.voicevox_discovery import (
+from tsumgi.gateway.audio import VoiceAlias
+from tsumgi.runtime.providers.voicevox_discovery import (
     VoicevoxDiscoveryConfig,
     _catalog,
 )
-from astrumweaver.runtime.providers.voicevox_external_epoch import (
+from tsumgi.runtime.providers.voicevox_external_epoch import (
     AudioEpochCleanupIntent,
     AudioEpochFenceIntent,
     AudioEpochIdentity,
@@ -28,14 +28,14 @@ from astrumweaver.runtime.providers.voicevox_external_epoch import (
     ExternalAudioQualification,
     review_external_audio_qualification,
 )
-from astrumweaver.runtime.providers.voicevox_external_fake_epoch import (
+from tsumgi.runtime.providers.voicevox_external_fake_epoch import (
     SyntheticAudioEpochConflict,
     SyntheticAudioEpochLedger,
 )
-from astrumweaver.runtime.providers.voicevox_external_plan import (
+from tsumgi.runtime.providers.voicevox_external_plan import (
     OperatorPolicyStatus,
 )
-from astrumweaver.runtime.providers.voicevox_external_reconcile import (
+from tsumgi.runtime.providers.voicevox_external_reconcile import (
     ExternalVoicevoxReconcileConfig,
 )
 

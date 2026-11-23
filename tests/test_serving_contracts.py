@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ResolvedServingProfile,

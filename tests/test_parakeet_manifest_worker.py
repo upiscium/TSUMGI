@@ -14,23 +14,23 @@ import httpx
 import pytest
 from parakeet_fixtures import staged_environment
 
-from astrumweaver.audio import ArtifactSpool
-from astrumweaver.audio.input_channel import AudioInputChannel
-from astrumweaver.control import InMemoryControlRepository
-from astrumweaver.control.api import create_app
-from astrumweaver.gateway.audio import (
+from tsumgi.audio import ArtifactSpool
+from tsumgi.audio.input_channel import AudioInputChannel
+from tsumgi.control import InMemoryControlRepository
+from tsumgi.control.api import create_app
+from tsumgi.gateway.audio import (
     AudioGatewayProfile, AudioProfileCatalog, LogicalServingProfile, resolve_profile,
 )
-from astrumweaver.gateway.audio_ingress import AudioIngressLimits
-from astrumweaver.gateway.audio_transcriptions_api import (
+from tsumgi.gateway.audio_ingress import AudioIngressLimits
+from tsumgi.gateway.audio_transcriptions_api import (
     AudioTranscriptionsLimits, create_audio_transcriptions_router,
 )
-from astrumweaver.runtime import RuntimeHostFacts
-from astrumweaver.runtime.deployment import RuntimeDeploymentSpec
-from astrumweaver.runtime.providers import parakeet_manifest
-from astrumweaver.runtime.providers import parakeet_managed
-from astrumweaver.worker import daemon
-from astrumweaver.worker.client import ControlClient
+from tsumgi.runtime import RuntimeHostFacts
+from tsumgi.runtime.deployment import RuntimeDeploymentSpec
+from tsumgi.runtime.providers import parakeet_manifest
+from tsumgi.runtime.providers import parakeet_managed
+from tsumgi.worker import daemon
+from tsumgi.worker.client import ControlClient
 from test_audio_transcriptions_api import WAV, multipart
 
 
@@ -151,7 +151,7 @@ def _setup(tmp_path, monkeypatch):
     ))
     monkeypatch.setattr(daemon, "require_exact_gpu_set", lambda *_a, **_kw: None)
     monkeypatch.setattr(daemon, "require_isolated_gpu_access", lambda *_a, **_kw: None)
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "synthetic-token")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "synthetic-token")
     repo = InMemoryControlRepository(lease_seconds=5)
     contract = declaration.contracts[0]
     logical = LogicalServingProfile(

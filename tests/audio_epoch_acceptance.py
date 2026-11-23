@@ -18,13 +18,13 @@ from typing import Callable
 
 from fastapi.testclient import TestClient
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.control import daemon
-from astrumweaver.control import NotFoundError
-from astrumweaver.control.serde import worker_spec_to_dict
-from astrumweaver.gateway.audio import AudioProfileCatalog
-from astrumweaver.serving import RuntimeInstance, WorkerServingAdvertisement
-from astrumweaver.transport import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.control import daemon
+from tsumgi.control import NotFoundError
+from tsumgi.control.serde import worker_spec_to_dict
+from tsumgi.gateway.audio import AudioProfileCatalog
+from tsumgi.serving import RuntimeInstance, WorkerServingAdvertisement
+from tsumgi.transport import (
     PROTOCOL_VERSION, SERVING_EXTENSION, JOB_EVENTS_EXTENSION, job_event_record_to_dict,
     job_record_to_dict, worker_record_to_dict,
 )
@@ -234,12 +234,12 @@ def make_harness(tmp_path, monkeypatch, *, database_url, observer, memory_reposi
     roots = [tmp_path / name for name in ("input", "output")]
     for root in roots:
         root.mkdir(mode=0o700)
-    monkeypatch.setenv("ASTRUMWEAVER_DATABASE_URL", database_url)
+    monkeypatch.setenv("TSUMGI_DATABASE_URL", database_url)
     worker_auth_config = ""
     if worker_credentials is None:
-        monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", worker_token)
+        monkeypatch.setenv("TSUMGI_WORKER_TOKEN", worker_token)
     else:
-        monkeypatch.delenv("ASTRUMWEAVER_WORKER_TOKEN", raising=False)
+        monkeypatch.delenv("TSUMGI_WORKER_TOKEN", raising=False)
         credentials_path = tmp_path / "worker-credentials.json"
         with os.fdopen(os.open(credentials_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as handle:
             json.dump({"schema_version": "worker-credentials-v1", "workers": worker_credentials}, handle)
@@ -247,9 +247,9 @@ def make_harness(tmp_path, monkeypatch, *, database_url, observer, memory_reposi
             '[worker_auth]\nmode = "per-worker"\ncredentials_file = '
             + json.dumps(str(credentials_path)) + "\n"
         )
-    monkeypatch.setenv("ASTRUMWEAVER_CLIENT_TOKEN", CLIENT_TOKEN)
-    monkeypatch.setenv("ASTRUMWEAVER_AUDIO_CLIENT_TOKEN", AUDIO_TOKEN)
-    monkeypatch.setenv("ASTRUMWEAVER_AUDIO_EPOCH_OPERATOR_TOKEN", OPERATOR_TOKEN)
+    monkeypatch.setenv("TSUMGI_CLIENT_TOKEN", CLIENT_TOKEN)
+    monkeypatch.setenv("TSUMGI_AUDIO_CLIENT_TOKEN", AUDIO_TOKEN)
+    monkeypatch.setenv("TSUMGI_AUDIO_EPOCH_OPERATOR_TOKEN", OPERATOR_TOKEN)
     if memory_repository is not None:
         # Only the explicitly labelled memory rehearsal uses this substitution.
         monkeypatch.setattr(daemon, "PostgresControlRepository", lambda *a, **k: memory_repository)

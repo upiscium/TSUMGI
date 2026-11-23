@@ -93,7 +93,7 @@ healthy Workers may still claim eligible queued/recovered work normally.
 
    ```sh
    curl -fsS http://127.0.0.1:9100/health
-   journalctl -u astrumweaver-worker.service -b
+   journalctl -u tsumgi-worker.service -b
    ```
 
    Adapt the documented local health address if it was configured differently.
@@ -109,7 +109,7 @@ healthy Workers may still claim eligible queued/recovered work normally.
 3. Use the documented ordinary restart procedure once the cause is resolved:
 
    ```sh
-   sudo systemctl restart astrumweaver-worker.service
+   sudo systemctl restart tsumgi-worker.service
    ```
 
    Shutdown first joins execution and monitoring. Owned runtime stop/release has

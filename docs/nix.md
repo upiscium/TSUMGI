@@ -6,9 +6,9 @@ TSUMGI provides a pinned Nix flake for reproducible packaging and NixOS host int
 
 TSUMGI now ships real long-running entrypoints:
 
-- `astrumweaver-control`
-- `astrumweaver-worker`
-- `astrumweaver-migrate`
+- `tsumgi-control`
+- `tsumgi-worker`
+- `tsumgi-migrate`
 
 The `control` and `worker` flake packages include these packaged entrypoints together with their role-specific runtime closure.
 
@@ -17,7 +17,7 @@ The `control` and `worker` flake packages include these packaged entrypoints tog
 For `x86_64-linux`:
 
 ```text
-packages.x86_64-linux.astrumweaver
+packages.x86_64-linux.tsumgi
 packages.x86_64-linux.control
 packages.x86_64-linux.worker
 packages.x86_64-linux.installer
@@ -25,7 +25,7 @@ packages.x86_64-linux.integration
 packages.x86_64-linux.default
 ```
 
-### astrumweaver
+### tsumgi
 
 The immutable Python package containing the provider-neutral TSUMGI domain/runtime library.
 
@@ -38,7 +38,7 @@ Control Plane support closure containing:
 - PostgreSQL migration assets
 - existing-node integration/setup assets
 
-It includes the packaged `astrumweaver-control` and `astrumweaver-migrate` entrypoints.
+It includes the packaged `tsumgi-control` and `tsumgi-migrate` entrypoints.
 
 ### worker
 
@@ -47,7 +47,7 @@ Worker support closure containing:
 - TSUMGI Python package
 - GPU preflight/setup integration assets
 
-It includes the packaged `astrumweaver-worker` entrypoint.
+It includes the packaged `tsumgi-worker` entrypoint.
 
 ### installer
 
@@ -56,7 +56,7 @@ Combined generic-systemd first-run closure containing:
 - TSUMGI Control + Worker entrypoints
 - psycopg and PostgreSQL migration assets
 - host integration/setup wrappers
-- `astrumweaver-setup-tui`
+- `tsumgi-setup-tui`
 
 Install this package when you want one profile that can bootstrap Control,
 Worker, or both without a source checkout.
@@ -65,10 +65,10 @@ Worker, or both without a source checkout.
 
 Host-integration package containing immutable copies/wrappers for:
 
-- `astrumweaver-setup-control-plane`
-- `astrumweaver-setup-gpu-worker`
-- `astrumweaver-gpu-preflight`
-- `astrumweaver-gpu-device-map`
+- `tsumgi-setup-control-plane`
+- `tsumgi-setup-gpu-worker`
+- `tsumgi-gpu-preflight`
+- `tsumgi-gpu-device-map`
 - systemd templates
 
 This can be used on a system where Nix supplies package artifacts while the non-NixOS setup scripts own host integration.
@@ -103,13 +103,13 @@ A consuming flake may import it with:
 
 ```nix
 {
-  inputs.astrumweaver.url = "github:upiscium/TSUMGI";
+  inputs.tsumgi.url = "github:upiscium/TSUMGI";
 
-  outputs = { nixpkgs, astrumweaver, ... }: {
+  outputs = { nixpkgs, tsumgi, ... }: {
     nixosConfigurations.example = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
-        astrumweaver.nixosModules.default
+        tsumgi.nixosModules.default
         ./configuration.nix
       ];
     };
@@ -119,7 +119,7 @@ A consuming flake may import it with:
 
 ## Worker module
 
-The module defaults to the packaged `astrumweaver-worker` daemon. `command` remains available only as an explicit development/testing override.
+The module defaults to the packaged `tsumgi-worker` daemon. `command` remains available only as an explicit development/testing override.
 
 Example GPU Worker:
 
@@ -127,10 +127,10 @@ Example GPU Worker:
 { config, inputs, pkgs, ... }:
 
 {
-  services.astrumweaver.worker = {
+  services.tsumgi.worker = {
     enable = true;
 
-    package = inputs.astrumweaver.packages.${pkgs.system}.worker;
+    package = inputs.tsumgi.packages.${pkgs.system}.worker;
 
     workerId = "worker-example";
     workerClass = "multi-gpu";
@@ -153,7 +153,7 @@ Example GPU Worker:
     ];
 
     # Secret values belong outside the Nix store.
-    environmentFile = "/run/secrets/astrumweaver-worker.env";
+    environmentFile = "/run/secrets/tsumgi-worker.env";
   };
 }
 ```
@@ -180,7 +180,7 @@ A Worker can use a selected RuntimeProvider instead of a manually configured
 Example:
 
 ```nix
-services.astrumweaver.worker = {
+services.tsumgi.worker = {
   enable = true;
 
   workerId = "worker-runtime";
@@ -219,7 +219,7 @@ services.astrumweaver.worker = {
     };
   };
 
-  environmentFile = "/run/secrets/astrumweaver-worker.env";
+  environmentFile = "/run/secrets/tsumgi-worker.env";
 };
 ```
 
@@ -265,10 +265,10 @@ Example shape:
 { inputs, pkgs, ... }:
 
 {
-  services.astrumweaver.control = {
+  services.tsumgi.control = {
     enable = true;
 
-    package = inputs.astrumweaver.packages.${pkgs.system}.control;
+    package = inputs.tsumgi.packages.${pkgs.system}.control;
 
     # null/omitted preserves the secure daemon default: bearer.
     clientAuth = "bearer";
@@ -278,7 +278,7 @@ Example shape:
       port = 9000;
     };
 
-    environmentFile = "/run/secrets/astrumweaver-control.env";
+    environmentFile = "/run/secrets/tsumgi-control.env";
 
     # Optional explicit schema authority:
     # migrateOnStart = true;
@@ -293,8 +293,8 @@ The module owns service wiring, not PostgreSQL provisioning. The configured dura
 Control daemon's secure `bearer` default. Set `clientAuth = "none";` only
 when the deployment boundary deliberately protects Client job
 submit/read/cancel access. In that mode the protected Control environment file
-does not need `ASTRUMWEAVER_CLIENT_TOKEN`; it still requires
-`ASTRUMWEAVER_DATABASE_URL` and `ASTRUMWEAVER_WORKER_TOKEN`.
+does not need `TSUMGI_CLIENT_TOKEN`; it still requires
+`TSUMGI_DATABASE_URL` and `TSUMGI_WORKER_TOKEN`.
 
 
 ## Secret handling
@@ -316,7 +316,7 @@ nix build .#integration
 Then an existing systemd Linux node can use the packaged wrappers, for example:
 
 ```sh
-sudo ./result/bin/astrumweaver-setup-gpu-worker \
+sudo ./result/bin/tsumgi-setup-gpu-worker \
   --config ./worker.toml \
   --environment-file ./worker.env
 ```
@@ -340,15 +340,15 @@ Control also exposes `migrateOnStart`, defaulting to `false`, for deployments th
 A GPU Worker hosted on a development machine may enable the ownership-switch wrapper:
 
 ```nix
-services.astrumweaver.worker.borrowable.enable = true;
+services.tsumgi.worker.borrowable.enable = true;
 ```
 
-The module then installs `astrumweaver-gpu-mode`, preconfigured from the Worker's declared GPU UUID set and local health endpoint.
+The module then installs `tsumgi-gpu-mode`, preconfigured from the Worker's declared GPU UUID set and local health endpoint.
 
 ```sh
-sudo astrumweaver-gpu-mode development
-sudo astrumweaver-gpu-mode astrumweaver
-sudo astrumweaver-gpu-mode status
+sudo tsumgi-gpu-mode development
+sudo tsumgi-gpu-mode tsumgi
+sudo tsumgi-gpu-mode status
 ```
 
 `borrowable.drainTimeoutSeconds = 0` is the default and means wait indefinitely for the active job rather than forcing it. See [Borrowable GPU Worker](borrowable-worker.md) for the complete handoff contract.

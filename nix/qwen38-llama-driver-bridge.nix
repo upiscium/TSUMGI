@@ -10,7 +10,7 @@ writeShellApplication {
   runtimeInputs = [ coreutils ];
   text = ''
     set -euo pipefail
-    driver="''${ASTRUMWEAVER_LIBCUDA_SO:-}"
+    driver="''${TSUMGI_LIBCUDA_SO:-}"
     if [[ -z "$driver" ]]; then
       for candidate in /run/opengl-driver/lib/libcuda.so.1 \
                        /usr/lib/x86_64-linux-gnu/libcuda.so.1 \

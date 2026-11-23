@@ -103,8 +103,8 @@ block this slice's verification.
 The ordinary offline rehearsal does not contact PostgreSQL:
 
 ```sh
-env -u ASTRUMWEAVER_TEST_DATABASE_URL \
-  -u ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES \
+env -u TSUMGI_TEST_DATABASE_URL \
+  -u TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES \
   PYTHONPATH=src python3 -m pytest -q -r sxX \
   tests/test_audio_epoch_acceptance.py \
   tests/test_audio_epoch_acceptance_postgres.py
@@ -112,11 +112,11 @@ env -u ASTRUMWEAVER_TEST_DATABASE_URL \
 
 A real acceptance invocation requires an explicitly selected **test-only**
 PostgreSQL 17 server, a test role with `CREATEDB`, and the project's Postgres
-dependencies. Supply its DSN securely in `ASTRUMWEAVER_TEST_DATABASE_URL`;
+dependencies. Supply its DSN securely in `TSUMGI_TEST_DATABASE_URL`;
 do not publish credentials or substitute a production database.
 
 ```sh
-ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES=1 PYTHONPATH=src \
+TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES=1 PYTHONPATH=src \
   python3 -m pytest -q --runxfail \
   tests/test_audio_epoch_acceptance_postgres.py
 ```

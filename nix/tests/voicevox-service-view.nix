@@ -4,7 +4,7 @@ let
   pkgs = import nixpkgs {
     inherit system;
     config.allowUnfreePredicate = pkg:
-      (pkg.pname or "") == "astrumweaver-voicevox-service-view";
+      (pkg.pname or "") == "tsumgi-voicevox-service-view";
   };
   # Intentionally invalid as native inputs. Never build the candidate from
   # this test, nor turn its store path into a dependency of the check.
@@ -39,7 +39,7 @@ assert candidate.dontUnpack && candidate.dontFixup && candidate.dontStrip;
 assert candidate.preferLocalBuild && !candidate.allowSubstitutes;
 assert candidate.nativeBuildInputs == [ pkgs.python3 ];
 assert candidate.passthru.rootSubdirectory == "rootfs";
-assert candidate.passthru.receiptSubpath == "share/astrumweaver/voicevox-service-view.json";
+assert candidate.passthru.receiptSubpath == "share/tsumgi/voicevox-service-view.json";
 assert candidate.passthru.libcArchiveSha256 == "79e35256227e16a607c154cdeb8d76ff12d20e31de286ea7fd9ad3b96fe0452d";
 assert candidate.passthru.bootstrapZlibSha256 == "64c206f0146cc58bbddc4f22054436f4ff278f5a554aa3ce6921ddf7e9133370";
 assert !candidate.passthru.nativeExecutionQualified;

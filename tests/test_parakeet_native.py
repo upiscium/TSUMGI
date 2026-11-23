@@ -5,7 +5,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from astrumweaver.runtime.providers import parakeet_native as native
+from tsumgi.runtime.providers import parakeet_native as native
 
 def test_gpu_identity_is_canonical():
     assert native._GPU_UUID.fullmatch("GPU-12345678-1234-abcd-9876-123456789abc")

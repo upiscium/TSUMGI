@@ -1,8 +1,8 @@
 { stdenvNoCC, lib, bash, python312 }:
 
 stdenvNoCC.mkDerivation {
-  pname = "astrumweaver-integration";
-  version = "0.2.1";
+  pname = "tsumgi-integration";
+  version = "0.3.0pre1";
 
   src = ../.;
   dontBuild = true;
@@ -11,18 +11,18 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    assetRoot="$out/share/astrumweaver"
+    assetRoot="$out/share/tsumgi"
     mkdir -p "$assetRoot/setup/lib" "$assetRoot/systemd" "$assetRoot/libexec" "$out/bin"
 
     cp setup/setup-control-plane.sh "$assetRoot/setup/"
     cp setup/setup-gpu-worker.sh "$assetRoot/setup/"
     cp setup/lib/common.sh "$assetRoot/setup/lib/"
-    cp systemd/astrumweaver-control.service.in "$assetRoot/systemd/"
-    cp systemd/astrumweaver-worker.service.in "$assetRoot/systemd/"
+    cp systemd/tsumgi-control.service.in "$assetRoot/systemd/"
+    cp systemd/tsumgi-worker.service.in "$assetRoot/systemd/"
     cp libexec/gpu-preflight "$assetRoot/libexec/"
     cp libexec/gpu-device-map "$assetRoot/libexec/"
     cp libexec/gpu-isolation-probe "$assetRoot/libexec/"
-    cp src/astrumweaver/gpu_mapping.py "$assetRoot/libexec/"
+    cp src/tsumgi/gpu_mapping.py "$assetRoot/libexec/"
     cp libexec/worker-gpu-uuids "$assetRoot/libexec/"
 
     substituteInPlace "$assetRoot/libexec/worker-gpu-uuids" \
@@ -36,31 +36,31 @@ stdenvNoCC.mkDerivation {
       "$assetRoot/libexec/gpu-isolation-probe" \
       "$assetRoot/libexec/worker-gpu-uuids"
 
-    cat >"$out/bin/astrumweaver-setup-control-plane" <<EOF
+    cat >"$out/bin/tsumgi-setup-control-plane" <<EOF
     #!${bash}/bin/bash
     exec ${bash}/bin/bash "$assetRoot/setup/setup-control-plane.sh" "\$@"
     EOF
 
-    cat >"$out/bin/astrumweaver-setup-gpu-worker" <<EOF
+    cat >"$out/bin/tsumgi-setup-gpu-worker" <<EOF
     #!${bash}/bin/bash
     exec ${bash}/bin/bash "$assetRoot/setup/setup-gpu-worker.sh" "\$@"
     EOF
 
-    cat >"$out/bin/astrumweaver-gpu-device-map" <<EOF
+    cat >"$out/bin/tsumgi-gpu-device-map" <<EOF
     #!${bash}/bin/bash
-    export ASTRUMWEAVER_GPU_MAPPING_PYTHON="$assetRoot/libexec/gpu_mapping.py"
-    export ASTRUMWEAVER_GPU_MAPPING_PYTHON_BIN="${python312}/bin/python3"
+    export TSUMGI_GPU_MAPPING_PYTHON="$assetRoot/libexec/gpu_mapping.py"
+    export TSUMGI_GPU_MAPPING_PYTHON_BIN="${python312}/bin/python3"
     exec ${bash}/bin/bash "$assetRoot/libexec/gpu-device-map" "\$@"
     EOF
 
-    cat >"$out/bin/astrumweaver-gpu-preflight" <<EOF
+    cat >"$out/bin/tsumgi-gpu-preflight" <<EOF
     #!${bash}/bin/bash
     exec ${bash}/bin/bash "$assetRoot/libexec/gpu-preflight" "\$@"
     EOF
 
-    cat >"$out/bin/astrumweaver-gpu-isolation-probe" <<EOF
+    cat >"$out/bin/tsumgi-gpu-isolation-probe" <<EOF
     #!${bash}/bin/bash
-    export ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$out/bin/astrumweaver-gpu-device-map"
+    export TSUMGI_GPU_DEVICE_MAP_COMMAND="$out/bin/tsumgi-gpu-device-map"
     exec ${bash}/bin/bash "$assetRoot/libexec/gpu-isolation-probe" "\$@"
     EOF
 

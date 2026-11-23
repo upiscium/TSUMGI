@@ -12,7 +12,7 @@ import os
 import httpx
 import pytest
 
-from astrumweaver.audio.voicevox_local_preview import (
+from tsumgi.audio.voicevox_local_preview import (
     LocalVoicevoxPreviewConfig,
     create_local_voicevox_preview_app,
 )
@@ -217,15 +217,15 @@ async def test_no_external_process_control_even_on_success(monkeypatch):
 
 
 def test_dedicated_preview_is_not_implicitly_mounted_in_production():
-    from astrumweaver.control.api import create_app as control_app
-    import astrumweaver.gateway.api as gateway_module
+    from tsumgi.control.api import create_app as control_app
+    import tsumgi.gateway.api as gateway_module
 
     assert callable(control_app) and gateway_module is not None
     # No production service imports this module or advertises preview.
     import ast
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[1] / "src" / "astrumweaver"
+    root = Path(__file__).resolve().parents[1] / "src" / "tsumgi"
     for directory in ("control", "worker", "gateway"):
         for path in (root / directory).rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -243,9 +243,9 @@ def test_dedicated_preview_is_not_implicitly_mounted_in_production():
 
 import logging  # noqa: E402
 
-from astrumweaver.audio import voicevox_local_preview as preview  # noqa: E402
-from astrumweaver.execution import JobExecutionError  # noqa: E402
-from astrumweaver.runtime.providers.voicevox import _validate_query  # noqa: E402
+from tsumgi.audio import voicevox_local_preview as preview  # noqa: E402
+from tsumgi.execution import JobExecutionError  # noqa: E402
+from tsumgi.runtime.providers.voicevox import _validate_query  # noqa: E402
 
 
 def post(user, body, headers=None):

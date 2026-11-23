@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from astrumweaver.control import PostgresControlRepository
+from tsumgi.control import PostgresControlRepository
 from audio_epoch_acceptance import make_harness, snapshot_repository
 from test_audio_artifact_authority_postgres import isolated_database
 from test_audio_epoch_acceptance_postgres import postgres17_database

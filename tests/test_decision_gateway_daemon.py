@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from astrumweaver.control.daemon import build_app
-from astrumweaver.gateway.decision import (
+from tsumgi.control.daemon import build_app
+from tsumgi.gateway.decision import (
     DECISION_CATALOG_SCHEMA,
     DECISION_OPERATION_SCHEMA,
     DECISION_SCORE_KIND,
@@ -13,7 +13,7 @@ from astrumweaver.gateway.decision import (
     LLAMA_CPP_SYSTEM_ONE_ADAPTER,
     DecisionSemanticsIdentity,
 )
-from astrumweaver.serving import (
+from tsumgi.serving import (
     DeploymentIdentity,
     LogicalServingProfile,
     ServingContract,
@@ -98,11 +98,11 @@ def catalog_document() -> dict:
 
 def base_environment(monkeypatch) -> None:
     monkeypatch.setenv(
-        "ASTRUMWEAVER_DATABASE_URL",
-        "postgresql://example.invalid/astrumweaver",
+        "TSUMGI_DATABASE_URL",
+        "postgresql://example.invalid/tsumgi",
     )
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker-secret")
-    monkeypatch.delenv("ASTRUMWEAVER_CLIENT_TOKEN", raising=False)
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "worker-secret")
+    monkeypatch.delenv("TSUMGI_CLIENT_TOKEN", raising=False)
 
 
 def test_control_daemon_mounts_decision_gateway_only_when_enabled(

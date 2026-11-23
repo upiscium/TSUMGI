@@ -7,10 +7,10 @@ import asyncio
 import httpx
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository
-from astrumweaver.control.api import create_app
-from astrumweaver.gateway.api import create_chat_router
-from astrumweaver.gateway.chat import ChatProfileCatalog
+from tsumgi.control import InMemoryControlRepository
+from tsumgi.control.api import create_app
+from tsumgi.gateway.api import create_chat_router
+from tsumgi.gateway.chat import ChatProfileCatalog
 from test_chat_gateway_api import (
     CLIENT_TOKEN, WORKER_TOKEN, register_worker, serving_values,
 )

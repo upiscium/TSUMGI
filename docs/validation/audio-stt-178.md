@@ -37,7 +37,7 @@ identical conditions, records raw per-case hypotheses and actual measured
 resources in a local results JSON, then scores:
 
 ```sh
-PYTHONPATH=src python -m astrumweaver.validation.audio_stt_178 \
+PYTHONPATH=src python -m tsumgi.validation.audio_stt_178 \
   --fixture /private/local/stt-fixture.json \
   --results /private/local/stt-results.json \
   --report /private/local/stt-report.json

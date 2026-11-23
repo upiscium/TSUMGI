@@ -1,6 +1,6 @@
 acceptance_version = "v0.1"
 scope = "software-contract"
-description = "Canonical AstrumWeaver v0.1 software acceptance matrix. Hardware performance certification is out of scope."
+description = "Canonical TSUMGI v0.1 software acceptance matrix. Hardware performance certification is out of scope."
 
 [[check]]
 id = "single-gpu-worker-registration"
@@ -81,10 +81,10 @@ evidence = [
 
 [[check]]
 id = "borrowable-worker-handoff"
-description = "A development GPU can drain/release and return to AstrumWeaver without forced default termination or Proxmox mutation."
+description = "A development GPU can drain/release and return to TSUMGI without forced default termination or Proxmox mutation."
 evidence = [
   "tests/test_borrowable_worker.py::test_drain_timeout_never_forces_worker_stop",
-  "tests/test_borrowable_worker.py::test_astrumweaver_transition_checks_identity_then_starts_and_waits_ready"
+  "tests/test_borrowable_worker.py::test_tsumgi_transition_checks_identity_then_starts_and_waits_ready"
 ]
 
 [[check]]

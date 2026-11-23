@@ -7,14 +7,14 @@ from uuid import UUID
 
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.executors.structured_echo import StructuredEchoExecutor
-from astrumweaver.serving import (
+from tsumgi import ResourceShape, WorkerSpec
+from tsumgi.executors.structured_echo import StructuredEchoExecutor
+from tsumgi.serving import (
     DeploymentIdentity,
     ServingContract,
     ServingDeploymentDeclaration,
 )
-from astrumweaver.worker import daemon
+from tsumgi.worker import daemon
 
 
 def digest(character: str) -> str:
@@ -157,7 +157,7 @@ async def test_worker_daemon_wires_reviewed_serving_deployment(monkeypatch, tmp_
             while not self.should_exit:
                 await asyncio.sleep(0)
 
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker-token")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "worker-token")
     monkeypatch.setattr(daemon, "_load_toml", lambda _: config)
     monkeypatch.setattr(
         daemon,

@@ -30,7 +30,7 @@ The recipe verifies the existing release pins before extraction/copy:
 - `model/0.vvm`: `ecd35374d4182cd883cba5040376f7f888cc6ba248b1c2f4cea07cdb34bb1318`
 
 Outputs are `lib/voicevox/linux-cpu-x64/` and
-`share/astrumweaver/voicevox-bundle.json`. No engine command is executed during
+`share/tsumgi/voicevox-bundle.json`. No engine command is executed during
 the build. There is no ELF patching, stripping, launcher wrapper or automatic
 `nix-ld`/host-loader modification: changing the executable would invalidate the
 standard provider's byte pin and owned-process identity check.
@@ -87,7 +87,7 @@ Under `<staging-root>/voicevox/`, the driver stages:
 
 These are **review artifacts**, not files installed into the live `/etc`.
 Their eventual canonical configuration references are beneath
-`/etc/astrumweaver/audio/voicevox/`. Native assets and their Nix GC roots remain
+`/etc/tsumgi/audio/voicevox/`. Native assets and their Nix GC roots remain
 separately provisioned. The private HOME must remain separately provisioned,
 empty and protected. There is no implicit ownership repair, credential copy,
 runtime fallback, or inference.

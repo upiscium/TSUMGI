@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository, daemon
-from astrumweaver.control.api import create_app
+from tsumgi.control import InMemoryControlRepository, daemon
+from tsumgi.control.api import create_app
 from audio_epoch_acceptance import (
     CLIENT, CLIENT_TOKEN, E1, E2, OPERATOR, OPERATOR_TOKEN, WORKER_ID,
     WORKER_TOKEN, make_harness, snapshot_repository,
@@ -39,9 +39,9 @@ def test_operator_token_is_distinct_bounded_and_header_safe(token):
     'enabled = "yes"', "enabled = 1", 'enabled = true\noperator_token = "not-allowed"',
 ])
 def test_unknown_or_untyped_fence_configuration_is_rejected(tmp_path, monkeypatch, section):
-    monkeypatch.setenv("ASTRUMWEAVER_DATABASE_URL", "postgresql://unused.invalid/config")
-    monkeypatch.setenv("ASTRUMWEAVER_CLIENT_TOKEN", CLIENT_TOKEN)
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", WORKER_TOKEN)
+    monkeypatch.setenv("TSUMGI_DATABASE_URL", "postgresql://unused.invalid/config")
+    monkeypatch.setenv("TSUMGI_CLIENT_TOKEN", CLIENT_TOKEN)
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", WORKER_TOKEN)
     path = tmp_path / "control.toml"
     path.write_text("[audio_epoch_fencing]\n" + section + "\n")
     with pytest.raises(RuntimeError, match="configuration is invalid"):
@@ -50,10 +50,10 @@ def test_unknown_or_untyped_fence_configuration_is_rejected(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("token", ["", CLIENT_TOKEN, WORKER_TOKEN])
 def test_enabled_management_requires_separate_operator_environment(tmp_path, monkeypatch, token):
-    monkeypatch.setenv("ASTRUMWEAVER_DATABASE_URL", "postgresql://unused.invalid/config")
-    monkeypatch.setenv("ASTRUMWEAVER_CLIENT_TOKEN", CLIENT_TOKEN)
-    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", WORKER_TOKEN)
-    monkeypatch.setenv("ASTRUMWEAVER_AUDIO_EPOCH_OPERATOR_TOKEN", token)
+    monkeypatch.setenv("TSUMGI_DATABASE_URL", "postgresql://unused.invalid/config")
+    monkeypatch.setenv("TSUMGI_CLIENT_TOKEN", CLIENT_TOKEN)
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", WORKER_TOKEN)
+    monkeypatch.setenv("TSUMGI_AUDIO_EPOCH_OPERATOR_TOKEN", token)
     path = tmp_path / "control.toml"
     path.write_text("[audio_epoch_fencing]\nenabled = true\n")
     with pytest.raises(RuntimeError, match="distinct operator bearer"):

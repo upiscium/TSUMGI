@@ -14,7 +14,7 @@ from time import monotonic
 import pytest
 import uvicorn
 
-from astrumweaver.control import InMemoryControlRepository, JobStatus
+from tsumgi.control import InMemoryControlRepository, JobStatus
 from test_chat_gateway_api import (
     CLIENT_TOKEN,
     EPOCH,

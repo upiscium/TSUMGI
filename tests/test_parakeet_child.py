@@ -2,7 +2,7 @@
 import io
 import struct
 import pytest
-from astrumweaver.runtime.providers.parakeet_child import _read_exact, _recv, _send
+from tsumgi.runtime.providers.parakeet_child import _read_exact, _recv, _send
 
 def test_bounded_frame_roundtrip():
     stream=io.BytesIO()

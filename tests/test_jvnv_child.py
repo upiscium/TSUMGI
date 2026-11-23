@@ -9,9 +9,9 @@ import uuid
 import wave
 from tempfile import TemporaryDirectory
 
-from astrumweaver.runtime.providers import jvnv_child as child
-from astrumweaver.runtime.providers import style_bert_vits2_manifest as manifest
-from astrumweaver.runtime.providers import jvnv_assets as assets
+from tsumgi.runtime.providers import jvnv_child as child
+from tsumgi.runtime.providers import style_bert_vits2_manifest as manifest
+from tsumgi.runtime.providers import jvnv_assets as assets
 
 
 def frame(value):

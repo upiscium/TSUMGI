@@ -9,11 +9,11 @@ Disabled by default. TSUMGI does not install, launch, manage, restart, kill, upg
 First review the engine's license/voice terms and access logging. The native VOICEVOX /audio_query path includes **raw input text in its URL query**, which the engine/host/proxy may log. The explicit acknowledgement flags below acknowledge this risk; they do not certify engine authenticity, license, voice rights or safe logging. Use non-sensitive demonstration text only.
 
 1. Install TSUMGI's Python package in an isolated environment, and separately run your own VOICEVOX at the normal 127.0.0.1:50021 address. No VOICEVOX installation is performed by TSUMGI.
-2. List observed voices using: python -m astrumweaver.audio.voicevox_local_preview --list-voices (observation only, so it does not need the accept flags). Copy a speaker_uuid and style_id from the output. A discovery observation is not a serving grant.
+2. List observed voices using: python -m tsumgi.audio.voicevox_local_preview --list-voices (observation only, so it does not need the accept flags). Copy a speaker_uuid and style_id from the output. A discovery observation is not a serving grant.
 3. Set TSUMGI_VOICEVOX_PREVIEW_TOKEN to a long private random token (at least 32 characters of `A-Za-z0-9._~+/-`, otherwise the preview refuses to start) using a secure local environment or secret injection (do not put credentials in source or shell history).
 4. Run the dedicated preview with the observed values:
 
-    python -m astrumweaver.audio.voicevox_local_preview --speaker-uuid SPEAKER_UUID --style-id STYLE_ID --accept-unverified-engine --accept-native-text-url-logging
+    python -m tsumgi.audio.voicevox_local_preview --speaker-uuid SPEAKER_UUID --style-id STYLE_ID --accept-unverified-engine --accept-native-text-url-logging
 
     The server only binds 127.0.0.1:9811. Do not publish through NPM, a reverse proxy, a tunnel or a production service. For an alternative already-running engine port, specify --endpoint http://127.0.0.1:PORT (same namespace).
 5. Send a non-sensitive Japanese test sentence:

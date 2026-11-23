@@ -37,7 +37,7 @@ def test_generates_three_synthetic_manifest_cases(tmp_path: Path) -> None:
         assert all("/var/lib/reviewed-" in value
                    for value in case["provider_config"].values()
                    if isinstance(value, str) and value.startswith("/")
-                   and "/astrumweaver-audio/" not in value)
+                   and "/tsumgi-audio/" not in value)
 
 
 def test_evaluate_uses_offline_nix_and_no_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,7 +88,7 @@ def test_check_accepts_and_rejects_evaluated_contracts(
     monkeypatch.setattr(checker, "evaluate", lambda *_: subprocess.CompletedProcess(
         ["nix"], 0, json.dumps(rows), ""))
     monkeypatch.setattr(
-        "astrumweaver.runtime.deployment.managed_runtime_from_deployment",
+        "tsumgi.runtime.deployment.managed_runtime_from_deployment",
         lambda deployment, **_: type("Managed", (), {"provider_id": deployment.provider_id})(),
     )
     checker.check(tmp_path, tmp_path / "accepted")
@@ -111,10 +111,10 @@ def test_check_accepts_and_rejects_evaluated_contracts(
 
 
 def _daemon_factory(case: dict, root: Path):
-    from astrumweaver.contracts import ResourceShape, WorkerSpec
-    from astrumweaver.runtime.contracts import RuntimeHostFacts
-    from astrumweaver.runtime.deployment import managed_runtime_from_deployment
-    from astrumweaver.worker import daemon
+    from tsumgi.contracts import ResourceShape, WorkerSpec
+    from tsumgi.runtime.contracts import RuntimeHostFacts
+    from tsumgi.runtime.deployment import managed_runtime_from_deployment
+    from tsumgi.worker import daemon
 
     worker_data = case["worker"]
     worker = WorkerSpec(
@@ -157,7 +157,7 @@ def test_runtime_factory_constructs_all_providers_without_launch(
 def test_runtime_factory_rejects_disabled_or_drifted_manifest_without_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from astrumweaver.worker import daemon
+    from tsumgi.worker import daemon
 
     if os.geteuid() == 0:
         pytest.skip("owned audio providers require an unprivileged process")

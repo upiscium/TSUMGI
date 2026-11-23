@@ -4,7 +4,7 @@ let
   pkgs = import nixpkgs {
     inherit system;
     config.allowUnfreePredicate = pkg:
-      (pkg.pname or "") == "astrumweaver-voicevox-cpu-bundle";
+      (pkg.pname or "") == "tsumgi-voicevox-cpu-bundle";
   };
   archive = builtins.toFile "synthetic-voicevox.7z" "not a real archive";
   rights = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

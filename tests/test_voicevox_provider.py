@@ -6,8 +6,8 @@ from hashlib import sha256
 
 import pytest
 
-from astrumweaver.execution import ArtifactRef, JobExecutionError, JobRequest, JobResult, ResidencyReport
-from astrumweaver.runtime.providers.voicevox import (
+from tsumgi.execution import ArtifactRef, JobExecutionError, JobRequest, JobResult, ResidencyReport
+from tsumgi.runtime.providers.voicevox import (
     VOICEVOX_PROVIDER_ID, VoicevoxAdapterConfig, VoicevoxEngineApi,
     VoicevoxExecutor, VoicevoxVoicePin,
 )
@@ -351,10 +351,10 @@ async def test_invalid_audio_query_response_rejected_before_synthesis(malformed)
 
 
 def test_unqualified_source_executor_cannot_advertise_ja_wav():
-    from astrumweaver.serving import (
+    from tsumgi.serving import (
         DeploymentIdentity, ServingContract, ServingDeploymentDeclaration,
     )
-    from astrumweaver.worker.runtime import require_executor_serving_features
+    from tsumgi.worker.runtime import require_executor_serving_features
 
     def digest(letter):
         return "sha256:" + letter * 64

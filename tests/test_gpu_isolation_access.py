@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from astrumweaver.validation.gpu_mapping import (
+from tsumgi.validation.gpu_mapping import (
     GpuIsolationUnavailableError,
     GpuMappingError,
     verify_isolated_gpu_access,

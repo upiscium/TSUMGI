@@ -7,9 +7,9 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 import pytest
-from astrumweaver.execution import JobExecutionError, JobRequest
-from astrumweaver.gateway.audio import audio_semantic_revision
-from astrumweaver.runtime.providers.parakeet import ParakeetExecutor
+from tsumgi.execution import JobExecutionError, JobRequest
+from tsumgi.gateway.audio import audio_semantic_revision
+from tsumgi.runtime.providers.parakeet import ParakeetExecutor
 
 def pcm():
     b=io.BytesIO()
@@ -104,7 +104,7 @@ async def test_revoke_timeout_retains_cleanup_for_retry(monkeypatch):
             entered.set()
             release.wait(3)
 
-    monkeypatch.setattr("astrumweaver.runtime.providers.parakeet._CLEANUP_TIMEOUT", 0.02)
+    monkeypatch.setattr("tsumgi.runtime.providers.parakeet._CLEANUP_TIMEOUT", 0.02)
     executor = ParakeetExecutor(Backend())
     await executor._revoke()
     cleanup = executor._cleanup_task
@@ -117,8 +117,8 @@ async def test_revoke_timeout_retains_cleanup_for_retry(monkeypatch):
 
 
 async def test_cached_executor_rejects_late_result_after_stop_generation():
-    from astrumweaver.runtime.contracts import RuntimeHealth, RuntimeHealthState
-    from astrumweaver.runtime.providers.parakeet_managed import _ReadyBoundExecutor
+    from tsumgi.runtime.contracts import RuntimeHealth, RuntimeHealthState
+    from tsumgi.runtime.providers.parakeet_managed import _ReadyBoundExecutor
 
     entered, release = threading.Event(), threading.Event()
 

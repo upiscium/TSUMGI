@@ -1,10 +1,10 @@
-{ lib, buildEnv, python312, astrumweaver, integration }:
+{ lib, buildEnv, python312, tsumgi, integration }:
 
 let
-  pythonEnv = python312.withPackages (_: [ astrumweaver ]);
+  pythonEnv = python312.withPackages (_: [ tsumgi ]);
 in
 buildEnv {
-  name = "astrumweaver-worker-support-0.2.1";
+  name = "tsumgi-worker-support-0.3.0pre1";
   paths = [
     pythonEnv
     integration

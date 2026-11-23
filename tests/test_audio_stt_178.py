@@ -10,7 +10,7 @@ from threading import Barrier
 
 import pytest
 
-from astrumweaver.validation.audio_stt_178 import (
+from tsumgi.validation.audio_stt_178 import (
     AudioStt178Error, Candidate, compare, load_fixture, normalize, percentile,
 )
 
@@ -108,7 +108,7 @@ def test_incomplete_or_unmeasured_candidates_are_not_scored():
 
 
 def test_empty_reference_has_defined_error_rate():
-    from astrumweaver.validation.audio_stt_178 import error_rate
+    from tsumgi.validation.audio_stt_178 import error_rate
     assert error_rate("", "", "cer") == 0
     assert error_rate("", "x", "cer") == 1
 
@@ -149,7 +149,7 @@ def test_tagged_reference_must_give_unambiguous_context(tmp_path, reference):
 
 
 def test_edit_distance_and_input_lengths_are_bounded():
-    from astrumweaver.validation.audio_stt_178 import (
+    from tsumgi.validation.audio_stt_178 import (
         MAX_TEXT_CHARS, error_rate, normalize,
     )
     with pytest.raises(AudioStt178Error, match="length bound"):
@@ -161,7 +161,7 @@ def test_edit_distance_and_input_lengths_are_bounded():
 
 
 def test_fixture_byte_and_case_limits_are_enforced(tmp_path):
-    from astrumweaver.validation.audio_stt_178 import MAX_CASES, MAX_FIXTURE_BYTES
+    from tsumgi.validation.audio_stt_178 import MAX_CASES, MAX_FIXTURE_BYTES
     path = tmp_path / "fixture.json"
     path.write_bytes(b" " * (MAX_FIXTURE_BYTES + 1))
     with pytest.raises(AudioStt178Error, match="byte bound"):
@@ -174,7 +174,7 @@ def test_fixture_byte_and_case_limits_are_enforced(tmp_path):
 
 
 def test_report_refuses_overwrite_and_has_private_mode(tmp_path):
-    from astrumweaver.validation.audio_stt_178 import write_report_exclusive
+    from tsumgi.validation.audio_stt_178 import write_report_exclusive
     target = tmp_path / "private-report.json"
     report = compare(fixture_value(), "sha256:fixture", [candidate()])
     write_report_exclusive(target, report)
@@ -184,7 +184,7 @@ def test_report_refuses_overwrite_and_has_private_mode(tmp_path):
 
 
 def test_concurrent_report_publication_has_one_complete_private_winner(tmp_path, monkeypatch):
-    from astrumweaver.validation.audio_stt_178 import write_report_exclusive
+    from tsumgi.validation.audio_stt_178 import write_report_exclusive
 
     target = tmp_path / "private-report.json"
     reports = [compare(fixture_value(), "sha256:fixture", [replace(candidate(), name=name)])
@@ -219,7 +219,7 @@ def test_concurrent_report_publication_has_one_complete_private_winner(tmp_path,
 
 
 def test_failed_sync_does_not_publish_partial_report(tmp_path, monkeypatch):
-    from astrumweaver.validation.audio_stt_178 import write_report_exclusive
+    from tsumgi.validation.audio_stt_178 import write_report_exclusive
 
     def failed_sync(fd):
         raise OSError("simulated sync failure")
@@ -232,7 +232,7 @@ def test_failed_sync_does_not_publish_partial_report(tmp_path, monkeypatch):
 
 # ---- review follow-ups -------------------------------------------------------
 
-from astrumweaver.validation import audio_stt_178 as stt  # noqa: E402
+from tsumgi.validation import audio_stt_178 as stt  # noqa: E402
 
 
 def results_value(**override):

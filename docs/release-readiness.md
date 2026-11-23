@@ -49,7 +49,7 @@ on the updated source.
 | Qualification dimension | Latest evidence | Remaining authority/limitation |
 | --- | --- | --- |
 | Reviewed source/CI | #130, #132, #134 code integrated; final #134 main CI unit/nix SUCCESS | A release tag, package/version identifier, artifact checksum and publication authority are not assigned |
-| Control/Installer package | Installed Nix `astrumweaver-migrate` has PostgreSQL driver only in relevant roles; Worker package remains psycopg-free | Exact final version/lock must be frozen and independently requalified if changed |
+| Control/Installer package | Installed Nix `tsumgi-migrate` has PostgreSQL driver only in relevant roles; Worker package remains psycopg-free | Exact final version/lock must be frozen and independently requalified if changed |
 | SQL and persistence | UTF8-only admission; 000–005 migrations; **2026-10-12 PG17.11 disposable Control/Installer build, backup to independent DB, restored Control Ready and durable Job read/mutation PASS** | Does not demonstrate automatic downgrade of a changed production schema or validate site backup/restore RPO/RTO |
 | Real native serving | #124 disposable dedicated-UID installed old→new→old systemd rollback with two GPU models PASS; #110 real OpenCode 1.18.35 SIGKILL → durable PostgreSQL CANCELLED → native CUDA inference slot idle **6/6 PASS** | No universal model quality, native inference reliability SLA, production hardware layout, full consumer quota savings or old OpenCode 1.18.30 GPU replay claim |
 | Client semantics | Stage B streamed plain/tool OpenCode acceptance and #110 disconnect fix on exact reviewed code | Coding remains experimental, Embedding exact-space scoped, Decision/System-One **OBSERVED_ONLY** and uncalibrated |
@@ -111,7 +111,7 @@ release tag was observed during the 2026-10-11 source check.
 
 - **Option A — preserve the older v0.1.0 baseline:** Create an explicit
   release branch/tag candidate from the approved historical SHA, with an
-  accurate TSUMGI/AstrumWeaver naming/support statement. Re-evaluate any
+  accurate TSUMGI/TSUMGI naming/support statement. Re-evaluate any
   known packaging or installation defects at that *exact* revision. Do not
   claim that the modern #91 functionality is included or that old test
   evidence covers subsequent changes.
@@ -134,7 +134,7 @@ current blocker report. See the authoritative 2026-10-12 checkpoint above.
 | --- | --- | --- |
 | Source identity | Frozen source SHA, packaging SHA, documentation SHA, version and intended support tier | **DECISION REQUIRED** |
 | Nix/CI | Reproducible builds of actual `#worker`, `#control`, `#installer`; full Python/PostgreSQL regression; `nix flake check`; GitHub CI on final SHA | **PREVIOUS INTEGRATION PASS** at #128 candidate; re-evaluate after changes |
-| PostgreSQL/Control | Actual installed `astrumweaver-migrate` has psycopg, migrations 000–005 on fresh compatible DB, Control ready, duplicate migration is safe | **BLOCKED until #129 exact merged revision accepted** |
+| PostgreSQL/Control | Actual installed `tsumgi-migrate` has psycopg, migrations 000–005 on fresh compatible DB, Control ready, duplicate migration is safe | **BLOCKED until #129 exact merged revision accepted** |
 | DB compatibility | Read-only inventory of server/DB encoding and version, backup/restore proof; clear downgrade policy for migrations 003–005 | **OPERATOR GATE**. SQL_ASCII defect tracked in #108; do not claim supported. |
 | Client lifecycle | Chat tools, streaming, cancellation, timeout, embedding space mismatch, Decision invalid semantics and auth checks | **SCOPED PASS** with open real disconnect regression #110; repair or explicitly document impact |
 | Security | Runtime model pins, private UDS/bearers, dedicated service UID, permissions, no cross-UID access, reviewed Gateway ingress/auth | **PARTIAL #124** (disposable evidence, not a production identity decision) |

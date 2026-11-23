@@ -37,7 +37,7 @@ independent Worker bearer credential out of both manifests.
    extracted bundle nor grants voice rights.
 3. From the same reviewed TSUMGI package, construct the expected serving
    document using `VoicevoxProviderConfig(**provider_config).serving_declaration().to_dict()`
-   (`astrumweaver.runtime.providers.voicevox_manifest`). Review it against
+   (`tsumgi.runtime.providers.voicevox_manifest`). Review it against
    the Gateway catalog **before** starting anything. The declaration helper
    reads the installed adapter source bundle but starts no service. The
    deployment and contract bind the executable, VVM, adapter bundle, port,

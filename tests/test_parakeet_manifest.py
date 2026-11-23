@@ -7,12 +7,12 @@ import threading
 
 import pytest
 
-from astrumweaver.contracts import ResourceShape, WorkerSpec
-from astrumweaver.runtime import RuntimeDeploymentSpec, RuntimeHostFacts
-from astrumweaver.runtime.contracts import RuntimeCompatibilityContext, RuntimeHealthState
-from astrumweaver.runtime.deployment import managed_runtime_from_deployment, provider_from_deployment
-from astrumweaver.runtime.providers import parakeet_manifest as manifest
-from astrumweaver.runtime.providers import parakeet_managed as managed
+from tsumgi.contracts import ResourceShape, WorkerSpec
+from tsumgi.runtime import RuntimeDeploymentSpec, RuntimeHostFacts
+from tsumgi.runtime.contracts import RuntimeCompatibilityContext, RuntimeHealthState
+from tsumgi.runtime.deployment import managed_runtime_from_deployment, provider_from_deployment
+from tsumgi.runtime.providers import parakeet_manifest as manifest
+from tsumgi.runtime.providers import parakeet_managed as managed
 from parakeet_fixtures import staged_environment
 
 GPU = "GPU-01234567-89ab-cdef-0123-456789abcdef"
@@ -177,7 +177,7 @@ async def test_stop_during_native_start_retains_handle_and_denies_reuse(configur
 
 async def test_artifact_drift_revokes_even_cached_executor(configured, monkeypatch):
     from pathlib import Path
-    from astrumweaver.execution import JobExecutionError
+    from tsumgi.execution import JobExecutionError
     cfg, _, _ = configured
     child = SyntheticProcess()
     child.proceed.set()

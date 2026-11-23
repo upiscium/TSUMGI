@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
-from astrumweaver.execution import JobExecutor, JobRequest, JobResult, ResidencyReport
-from astrumweaver.runtime import (
+from tsumgi import AcceleratorDevice, ResourceShape, WorkerSpec
+from tsumgi.execution import JobExecutor, JobRequest, JobResult, ResidencyReport
+from tsumgi.runtime import (
     CompatibilityReason,
     ExecutionDemand,
     GPUTopology,
@@ -26,8 +26,8 @@ from astrumweaver.runtime import (
     RuntimeProviderInfo,
     RuntimeSetupIntent,
 )
-from astrumweaver.runtime.providers import ExLlamaV3Provider, VllmProvider
-from astrumweaver.setup import (
+from tsumgi.runtime.providers import ExLlamaV3Provider, VllmProvider
+from tsumgi.setup import (
     ActionInspection,
     ActionReceipt,
     DeploymentPath,
@@ -41,10 +41,10 @@ from astrumweaver.setup import (
     SetupPlanGoal,
     discover_local_gpus,
 )
-from astrumweaver.runtime import ModelPreparationPolicy, RuntimeHostFacts
-from astrumweaver.setup.migration import InstalledWorkerContract
-from astrumweaver.setup.systemd import GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE
-from astrumweaver.setup.tui import (
+from tsumgi.runtime import ModelPreparationPolicy, RuntimeHostFacts
+from tsumgi.setup.migration import InstalledWorkerContract
+from tsumgi.setup.systemd import GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE
+from tsumgi.setup.tui import (
     TuiRunStatus,
     _render_preview,
     default_runtime_catalog,
@@ -634,7 +634,7 @@ class FakeFirstRunInstaller:
 
     def install_control(self, *, spec, secrets):
         self.control_calls.append((spec, secrets))
-        from astrumweaver.setup.first_run import SystemdBootstrapResult
+        from tsumgi.setup.first_run import SystemdBootstrapResult
 
         return SystemdBootstrapResult(
             control_installed=True,
@@ -644,7 +644,7 @@ class FakeFirstRunInstaller:
 
     def install_worker(self, **kwargs):
         self.worker_calls.append(kwargs)
-        from astrumweaver.setup.first_run import SystemdBootstrapResult
+        from tsumgi.setup.first_run import SystemdBootstrapResult
 
         return SystemdBootstrapResult(
             worker_installed=True,
@@ -667,7 +667,7 @@ def _exact_first_run_write(prompt: str) -> str:
 def test_first_run_systemd_wraps_control_migration_gpu_and_worker(
     monkeypatch,
 ) -> None:
-    from astrumweaver.setup import tui as tui_module
+    from tsumgi.setup import tui as tui_module
 
     FakeFirstRunInstaller.instances.clear()
     monkeypatch.setattr(
@@ -687,7 +687,7 @@ def test_first_run_systemd_wraps_control_migration_gpu_and_worker(
             "",  # Control bind host
             "",  # Control port
             "",  # Client API auth: bearer
-            "postgresql://db-private/astrumweaver",  # hidden
+            "postgresql://db-private/tsumgi",  # hidden
             "",  # generate tokens
             "",  # all GPUs
             "",  # Worker ID
@@ -716,12 +716,12 @@ def test_first_run_systemd_wraps_control_migration_gpu_and_worker(
     assert worker_call["start"] is True
     assert "GPU-one" in worker_call["worker_toml"]
     assert (
-        "astrumweaver.executors.structured_echo:create_executor"
+        "tsumgi.executors.structured_echo:create_executor"
         in worker_call["worker_toml"]
     )
 
     output = "\n".join(io.output)
-    assert "postgresql://db-private/astrumweaver" not in output
+    assert "postgresql://db-private/tsumgi" not in output
     assert "client-private-generated" not in output
     assert "worker-private-generated" not in output
     assert "Control migration applied" in output
@@ -731,7 +731,7 @@ def test_first_run_systemd_wraps_control_migration_gpu_and_worker(
 def test_first_run_control_none_generates_only_worker_authority(
     monkeypatch,
 ) -> None:
-    from astrumweaver.setup import tui as tui_module
+    from tsumgi.setup import tui as tui_module
 
     FakeFirstRunInstaller.instances.clear()
     monkeypatch.setattr(
@@ -751,7 +751,7 @@ def test_first_run_control_none_generates_only_worker_authority(
             "",  # bind host
             "",  # port
             "none",  # Client API auth
-            "postgresql://db-private/astrumweaver",  # hidden
+            "postgresql://db-private/tsumgi",  # hidden
             "",  # generate Worker token
             _exact_first_run_apply,
         ]
@@ -780,7 +780,7 @@ def test_first_run_control_none_generates_only_worker_authority(
 def test_first_run_nixos_writes_reviewable_smoke_snippet(
     tmp_path,
 ) -> None:
-    output_path = tmp_path / "astrumweaver-first-run.nix"
+    output_path = tmp_path / "tsumgi-first-run.nix"
     io = ScriptedIO(
         [
             "2",  # worker only
@@ -807,7 +807,7 @@ def test_first_run_nixos_writes_reviewable_smoke_snippet(
     assert 'workerId = "worker-1";' in rendered
     assert 'gpuUuids = [ "GPU-one" ];' in rendered
     assert (
-        'executorFactory = "astrumweaver.executors.structured_echo:create_executor";'
+        'executorFactory = "tsumgi.executors.structured_echo:create_executor";'
         in rendered
     )
     assert "worker-private-token" not in rendered

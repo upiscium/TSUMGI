@@ -12,7 +12,7 @@ On Control, explicitly select:
 ```toml
 [worker_auth]
 mode = "per-worker"
-credentials_file = "/run/credentials/astrumweaver-control/worker-identities.json"
+credentials_file = "/run/credentials/tsumgi-control/worker-identities.json"
 ```
 
 `control.client_auth` must be `bearer`. The credential file is operator-owned
@@ -55,9 +55,9 @@ or IDs. The local file and process boundary remain trusted; this is not
 protection against an administrator or code executing inside Control.
 
 On **each Worker**, continue using its existing
-`ASTRUMWEAVER_WORKER_TOKEN`, but set it to only that Worker's assigned token.
+`TSUMGI_WORKER_TOKEN`, but set it to only that Worker's assigned token.
 The standard `ControlClient` bearer header and request formats are unchanged.
-Control does not require the old shared `ASTRUMWEAVER_WORKER_TOKEN` in strict
+Control does not require the old shared `TSUMGI_WORKER_TOKEN` in strict
 mode. If it is still configured there, it is **not a fallback** and must not
 equal any scoped token.
 
@@ -138,7 +138,7 @@ rotation, multi-Control upgrade or rollback acceptance is claimed here.
 These tests use only synthetic credentials, profiles, payloads and WAV bytes.
 They do not start an engine, qualify a managed Worker, or claim real TCP /
 installed-host E2E acceptance. Real-DB runs must use the dedicated disposable
-server and `ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES=1`; skips are not evidence.
+server and `TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES=1`; skips are not evidence.
 
 ### Local verification
 
@@ -167,7 +167,7 @@ With both declared Postgres dependencies available and the owned PostgreSQL
 The target command was:
 
 ```sh
-ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES=1 PYTHONPATH=src \
+TSUMGI_REQUIRE_AUDIO_EPOCH_POSTGRES=1 PYTHONPATH=src \
   python3 -m pytest --runxfail -q --tb=short -rs -p no:cacheprovider \
   tests/test_worker_credentials.py tests/test_worker_auth_config.py \
   tests/test_worker_identity.py tests/test_worker_identity_postgres.py \
@@ -175,7 +175,7 @@ ASTRUMWEAVER_REQUIRE_AUDIO_EPOCH_POSTGRES=1 PYTHONPATH=src \
   tests/test_audio_epoch_acceptance_postgres.py
 ```
 
-`ASTRUMWEAVER_TEST_DATABASE_URL` selected only the private disposable server.
+`TSUMGI_TEST_DATABASE_URL` selected only the private disposable server.
 The full suite used the same environment with `pytest -q --tb=short -rs
 -p no:cacheprovider`; some existing fixtures reset its base database, so a
 shared or production database is never an appropriate target.

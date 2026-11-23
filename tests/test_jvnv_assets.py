@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from astrumweaver.runtime.providers import jvnv_assets as assets
+from tsumgi.runtime.providers import jvnv_assets as assets
 
 
 def _write(path, data):

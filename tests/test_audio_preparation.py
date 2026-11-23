@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from astrumweaver.control import InMemoryControlRepository
+from tsumgi.control import InMemoryControlRepository
 from audio_epoch_acceptance import make_harness, snapshot_repository
 from audio_preparation_cases import AudioPreparationCases
 from worker_identity_cases import WORKERS

@@ -7,13 +7,13 @@ from datetime import timedelta
 
 import pytest
 
-from astrumweaver.control import (
+from tsumgi.control import (
     DeadlineExceededError, InMemoryControlRepository, JobStatus, JobSubmission,
     PostgresControlRepository, utc_now,
 )
-import astrumweaver.gateway.api as gateway_module
-from astrumweaver.gateway.api import ChatGatewayService
-from astrumweaver.gateway.chat import ChatGatewayError, ChatProfileCatalog
+import tsumgi.gateway.api as gateway_module
+from tsumgi.gateway.api import ChatGatewayService
+from tsumgi.gateway.chat import ChatGatewayError, ChatProfileCatalog
 from test_chat_gateway_admission_cancellation import _wait_for
 from test_chat_gateway_api import _DisconnectedRequest, _ConnectedRequest, register_worker, serving_values
 

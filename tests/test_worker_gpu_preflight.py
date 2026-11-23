@@ -4,8 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from astrumweaver.contracts import ResourceShape, WorkerSpec
-from astrumweaver.worker import daemon
+from tsumgi.contracts import ResourceShape, WorkerSpec
+from tsumgi.worker import daemon
 
 
 def _spec() -> WorkerSpec:
@@ -27,8 +27,8 @@ def test_daemon_gpu_preflight_defaults_to_exact_visible(
 ) -> None:
     calls: list[tuple[tuple[str, ...], str]] = []
 
-    monkeypatch.delenv("ASTRUMWEAVER_GPU_PREFLIGHT_MODE", raising=False)
-    monkeypatch.setenv("ASTRUMWEAVER_NVIDIA_SMI", "/test/nvidia-smi")
+    monkeypatch.delenv("TSUMGI_GPU_PREFLIGHT_MODE", raising=False)
+    monkeypatch.setenv("TSUMGI_NVIDIA_SMI", "/test/nvidia-smi")
     monkeypatch.setattr(
         daemon,
         "require_exact_gpu_set",
@@ -50,12 +50,12 @@ def test_daemon_gpu_preflight_uses_explicit_isolated_access_contract(
 ) -> None:
     calls: list[dict[str, object]] = []
 
-    monkeypatch.setenv("ASTRUMWEAVER_GPU_PREFLIGHT_MODE", "isolated-access")
+    monkeypatch.setenv("TSUMGI_GPU_PREFLIGHT_MODE", "isolated-access")
     monkeypatch.setenv(
-        "ASTRUMWEAVER_GPU_DEVICE_MAP",
-        "/etc/astrumweaver/gpu-device-map",
+        "TSUMGI_GPU_DEVICE_MAP",
+        "/etc/tsumgi/gpu-device-map",
     )
-    monkeypatch.setenv("ASTRUMWEAVER_NVIDIA_SMI", "/test/nvidia-smi")
+    monkeypatch.setenv("TSUMGI_NVIDIA_SMI", "/test/nvidia-smi")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-selected")
     monkeypatch.setattr(
         daemon,
@@ -77,7 +77,7 @@ def test_daemon_gpu_preflight_uses_explicit_isolated_access_contract(
     assert calls == [
         {
             "expected": ("GPU-selected",),
-            "reviewed_map_path": "/etc/astrumweaver/gpu-device-map",
+            "reviewed_map_path": "/etc/tsumgi/gpu-device-map",
             "command": "/test/nvidia-smi",
             "cuda_visible_devices": "GPU-selected",
         }
@@ -87,17 +87,17 @@ def test_daemon_gpu_preflight_uses_explicit_isolated_access_contract(
 def test_daemon_isolated_access_requires_reviewed_map(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ASTRUMWEAVER_GPU_PREFLIGHT_MODE", "isolated-access")
-    monkeypatch.delenv("ASTRUMWEAVER_GPU_DEVICE_MAP", raising=False)
+    monkeypatch.setenv("TSUMGI_GPU_PREFLIGHT_MODE", "isolated-access")
+    monkeypatch.delenv("TSUMGI_GPU_DEVICE_MAP", raising=False)
 
-    with pytest.raises(RuntimeError, match="ASTRUMWEAVER_GPU_DEVICE_MAP"):
+    with pytest.raises(RuntimeError, match="TSUMGI_GPU_DEVICE_MAP"):
         daemon._run_gpu_preflight(_spec(), {"gpu_preflight": True})
 
 
 def test_daemon_rejects_unknown_gpu_preflight_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ASTRUMWEAVER_GPU_PREFLIGHT_MODE", "unknown-mode")
+    monkeypatch.setenv("TSUMGI_GPU_PREFLIGHT_MODE", "unknown-mode")
 
     with pytest.raises(RuntimeError, match="exact-visible or isolated-access"):
         daemon._run_gpu_preflight(_spec(), {"gpu_preflight": True})

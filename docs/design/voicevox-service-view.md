@@ -29,7 +29,7 @@ remains a separate requirement. The original engine, modes and argv remain
 untouched; neither `run` nor the model is copied into the new view.
 
 The standalone stdlib utility is
-`src/astrumweaver/runtime/providers/voicevox_service_view.py`. Its `build`
+`src/tsumgi/runtime/providers/voicevox_service_view.py`. Its `build`
 command takes `--libc-archive`, `--libc-root`, `--engine-root`, and
 `--output`; `verify` takes `--output`. There is no activation command and
 no command-line override of the pins.
@@ -52,7 +52,7 @@ rootfs/lib/x86_64-linux-gnu/
 rootfs/lib64/ld-linux-x86-64.so.2
   -> ../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
 rootfs/usr/share/doc/libc6/copyright
-share/astrumweaver/voicevox-service-view.json
+share/tsumgi/voicevox-service-view.json
 ```
 
 The zlib bytes come from the original engine, not another package:
@@ -95,7 +95,7 @@ The derivation's `passthru.candidateServiceConfig` is review data:
 It deliberately supplies **no** `ExecStart`, engine substitution, writable
 private HOME bind, user/account, credential source, DNS/NSS configuration,
 Control networking, install target, or runtime/Serving declaration. It is
-not a NixOS module and is not connected to `astrumweaver-worker`.
+not a NixOS module and is not connected to `tsumgi-worker`.
 Do not merge it into a running unit as an installation recipe.
 
 The factory is absent from default packages. Existing Audio module
