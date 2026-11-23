@@ -4,6 +4,10 @@
 installer exists. This is the *review boundary*, not deployment acceptance,
 setup authorization, or a runtime/provider implementation.
 
+Later local work adds a distinct [offline VOICEVOX staging plan](voicevox-offline-bundle-staging.md).
+It does not consume this review record, change `can_apply=False`, or activate a
+service. The restrictions below continue to apply to this informational API.
+
 ## Why a separate record?
 
 The existing `SetupPlan` represents actionable runtime changes and may include

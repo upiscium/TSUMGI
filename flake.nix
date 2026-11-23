@@ -59,13 +59,13 @@
             inherit core;
           };
           # The heavy llama.cpp build keeps the store-path name it had before the
-          # rename (`astrumweaver-llama-decision-cuda-sm*`), so hosts that already
+          # rename (`tsumgi-llama-decision-cuda-sm*`), so hosts that already
           # hold it do not recompile CUDA llama.cpp. Its metadata therefore sits under
-          # share/astrumweaver; this alias republishes it under share/tsumgi, where the
+          # share/tsumgi; this alias republishes it under share/tsumgi, where the
           # code reads it.
           metadata = cudaPkgs.runCommand "tsumgi-d1-decision-metadata-sm${cudaArch}" { } ''
             mkdir -p "$out/share/tsumgi"
-            cp ${core}/share/astrumweaver/* "$out/share/tsumgi/"
+            cp ${core}/share/tsumgi/* "$out/share/tsumgi/"
           '';
         in
         cudaPkgs.buildEnv {
@@ -222,6 +222,19 @@
         default = tsumgi;
       };
 
+      lib.mkVoicevoxCpuBundle = { pkgs, archive, rightsReviewSha256 }:
+        pkgs.callPackage ./nix/voicevox-cpu-bundle.nix {
+          inherit archive rightsReviewSha256;
+          sevenzip = pkgs._7zz;
+        };
+
+      # Explicit, already-acquired inputs only. This factory does not call the
+      # bundle extractor, add a package to the default closure or wire a unit.
+      lib.mkVoicevoxServiceView = { pkgs, libcArchive, libcRoot, engineRoot }:
+        pkgs.callPackage ./nix/voicevox-service-view.nix {
+          inherit libcArchive libcRoot engineRoot;
+        };
+
       nixosModules = {
         control = import ./nix/modules/control.nix;
         worker = import ./nix/modules/worker.nix;
@@ -248,6 +261,18 @@
 
         audio-control-module = import ./nix/tests/audio-control-module.nix {
           inherit pkgs nixpkgs system;
+        };
+
+        audio-worker-module = import ./nix/tests/audio-worker-module.nix {
+          inherit pkgs nixpkgs system;
+        };
+
+        voicevox-bundle = import ./nix/tests/voicevox-bundle.nix {
+          inherit nixpkgs system;
+        };
+
+        voicevox-service-view = import ./nix/tests/voicevox-service-view.nix {
+          inherit nixpkgs system;
         };
 
         audio-control-package = import ./nix/tests/audio-control-package.nix {

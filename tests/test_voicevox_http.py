@@ -74,9 +74,18 @@ class SyntheticEngine:
                 ).encode()
                 media = "application/json"
             elif parsed.path == "/audio_query":
+                # "large_query": the shape of a real answer, 30 accent phrases of 10 moras
+                # (6 keys each, about 4000 JSON nodes in all)
+                mora = {"text": "コ", "consonant": "k", "consonant_length": 0.07,
+                        "vowel": "o", "vowel_length": 0.11, "pitch": 5.6}
+                phrases = [
+                    {"moras": [dict(mora) for _ in range(10)], "accent": 1,
+                     "pause_mora": None, "is_interrogative": False}
+                    for _ in range(30)
+                ] if self.mode == "large_query" else []
                 content = json.dumps(
                     {
-                        "accent_phrases": [],
+                        "accent_phrases": phrases,
                         "outputSamplingRate": 24000,
                         "outputStereo": False,
                     }
@@ -99,6 +108,8 @@ class SyntheticEngine:
             if self.mode == "status" and parsed.path == "/version":
                 code = "503 Unavailable"
             elif self.mode == "redirect" and parsed.path == "/version":
+                code = "302 Redirect"
+            elif self.mode == "query_redirect" and parsed.path == "/audio_query":
                 code = "302 Redirect"
             else:
                 code = "200 OK"
