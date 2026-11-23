@@ -9,8 +9,8 @@ Disabled by default. TSUMGI does not install, launch, manage, restart, kill, upg
 First review the engine's license/voice terms and access logging. The native VOICEVOX /audio_query path includes **raw input text in its URL query**, which the engine/host/proxy may log. The explicit acknowledgement flags below acknowledge this risk; they do not certify engine authenticity, license, voice rights or safe logging. Use non-sensitive demonstration text only.
 
 1. Install TSUMGI's Python package in an isolated environment, and separately run your own VOICEVOX at the normal 127.0.0.1:50021 address. No VOICEVOX installation is performed by TSUMGI.
-2. List observed voices using: python -m astrumweaver.audio.voicevox_local_preview --list-voices. Copy a speaker_uuid and style_id from the output. A discovery observation is not a serving grant.
-3. Set TSUMGI_VOICEVOX_PREVIEW_TOKEN to a long private random token using a secure local environment or secret injection (do not put credentials in source or shell history).
+2. List observed voices using: python -m astrumweaver.audio.voicevox_local_preview --list-voices (observation only, so it does not need the accept flags). Copy a speaker_uuid and style_id from the output. A discovery observation is not a serving grant.
+3. Set TSUMGI_VOICEVOX_PREVIEW_TOKEN to a long private random token (at least 32 characters of `A-Za-z0-9._~+/-`, otherwise the preview refuses to start) using a secure local environment or secret injection (do not put credentials in source or shell history).
 4. Run the dedicated preview with the observed values:
 
     python -m astrumweaver.audio.voicevox_local_preview --speaker-uuid SPEAKER_UUID --style-id STYLE_ID --accept-unverified-engine --accept-native-text-url-logging
@@ -24,7 +24,7 @@ The preview discovers the engine on every request using bounded /version and /sp
 
 ## Guarantees / outstanding safety gates
 
-- Bearer authentication, explicit operator risk acceptance, fixed IPv4 loopback authority, bounded ingress/response sizes, single simultaneous request, total deadline, no redirects, retries, environment proxy or client-supplied native URLs, no Uvicorn access logs, Cache-Control: no-store.
+- Bearer authentication, explicit operator risk acceptance, fixed IPv4 loopback authority, bounded ingress/response sizes (request body 4096 bytes; input text up to `max_text_bytes` UTF-8 bytes, 1024 by default; the engine's `/audio_query` answer up to 256 KiB and 16384 JSON nodes, enough for the longest allowed text; the WAV up to `max_output_bytes`), a request body of `Content-Type: application/json` with an optional `charset=utf-8`, single simultaneous request (a second one is 429), total deadline, no redirects, retries, environment proxy or client-supplied native URLs, no Uvicorn access logs, Cache-Control: no-store.
 - This is a **standalone developer/operator HTTP-to-WAV proof**. It does **not** implement production Control/PostgreSQL durability, Job/Lease/Epoch fencing, authenticated Worker provenance, retry reconciliation, artifact persistence or OpenAI-compatible production /v1/audio/speech binding. It does not register/activate any RuntimeProvider.
 - Engine observations are not cryptographic engine identity, trusted model provenance or voice licensing/credit verification. Explicit operator acknowledgement is not objective evidence.
 - The WAV validator intentionally accepts a conservative RIFF PCM16 subset; extra native RIFF chunks or unsupported sample rates may be rejected.

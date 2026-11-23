@@ -37,8 +37,12 @@ from ..runtime.providers.voicevox_http import (
     _read_response,
 )
 
-_TOKEN = re.compile(r"[A-Za-z0-9._~+/-]{24,256}=*\Z")
-_MAX_QUERY = 32 * 1024
+_TOKEN = re.compile(r"[A-Za-z0-9._~+/-]{32,256}=*\Z")  # a long random token, enforced
+# A real /audio_query answer is about 13 JSON nodes and 150-200 bytes per mora, so
+# the Worker adapter's 2048-node budget (a heartbeat-loop guard) is far too small
+# for this standalone process: 2048 bytes of text can mean 700 moras.
+_MAX_QUERY = 256 * 1024
+_MAX_QUERY_NODES = 16384
 _MAX_TARGET = 8192
 _MAX_REQUEST = 4096
 
@@ -131,7 +135,8 @@ async def _bounded_request_body(request: Request) -> bytes:
     headers = request.headers
     if (
         len(headers.getlist("content-type")) != 1
-        or headers.get("content-type", "").lower() != "application/json"
+        or headers.get("content-type", "").lower().replace(" ", "")
+        not in ("application/json", "application/json;charset=utf-8")
         or headers.get("content-encoding") is not None
         or headers.get("content-transfer-encoding") is not None
         or len(headers.getlist("content-length")) > 1
@@ -186,6 +191,10 @@ async def _loopback_post(
     finally:
         if writer is not None:
             writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001 - the answer was already read or failed
+                pass
 
 
 def create_local_voicevox_preview_app(config: LocalVoicevoxPreviewConfig) -> FastAPI:
@@ -302,7 +311,7 @@ def create_local_voicevox_preview_app(config: LocalVoicevoxPreviewConfig) -> Fas
                         accept="application/json", max_bytes=_MAX_QUERY,
                     )
                     query = _decoded_json(query_bytes)
-                    _validate_query(query, _MAX_QUERY)
+                    _validate_query(query, _MAX_QUERY, max_nodes=_MAX_QUERY_NODES)
                     query_body = json.dumps(
                         query, ensure_ascii=False, separators=(",", ":"), allow_nan=False
                     ).encode("utf-8")
@@ -340,10 +349,14 @@ def main() -> None:
     parser.add_argument("--accept-native-text-url-logging", action="store_true")
     args = parser.parse_args()
     if args.list_voices:
+        # Observation only, so it is not gated by the two accept flags.
         async def list_observed() -> None:
-            probe = VoicevoxDiscoveryProbe(VoicevoxDiscoveryConfig(
-                enabled=True, endpoint=args.endpoint,
-            ))
+            try:
+                probe = VoicevoxDiscoveryProbe(VoicevoxDiscoveryConfig(
+                    enabled=True, endpoint=args.endpoint,
+                ))
+            except (ValueError, TypeError):
+                parser.error("--endpoint must be http://127.0.0.1:<port>")
             result = await probe.probe_once()
             if result.status is not VoicevoxDiscoveryStatus.COMPATIBLE or not result.snapshot:
                 raise SystemExit("VOICEVOX local endpoint not observed")

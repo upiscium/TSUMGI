@@ -237,3 +237,173 @@ def test_dedicated_preview_is_not_implicitly_mounted_in_production():
                 else:
                     continue
                 assert all("voicevox_local_preview" not in name for name in names)
+
+
+# ---- review follow-ups ---------------------------------------------------------------
+
+import logging  # noqa: E402
+
+from astrumweaver.audio import voicevox_local_preview as preview  # noqa: E402
+from astrumweaver.runtime.providers.voicevox import _validate_query  # noqa: E402
+
+
+def post(user, body, headers=None):
+    return user.post("/preview/audio/speech", content=body, headers={**auth(), **(headers or {})})
+
+
+@pytest.mark.asyncio
+async def test_a_realistic_audio_query_is_accepted_not_a_503():
+    """About 300 moras (13 nodes each): over the Worker adapter's 2048-node budget."""
+    async with fake_engine(mode="large_query") as (engine, endpoint):
+        app = create_local_voicevox_preview_app(config(endpoint))
+        async with client(app) as user:
+            response = await user.post("/preview/audio/speech", json={"input": "コ" * 300}, headers=auth())
+        assert response.status_code == 200 and response.content == WAV
+    # and that is why the preview passes its own budget
+    mora = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6}
+    big = {"accent_phrases": [{"moras": [dict(mora) for _ in range(10)]} for _ in range(30)]}
+    with pytest.raises(Exception):
+        _validate_query(big, 256 * 1024)  # the adapter's default budget refuses it
+    assert _validate_query(big, 256 * 1024, max_nodes=16384) is big
+
+
+@pytest.mark.asyncio
+async def test_the_query_budget_is_still_bounded():
+    huge = {"accent_phrases": [{"moras": [{"a": 1}] * 250} for _ in range(250)]}  # about 190k nodes
+    with pytest.raises(Exception):
+        _validate_query(huge, 256 * 1024, max_nodes=preview._MAX_QUERY_NODES)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content_type,status", [
+    ("application/json", 200), ("application/json; charset=utf-8", 200),
+    ("Application/JSON;charset=UTF-8", 200), ("text/plain", 400),
+    ("application/json; charset=latin-1", 400), ("application/jsonx", 400),
+])
+async def test_content_type_may_carry_the_utf8_charset_only(content_type, status):
+    async with fake_engine() as (_engine, endpoint):
+        async with client(create_local_voicevox_preview_app(config(endpoint))) as user:
+            response = await post(user, '{"input":"こんにちは"}'.encode(), {"content-type": content_type})
+        assert response.status_code == status
+
+
+def test_a_short_token_is_refused_and_a_long_one_accepted():
+    for token in ("a" * 24, "a" * 31, "has space " * 4, ""):
+        with pytest.raises(ValueError):
+            config("http://127.0.0.1:50021", bearer_token=token)
+    assert config("http://127.0.0.1:50021", bearer_token="a" * 32).enabled
+
+
+@pytest.mark.asyncio
+async def test_only_one_speech_request_runs_at_a_time():
+    async with fake_engine(mode="hang") as (engine, endpoint):
+        app = create_local_voicevox_preview_app(config(endpoint, timeout_seconds=10.0))
+        async with client(app) as user:
+            first = asyncio.create_task(user.post("/preview/audio/speech", json={"input": "一"}, headers=auth()))
+            await asyncio.wait_for(engine.hit.wait(), 3)
+            second = await user.post("/preview/audio/speech", json={"input": "二"}, headers=auth())
+            assert second.status_code == 429 and second.json()["error"]["code"] == "busy"
+            engine.resume.set()
+            assert (await first).status_code in (200, 503)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,path", [("POST", "/preview/audio/speech"), ("GET", "/preview/audio/voices")])
+async def test_a_query_string_is_refused_after_authentication(method, path):
+    async with fake_engine() as (engine, endpoint):
+        async with client(create_local_voicevox_preview_app(config(endpoint))) as user:
+            denied = await user.request(method, path + "?text=秘密")
+            assert denied.status_code == 401
+            refused = await user.request(method, path + "?text=秘密", headers=auth(), json={"input": "x"} if method == "POST" else None)
+        assert refused.status_code == 400 and engine.seen == []
+
+
+@pytest.mark.asyncio
+async def test_voices_requires_authentication_without_probing():
+    async with fake_engine() as (engine, endpoint):
+        async with client(create_local_voicevox_preview_app(config(endpoint))) as user:
+            for headers in ({}, {"authorization": "Bearer wrong"}, {"authorization": "Basic x"}):
+                assert (await user.get("/preview/audio/voices", headers=headers)).status_code == 401
+        assert engine.seen == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,status", [
+    ("a" * 1024, 200), ("a" * 1025, 413),
+    ("あ" * 341, 200),   # 1023 bytes
+    ("あ" * 342, 413),   # 1026 bytes: fewer characters than the limit, more bytes
+])
+async def test_the_text_limit_counts_utf8_bytes(text, status):
+    async with fake_engine() as (engine, endpoint):
+        async with client(create_local_voicevox_preview_app(config(endpoint))) as user:
+            response = await user.post("/preview/audio/speech", json={"input": text}, headers=auth())
+        assert response.status_code == status
+        if status == 413:
+            assert engine.seen == []
+
+
+@pytest.mark.asyncio
+async def test_a_chunked_body_without_content_length_is_still_bounded():
+    async def chunks():
+        for _ in range(8):
+            yield b" " * 1024
+
+    async with fake_engine() as (engine, endpoint):
+        async with client(create_local_voicevox_preview_app(config(endpoint))) as user:
+            response = await user.post("/preview/audio/speech", content=chunks(),
+                                       headers={**auth(), "content-type": "application/json"})
+        assert response.status_code == 413 and engine.seen == []
+
+
+@pytest.mark.asyncio
+async def test_an_engine_redirect_is_refused_without_following_or_echoing():
+    async with fake_engine(mode="query_redirect") as (engine, endpoint):
+        async with client(create_local_voicevox_preview_app(config(endpoint))) as user:
+            response = await user.post("/preview/audio/speech", json={"input": "秘密の文章"}, headers=auth())
+        assert response.status_code == 503 and "秘密" not in response.text
+        assert [row[1].split("?", 1)[0] for row in engine.seen] == ["/version", "/speakers", "/audio_query"]
+
+
+@pytest.mark.asyncio
+async def test_the_preview_itself_never_logs_or_prints_the_text_or_token(caplog, capsys):
+    caplog.set_level(logging.DEBUG)
+    async with fake_engine() as (_engine, endpoint):
+        async with client(create_local_voicevox_preview_app(config(endpoint))) as user:
+            await user.post("/preview/audio/speech", json={"input": "極秘の入力文"}, headers=auth())
+            await user.post("/preview/audio/speech", json={"input": "極秘の入力文"}, headers={"authorization": "Bearer " + "x" * 40})
+    seen = caplog.text + capsys.readouterr().out + capsys.readouterr().err
+    assert "極秘" not in seen and TOKEN not in seen
+
+
+def test_main_binds_loopback_only_and_needs_the_token_and_both_consents(monkeypatch):
+    captured = {}
+
+    def fake_run(app, **kwargs):
+        captured.update(kwargs)
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    base = ["voicevox-preview", "--speaker-uuid", UUID, "--style-id", "3",
+            "--accept-unverified-engine", "--accept-native-text-url-logging"]
+    monkeypatch.setenv("TSUMGI_VOICEVOX_PREVIEW_TOKEN", TOKEN)
+    monkeypatch.setattr("sys.argv", base)
+    preview.main()
+    assert captured["host"] == "127.0.0.1" and captured["access_log"] is False and captured["port"] == 9811
+    for argv in (base[:-1], base[:-2] + ["--accept-native-text-url-logging"]):  # a consent flag missing
+        monkeypatch.setattr("sys.argv", argv)
+        with pytest.raises(ValueError):
+            preview.main()
+    monkeypatch.setenv("TSUMGI_VOICEVOX_PREVIEW_TOKEN", "")
+    monkeypatch.setattr("sys.argv", base)
+    with pytest.raises(ValueError):
+        preview.main()
+    monkeypatch.setenv("TSUMGI_VOICEVOX_PREVIEW_TOKEN", TOKEN)
+    for port in ("80", "70000"):
+        monkeypatch.setattr("sys.argv", base + ["--port", port])
+        with pytest.raises(SystemExit):
+            preview.main()
+    monkeypatch.setattr("sys.argv", ["voicevox-preview", "--list-voices", "--endpoint", "http://example.com:50021"])
+    with pytest.raises(SystemExit) as raised:
+        preview.main()  # a clean usage error, not a traceback
+    assert raised.value.code == 2
