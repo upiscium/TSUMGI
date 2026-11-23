@@ -1,6 +1,6 @@
 # TSUMGI rename: production cutover plan (stage 7)
 
-Status: **plan approved in outline; the window is not set. Nothing here has been done.** It needs the owner's
+Status: **plan; the release shape and the migration timing are decided, the plan itself and the window are not yet approved. Nothing here has been done.** It needs the owner's
 approval and a time window before every phase. It rests on what stages 1-5
 measured: the audit and rehearsal results in [rename-phase-b.md](rename-phase-b.md),
 the tool in [../host-migration.md](../host-migration.md), and the live rehearsal on
