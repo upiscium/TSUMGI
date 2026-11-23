@@ -1,4 +1,4 @@
-"""Validate the v0.2.1 stable tier while preserving historical release evidence."""
+"""Validate the v0.3.0 RC tier while preserving historical release evidence."""
 import re
 import hashlib
 import tomllib
@@ -6,9 +6,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-# Only the v0.2.1 patch release is accepted for the current source.
+# Only the v0.3.0 RC is accepted for the current source.
+# A GA promotion must be reviewed separately before adding stable metadata.
 EXPECTED_NIX_VERSION_BY_PYTHON = {
-    "0.2.1": "0.2.1",
+    "0.3.0rc1": "0.3.0pre1",
 }
 assert PROJECT_VERSION in EXPECTED_NIX_VERSION_BY_PYTHON, PROJECT_VERSION
 CURRENT_NIX_VERSION = EXPECTED_NIX_VERSION_BY_PYTHON[PROJECT_VERSION]
@@ -108,9 +109,9 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
 def test_rc_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "tsumgi"
-    assert project["version"] == "0.2.1"
+    assert project["version"] == "0.3.0rc1"
     assert project["version"] == PROJECT_VERSION
-    assert re.fullmatch(r"0\.2\.1", project["version"])
+    assert re.fullmatch(r"0\.3\.0rc1", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
         _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
     assert (ROOT / "src/tsumgi").is_dir()
@@ -311,6 +312,7 @@ def test_v013_ga_notes_and_rc_history_remain_historical_releases() -> None:
         "docs/releases/v0.1.3.md": "4830378533124f2fe29263b321bf9db42ffd348a80b1e48a58b927536af213f4",
         "docs/releases/v0.2.0-rc.1.md": "e41861fae2bf631f70681aa4956490db8994d732fda076bb6f4c78730d4abf92",
         "docs/releases/v0.2.0-rc.2.md": "26cbf9e98c4166fbab32977b8ccc018d32272134708531d29ee8f19c1d4a35b7",
+        "docs/releases/v0.2.1.md": "afcaa9136e2bc94b7b639f1fe4711d08a871b38442a291ea8c507df49fc70463",
         "docs/releases/v0.2.0.md": "91a34b6e28686b4f0d98f57483a95849640a85d070c7c173fe4b307e96578fe5",
     }
     for path, digest in frozen_docs.items():
@@ -378,11 +380,10 @@ def test_v020_ga_notes_remain_a_historical_release() -> None:
     assert "docs/releases/v0.2.0.md" in readme
 
 
-def test_v021_notes_match_metadata_and_scope() -> None:
+def test_v021_notes_remain_a_historical_release() -> None:
     notes = (ROOT / "docs/releases/v0.2.1.md").read_text()
     readme = (ROOT / "README.md").read_text()
     flat = " ".join(notes.split())
-    assert PROJECT_VERSION == "0.2.1" and CURRENT_NIX_VERSION == "0.2.1"
     assert "| Intended Git tag | `v0.2.1`" in notes
     assert "`astrumweaver==0.2.1`" in notes
     assert "| Nix Control, Worker, Installer and Integration | `0.2.1` |" in notes
@@ -397,3 +398,29 @@ def test_v021_notes_match_metadata_and_scope() -> None:
     assert "SHA256SUMS" in notes
     assert "> **Published stable release:** [v0.2.1]" in readme
     assert "docs/releases/v0.2.1.md" in readme
+
+
+def test_v030_rc_notes_match_metadata_and_state_the_breaking_change() -> None:
+    rc = (ROOT / "docs/releases/v0.3.0-rc.1.md").read_text()
+    readme = (ROOT / "README.md").read_text()
+    flat = " ".join(rc.split())
+    assert PROJECT_VERSION == "0.3.0rc1" and CURRENT_NIX_VERSION == "0.3.0pre1"
+    assert "| Git tag | `v0.3.0-rc.1`" in rc
+    assert f"`tsumgi=={PROJECT_VERSION}`" in rc
+    assert f"`{CURRENT_NIX_VERSION}`" in rc
+    assert "Published `v0.2.1`" in rc
+    # The rename and its breaking names are stated, with the way to move a host.
+    for name in ("services.tsumgi", "TSUMGI_*", "x_tsumgi", "tsumgi-decisions-v1", "tsumgi_revision"):
+        assert name in rc, name
+    assert "tsumgi-migrate-host" in rc and "tsumgi-repin-decision" in rc
+    assert "docs/host-migration.md" in readme and "docs/releases/v0.3.0-rc.1.md" in readme
+    # Honest about what was and was not exercised.
+    assert "has not yet been cut over in production" in flat
+    assert "No audio engine is qualified" in flat
+    assert "Epoch preparation has no release path yet" in flat
+    assert "does not update running services" in flat
+    assert "006_audio_epoch_fences.sql" in rc and "007_audio_epoch_preparations.sql" in rc
+    assert "refuses a database that is not at `007`" in flat
+    assert "SHA256SUMS" in rc
+    # The published stable line stays v0.2.1 until GA is promoted.
+    assert "> **Published stable release:** [v0.2.1]" in readme
