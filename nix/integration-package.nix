@@ -2,7 +2,7 @@
 
 stdenvNoCC.mkDerivation {
   pname = "tsumgi-integration";
-  version = "0.2.1";
+  version = "0.3.0pre1";
 
   src = ../.;
   dontBuild = true;
