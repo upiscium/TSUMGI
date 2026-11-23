@@ -59,13 +59,13 @@
             inherit core;
           };
           # The heavy llama.cpp build keeps the store-path name it had before the
-          # rename (`tsumgi-llama-decision-cuda-sm*`), so hosts that already
+          # rename (`astrumweaver-llama-decision-cuda-sm*`), so hosts that already
           # hold it do not recompile CUDA llama.cpp. Its metadata therefore sits under
-          # share/tsumgi; this alias republishes it under share/tsumgi, where the
+          # share/astrumweaver; this alias republishes it under share/tsumgi, where the
           # code reads it.
           metadata = cudaPkgs.runCommand "tsumgi-d1-decision-metadata-sm${cudaArch}" { } ''
             mkdir -p "$out/share/tsumgi"
-            cp ${core}/share/tsumgi/* "$out/share/tsumgi/"
+            cp ${core}/share/astrumweaver/* "$out/share/tsumgi/"
           '';
         in
         cudaPkgs.buildEnv {
