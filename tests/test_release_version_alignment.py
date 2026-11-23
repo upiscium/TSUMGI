@@ -1,4 +1,4 @@
-"""Validate the v0.1.3 GA tier while preserving immutable RC sources."""
+"""Validate the v0.2.1 stable tier while preserving historical release evidence."""
 import re
 import hashlib
 import tomllib
@@ -6,16 +6,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-# Only reviewed v0.1.3 GA metadata is accepted at the current source.
-# The prerelease variants remain frozen as historical tag artifacts.
+# Only the v0.2.1 patch release is accepted for the current source.
 EXPECTED_NIX_VERSION_BY_PYTHON = {
-    "0.1.3": "0.1.3",
+    "0.2.1": "0.2.1",
 }
 assert PROJECT_VERSION in EXPECTED_NIX_VERSION_BY_PYTHON, PROJECT_VERSION
 CURRENT_NIX_VERSION = EXPECTED_NIX_VERSION_BY_PYTHON[PROJECT_VERSION]
 
 # Only exact, real, quoted Nix attribute assignments count. A substring such
-# as 0.1.3pre2 or an extra comment must never satisfy the exact GA identity.
+# as 0.2.0pre2 or an extra comment must never satisfy the exact RC identity.
 EXPECTED_NIX_PRODUCT_ATTRIBUTES = {
     "nix/package.nix": [("version", CURRENT_NIX_VERSION)],
     "nix/integration-package.nix": [("version", CURRENT_NIX_VERSION)],
@@ -109,9 +108,9 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
 def test_rc_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "astrumweaver"
-    assert project["version"] == "0.1.3"
+    assert project["version"] == "0.2.1"
     assert project["version"] == PROJECT_VERSION
-    assert re.fullmatch(r"0\.1\.3", project["version"])
+    assert re.fullmatch(r"0\.2\.1", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
         _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
     assert (ROOT / "src/astrumweaver").is_dir()
@@ -271,7 +270,7 @@ def test_ga_release_notes_constrain_claims_and_publication() -> None:
     assert "v0.1.0-rc.1 was" not in readme  # README links to published RC, avoids stale preparation.
     # README must reflect the current published stable line and next
     # maintenance release instead of claiming v0.1.0 is still current.
-    assert "> **Published stable release:** [v0.1.3]" in readme
+    assert "> **Published stable release:** [v0.2.1]" in readme
     assert "> **Prior prereleases:**" in readme
     assert "v0.1.2" in readme
     assert "v0.1.0.md" in readme and "ga-qualification-v0.1.0.md" in readme
@@ -286,13 +285,11 @@ def test_ga_scope_does_not_imply_release_or_site_authorization() -> None:
     assert "does not establish publication" in notes
 
 
-def test_v013_ga_notes_and_rc_history_are_strictly_preserved() -> None:
+def test_v013_ga_notes_and_rc_history_remain_historical_releases() -> None:
     ga = (ROOT / "docs/releases/v0.1.3.md").read_text()
     rc2 = (ROOT / "docs/releases/v0.1.3-rc.2.md").read_text()
     rc1 = (ROOT / "docs/releases/v0.1.3-rc.1.md").read_text()
     readme = (ROOT / "README.md").read_text()
-    assert PROJECT_VERSION == "0.1.3"
-    assert CURRENT_NIX_VERSION == "0.1.3"
     assert "v0.1.3" in ga and "astrumweaver==0.1.3" in ga
     assert "| Nix Control, Worker, Installer and Integration | `0.1.3` |" in ga
     assert "0b25f1561ea51b3cf09eb0fb57a6e7a1c13710e6" in ga
@@ -303,7 +300,7 @@ def test_v013_ga_notes_and_rc_history_are_strictly_preserved() -> None:
     assert "opt-in" in ga.lower() and "not" in ga.lower()
     assert "v0.1.3-rc.2" in rc2 and "astrumweaver==0.1.3rc2" in rc2
     assert "0.1.3pre2" in rc2 and "v0.1.3-rc.1" in rc1
-    assert "> **Published stable release:** [v0.1.3]" in readme
+    assert "releases/tag/v0.1.3)" in readme
     assert "docs/releases/v0.1.3.md" in readme
     assert "docs/releases/v0.1.3-rc.2.md" in readme
     frozen_docs = {
@@ -311,6 +308,92 @@ def test_v013_ga_notes_and_rc_history_are_strictly_preserved() -> None:
         "docs/releases/v0.1.2.md": "75eea6f44b5b691a5d4d6478411cf8fc83393ee8e7fb171e9e02a52bc3c1ab5b",
         "docs/releases/v0.1.3-rc.1.md": "2341640d9848c523a0ffdf7ed7136df906c18368c3d26b7c2fb707b9e1dfe0cf",
         "docs/releases/v0.1.3-rc.2.md": "bf884ffe46edab399ccaa2f54d8089b005ded6ad78fefa8d6c8bf1820b2f3775",
+        "docs/releases/v0.1.3.md": "4830378533124f2fe29263b321bf9db42ffd348a80b1e48a58b927536af213f4",
+        "docs/releases/v0.2.0-rc.1.md": "e41861fae2bf631f70681aa4956490db8994d732fda076bb6f4c78730d4abf92",
+        "docs/releases/v0.2.0-rc.2.md": "26cbf9e98c4166fbab32977b8ccc018d32272134708531d29ee8f19c1d4a35b7",
+        "docs/releases/v0.2.0.md": "91a34b6e28686b4f0d98f57483a95849640a85d070c7c173fe4b307e96578fe5",
     }
     for path, digest in frozen_docs.items():
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
+
+
+def test_v020_rc1_notes_remain_a_historical_candidate() -> None:
+    rc = (ROOT / "docs/releases/v0.2.0-rc.1.md").read_text()
+    readme = (ROOT / "README.md").read_text()
+    assert "| Git tag | `v0.2.0-rc.1`" in rc
+    assert "`astrumweaver==0.2.0rc1`" in rc
+    assert "`0.2.0pre1`" in rc
+    assert "Published `v0.1.3`" in rc
+    # The breaking Bonsai removal and the unchanged migrations are stated.
+    assert "bonsai2-pq2" in rc and "PR #265" in rc
+    assert "`000`–`005` are unchanged since v0.1.3" in " ".join(rc.split())
+    for pr in ("#261", "#266", "#267", "#268", "#269", "#270"):
+        assert pr in rc, pr
+    assert "No audio engine is qualified" in " ".join(rc.split())
+    assert "does not update running services" in rc
+    assert "SHA256SUMS" in rc
+    assert "docs/releases/v0.2.0-rc.1.md" in readme
+
+
+def test_v020_rc2_notes_remain_a_historical_candidate() -> None:
+    rc = (ROOT / "docs/releases/v0.2.0-rc.2.md").read_text()
+    readme = (ROOT / "README.md").read_text()
+    flat = " ".join(rc.split())
+    assert "| Git tag | `v0.2.0-rc.2`" in rc
+    assert "`astrumweaver==0.2.0rc2`" in rc
+    assert "`0.2.0pre2`" in rc
+    assert "Published `v0.1.3`" in rc and "Published `v0.2.0-rc.1`" in rc
+    assert "92f023d0c2746150845d43e5d097bd1c9549e83c" in rc
+    # rc.1's breaking Bonsai removal still applies to this candidate.
+    assert "bonsai2-pq2" in rc and "PR #265" in rc
+    for pr in ("#272", "#273", "#274"):
+        assert pr in rc, pr
+    assert "`000`–`005` are unchanged since v0.1.3" in flat
+    assert "No audio engine is qualified" in flat
+    assert "does not update running services" in rc
+    assert "`admission_wait_seconds` is off unless configured" in rc
+    assert "SHA256SUMS" in rc
+    assert "docs/releases/v0.2.0-rc.2.md" in readme
+
+
+def test_v020_ga_notes_remain_a_historical_release() -> None:
+    ga = (ROOT / "docs/releases/v0.2.0.md").read_text()
+    readme = (ROOT / "README.md").read_text()
+    flat = " ".join(ga.split())
+    assert "| Intended Git tag | `v0.2.0`" in ga
+    assert "`astrumweaver==0.2.0`" in ga
+    assert "| Nix Control, Worker, Installer and Integration | `0.2.0` |" in ga
+    assert "Published `v0.1.3`" in ga
+    assert "`v0.2.0-rc.1` and `v0.2.0-rc.2`" in ga
+    # GA is a metadata-only promotion of the exact published rc.2 source.
+    assert "94434a652f76ba088d1e85f58b76c7ab8e4ae05d" in ga
+    assert "version-and-release-metadata-only" in ga
+    assert "bonsai2-pq2" in ga and "#265" in ga
+    for pr in ("#266", "#268", "#269", "#270", "#272", "#273", "#274"):
+        assert pr in ga, pr
+    assert "`000`–`005` are unchanged since v0.1.3" in flat
+    assert "No audio engine is qualified" in flat
+    assert "does not update running services" in flat
+    assert "SHA256SUMS" in ga
+    assert "docs/releases/v0.2.0.md" in readme
+
+
+def test_v021_notes_match_metadata_and_scope() -> None:
+    notes = (ROOT / "docs/releases/v0.2.1.md").read_text()
+    readme = (ROOT / "README.md").read_text()
+    flat = " ".join(notes.split())
+    assert PROJECT_VERSION == "0.2.1" and CURRENT_NIX_VERSION == "0.2.1"
+    assert "| Intended Git tag | `v0.2.1`" in notes
+    assert "`astrumweaver==0.2.1`" in notes
+    assert "| Nix Control, Worker, Installer and Integration | `0.2.1` |" in notes
+    assert "Published `v0.2.0`" in notes
+    assert "8e6633668c33d0058279f11613a8dcf8a1b40593" in notes
+    assert "PR #277" in notes and "psycopg-pool" in notes
+    # Upgrades from v0.1.x still take v0.2.0's breaking change.
+    assert "bonsai2-pq2" in notes and "#265" in notes
+    assert "`000`–`005` are unchanged since v0.1.3" in flat
+    assert "No audio engine is qualified" in flat
+    assert "does not update running services" in flat
+    assert "SHA256SUMS" in notes
+    assert "> **Published stable release:** [v0.2.1]" in readme
+    assert "docs/releases/v0.2.1.md" in readme

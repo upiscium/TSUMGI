@@ -2,7 +2,7 @@
 
 stdenvNoCC.mkDerivation {
   pname = "astrumweaver-integration";
-  version = "0.1.3";
+  version = "0.2.1";
 
   src = ../.;
   dontBuild = true;

@@ -291,7 +291,10 @@ async def test_opt_in_get_only_and_existing_catalog_contracts_unchanged(catalog)
 
 @pytest.mark.asyncio
 async def test_existing_models_route_keeps_non_audio_no_auth_semantics(catalog):
-    deployment = make_profile("model-tts").resolved.deployment
+    # The chat adapter must run on its own runtime provider.
+    deployment = replace(
+        make_profile("model-tts").resolved.deployment, provider_id="llama-cpp"
+    )
     contract = ServingContract(
         deployment_revision=deployment.revision, capability="llm.chat",
         operation_schema=CHAT_OPERATION_SCHEMA, validation_evidence_sha256=digest("8"),

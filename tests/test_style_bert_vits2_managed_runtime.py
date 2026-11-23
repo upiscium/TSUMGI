@@ -454,6 +454,41 @@ async def test_cached_executor_does_not_admit_job_after_stop(tmp_path):
         await cached.execute_audio(job(), FakeMedia())
 
 
+async def test_cancel_during_spawn_keeps_handle_until_child_reaped(tmp_path, monkeypatch):
+    spec = replace(make_spec(tmp_path), boot_timeout_seconds=2, stop_timeout_seconds=0.1)
+    runtime = StyleBertOwnedManagedRuntime(config=spec)
+    spawn = asyncio.create_subprocess_exec
+    child_exists, allow_return = asyncio.Event(), asyncio.Event()
+    children = []
+
+    async def delayed_spawn(*args, **kwargs):
+        child = await spawn(*args, **kwargs)
+        children.append(child)
+        child_exists.set()
+        await allow_return.wait()
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    start = asyncio.create_task(runtime.start())
+    try:
+        await asyncio.wait_for(child_exists.wait(), 2)
+        assert (await runtime.health()).state is RuntimeHealthState.STARTING
+        start.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(start, 1)
+        with pytest.raises(StyleBertRuntimeFailure, match="cleanup_uncertain"):
+            await runtime.stop()
+        assert not (await runtime.health()).ready
+        with pytest.raises(StyleBertRuntimeFailure):
+            await runtime.start()
+    finally:
+        allow_return.set()
+        await runtime.release()
+        await asyncio.gather(start, return_exceptions=True)
+    assert len(children) == 1 and children[0].returncode is not None
+    assert runtime._proc is None and runtime._pending_spawn_cleanup is None
+
+
 @pytest.mark.asyncio
 async def test_late_stage_receipt_after_cancel_cannot_publish_success(tmp_path):
     runtime = StyleBertOwnedManagedRuntime(config=make_spec(tmp_path))

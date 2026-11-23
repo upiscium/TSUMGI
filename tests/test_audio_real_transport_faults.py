@@ -70,12 +70,13 @@ class _TrackedUpload:
 
 
 @contextmanager
-def _live_control(app):
+def _live_control(app, *, capture_access=False):
     """Only bind an ephemeral 127.0.0.1 socket; release it after the test."""
     server = uvicorn.Server(
         uvicorn.Config(
             app, host="127.0.0.1", port=0, lifespan="off",
-            log_level="critical", access_log=False, http="h11",
+            http="h11", access_log=capture_access,
+            **({"log_config": None} if capture_access else {"log_level": "critical"}),
         )
     )
     thread = Thread(target=server.run, daemon=True, name="tsumgi-audio-http-test")
@@ -409,3 +410,6 @@ def test_real_postgres_commit_ack_lost_after_successful_commit(
                 job_id, worker_id="other", attempt=claimed.attempts,
                 lease_token=claimed.lease_token, runtime_instance_epoch=EPOCH,
             )
+        # Pooled connections stay open by design; close them before the
+        # proxy checks that every proxied connection has ended.
+        fault_repo.close()

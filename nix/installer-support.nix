@@ -4,12 +4,13 @@ let
   pythonEnv = python312.withPackages (_: [
     astrumweaver
     python312Packages.psycopg
+    python312Packages.psycopg-pool
   ]);
   controlCli = callPackage ./control-cli-env.nix { inherit astrumweaver; };
 
   migrations = stdenvNoCC.mkDerivation {
     pname = "astrumweaver-installer-assets";
-    version = "0.1.3";
+    version = "0.2.1";
     src = ../.;
     dontBuild = true;
     installPhase = ''
@@ -18,7 +19,7 @@ let
     '';
   };
   base = buildEnv {
-    name = "astrumweaver-installer-support-base-0.1.3";
+    name = "astrumweaver-installer-support-base-0.2.1";
     paths = [
       controlCli
       migrations
@@ -28,7 +29,7 @@ let
   };
 in
 stdenvNoCC.mkDerivation {
-  name = "astrumweaver-installer-support-0.1.3";
+  name = "astrumweaver-installer-support-0.2.1";
   dontUnpack = true;
   installPhase = ''
     mkdir -p "$out"

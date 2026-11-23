@@ -43,6 +43,8 @@ from ..gpu_mapping import (
     verify_isolated_gpu_access,
 )
 from .client import ClaimedJob, ControlClient, ControlTransportError
+from .event_coalescing import CoalescingJobEventSink
+from .telemetry import TELEMETRY_METADATA_KEY, WorkerTelemetry
 from .supervision import RuntimeHealthSupervisor, RuntimeUnavailable
 
 
@@ -321,6 +323,10 @@ def require_executor_serving_features(
                 "executor does not support advertised serving features for "
                 f"{contract.capability}: " + ", ".join(sorted(missing))
             )
+        # Optional: an executor that enforces limits itself checks it can honor them.
+        validate = getattr(executor, "validate_serving_contract", None)
+        if callable(validate):
+            validate(contract)
 
 
 def load_executor(specifier: str, config: Mapping[str, Any] | None = None) -> JobExecutor:
@@ -342,15 +348,35 @@ def load_executor(specifier: str, config: Mapping[str, Any] | None = None) -> Jo
     return executor
 
 
-class _WorkerJobEventSink:
-    def __init__(self, runtime: "WorkerRuntime", claimed: ClaimedJob) -> None:
-        self._runtime = runtime
-        self._claimed = claimed
+async def _execute_stream_coalesced(
+    runtime: "WorkerRuntime",
+    executor: StreamingJobExecutor,
+    request: JobRequest,
+    claimed: ClaimedJob,
+) -> JobResult:
+    """Run a streaming executor with at most one event publish in flight.
 
-    async def emit(self, event: JobEvent) -> None:
-        if not isinstance(event, JobEvent):
-            raise TypeError("streaming executor must emit JobEvent values")
-        await self._runtime._publish_job_event(self._claimed, event)
+    Chunks that arrive while a publish is pending merge into the next event,
+    so delivery keeps up with decode speed. Every queued event is published
+    before the result returns, so the terminal write still follows them.
+    """
+    sink = CoalescingJobEventSink(
+        lambda event: runtime._publish_job_event(claimed, event)
+    )
+    try:
+        try:
+            result = await executor.execute_stream(request, sink)
+        except Exception:
+            # Partial output still reaches Control before the failure is
+            # reported; a publish failure must not mask the executor's error.
+            # Cancellation skips this and drops queued events in aclose().
+            with contextlib.suppress(Exception):
+                await sink.flush()
+            raise
+        await sink.flush()
+        return result
+    finally:
+        await sink.aclose()
 
 
 class WorkerRuntime:
@@ -372,6 +398,7 @@ class WorkerRuntime:
         recovery_retry_interval_seconds: float = 30.0,
         runtime_supervisor: RuntimeHealthSupervisor | None = None,
         serving: WorkerServingAdvertisement | None = None,
+        telemetry: WorkerTelemetry | None = None,
     ) -> None:
         if max_concurrency != 1:
             raise ValueError("v1 WorkerRuntime currently requires max_concurrency=1")
@@ -394,6 +421,8 @@ class WorkerRuntime:
         if spec.capabilities & _AUDIO_CAPABILITIES and serving is None:
             raise ValueError("audio Worker requires a current serving advertisement")
         self.serving = serving
+        # Optional live host/GPU snapshot attached to heartbeats.
+        self.telemetry = telemetry
         self.poll_interval_seconds = poll_interval_seconds
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self.recovery_retry_interval_seconds = recovery_retry_interval_seconds
@@ -557,6 +586,7 @@ class WorkerRuntime:
             and self._control_state is not WorkerState.OFFLINE
             else None
         )
+        snapshot = None if self.telemetry is None else self.telemetry.latest()
         try:
             record = await self.client.heartbeat(
                 self.spec.worker_id,
@@ -567,6 +597,9 @@ class WorkerRuntime:
                     None
                     if self.serving is None
                     else self.serving.runtime_instance.epoch
+                ),
+                metadata=(
+                    None if snapshot is None else {TELEMETRY_METADATA_KEY: snapshot}
                 ),
             )
             self._acknowledge_control(record, sent_at=sent_at)
@@ -872,9 +905,8 @@ class WorkerRuntime:
         if is_audio:
             execution_call = self._execute_audio(claimed, executor_request)
         elif isinstance(self.executor, StreamingJobExecutor):
-            execution_call = self.executor.execute_stream(
-                executor_request,
-                _WorkerJobEventSink(self, claimed),
+            execution_call = _execute_stream_coalesced(
+                self, self.executor, executor_request, claimed
             )
         else:
             execution_call = self.executor.execute(executor_request)

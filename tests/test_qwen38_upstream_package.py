@@ -29,7 +29,7 @@ def test_production_doc_includes_model_sha_and_rollback_gate() -> None:
     assert "Control" in doc and "rollback" in doc
 
 
-def test_qwen38_and_bonsai_profiles_coexist_after_main_integration() -> None:
+def test_qwen38_profile_coexists_with_the_default_after_main_integration() -> None:
     """All opt-in runtimes remain independent of the legacy default profile."""
     root = Path(__file__).resolve().parents[1]
     flake = (root / "flake.nix").read_text()
@@ -43,10 +43,6 @@ def test_qwen38_and_bonsai_profiles_coexist_after_main_integration() -> None:
             "runtime-qwen38-llama-cpp",
             "astrumweaver-runtime-qwen38",
         ),
-        "bonsai-llama-cpp": (
-            "runtime-bonsai-llama-cpp",
-            "astrumweaver-runtime-bonsai",
-        ),
     }
     # This source contract is supplemented by the real Nix flake evaluation,
     # Installer build and CLI status/invalid-package smoke in PR acceptance.
@@ -58,7 +54,7 @@ def test_qwen38_and_bonsai_profiles_coexist_after_main_integration() -> None:
         for action in ("verify package", "ensure", "upgrade", "rollback", "status"):
             assert f"{action} {package}" in manager
     assert "runtime-qwen38-llama-cpp = runtimeQwen38;" in flake
-    assert "runtime-bonsai-llama-cpp = runtimeBonsai;" in flake
+    assert "runtimeBonsai" not in flake and "bonsai" not in manager.lower()
     # The shared selector must retain separate case arms and the fail-closed
     # default for an unsupported runtime, not silently substitute a profile.
     selector = manager.split("require_llama_cpp() {", 1)[1].split(

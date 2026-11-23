@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import signal
 import tomllib
 from typing import Any
@@ -25,6 +26,8 @@ from ..gateway.decision import DECISION_OPERATION_SCHEMA
 from ..runtime.providers.dual_llama_cpp import (
     DUAL_LLAMA_CPP_PROVIDER_ID, DualLlamaCppProviderConfig,
 )
+from ..runtime.providers.voicevox import VOICEVOX_PROVIDER_ID
+from ..runtime.providers.style_bert_vits2 import STYLE_BERT_VITS2_PROVIDER_ID
 from ..runtime import (
     RuntimeDeploymentSpec,
     RuntimeHealth,
@@ -36,6 +39,7 @@ from ..runtime import (
 from .client import ControlClient
 from .health import create_health_app
 from .supervision import RuntimeHealthSupervisor
+from .telemetry import WorkerTelemetry, runtime_summary
 from .runtime import (
     WorkerRuntime,
     load_executor,
@@ -47,15 +51,42 @@ from .runtime import (
 )
 
 
+_OWNED_CPU_SPEECH = frozenset({VOICEVOX_PROVIDER_ID, STYLE_BERT_VITS2_PROVIDER_ID})
+
+
 def _load_toml(path: str) -> dict[str, Any]:
     with open(path, "rb") as handle:
         return tomllib.load(handle)
 
 
+def _manifest_json(handle):
+    duplicate = False
+
+    def object_pairs(pairs):
+        nonlocal duplicate
+        obj = dict(pairs)
+        duplicate |= len(obj) != len(pairs)
+        return obj
+
+    data = json.load(handle, object_pairs_hook=object_pairs)
+    return data, duplicate
+
+
+def _canonical_subset(actual, expected) -> bool:
+    """Optional fields may be omitted, not silently ignored or type-coerced."""
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() <= expected.keys() and all(
+            _canonical_subset(v, expected[k]) for k, v in actual.items()
+        )
+    return actual == expected
+
+
 def _load_runtime_deployment(path: str) -> RuntimeDeploymentSpec:
     try:
         with open(path, encoding="utf-8") as handle:
-            value = json.load(handle)
+            value, duplicate = _manifest_json(handle)
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(
             f"cannot load runtime deployment manifest: {path}"
@@ -63,7 +94,12 @@ def _load_runtime_deployment(path: str) -> RuntimeDeploymentSpec:
     if not isinstance(value, dict):
         raise RuntimeError("runtime deployment manifest must contain an object")
     try:
-        return RuntimeDeploymentSpec.from_dict(value)
+        deployment = RuntimeDeploymentSpec.from_dict(value)
+        if deployment.provider_id in _OWNED_CPU_SPEECH and (
+            duplicate or not _canonical_subset(value, deployment.to_dict())
+        ):
+            raise ValueError("ambiguous owned speech runtime declaration")
+        return deployment
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("runtime deployment manifest is invalid") from exc
 
@@ -71,13 +107,20 @@ def _load_runtime_deployment(path: str) -> RuntimeDeploymentSpec:
 def _load_serving_deployment(path: str) -> ServingDeploymentDeclaration:
     try:
         with open(path, encoding="utf-8") as handle:
-            value = json.load(handle)
+            value, duplicate = _manifest_json(handle)
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError("cannot load serving deployment manifest") from exc
     if not isinstance(value, dict):
         raise RuntimeError("serving deployment manifest must contain an object")
     try:
-        return ServingDeploymentDeclaration.from_dict(value)
+        serving = ServingDeploymentDeclaration.from_dict(value)
+        if serving.deployment.provider_id in _OWNED_CPU_SPEECH and (
+            duplicate or value.keys() - {"schema_version", "deployment", "contracts"}
+            or any(type(item) is not dict or item.keys() != {"contract", "serving_contract_revision"}
+                   for item in value["contracts"])
+        ):
+            raise ValueError("ambiguous owned speech serving declaration")
+        return serving
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("serving deployment manifest is invalid") from exc
 
@@ -144,6 +187,34 @@ def _build_spec(section: dict[str, Any]) -> WorkerSpec:
         accelerators=accelerators,
         capabilities=capabilities,
         labels=labels,
+    )
+
+
+def _build_telemetry(
+    worker_section: dict[str, Any],
+    spec: WorkerSpec,
+    deployment: RuntimeDeploymentSpec | None,
+) -> WorkerTelemetry | None:
+    """Heartbeat telemetry; ``telemetry_interval_seconds = 0`` disables it."""
+    interval = float(worker_section.get("telemetry_interval_seconds", 30.0))
+    if interval <= 0:
+        return None
+    # Display-only: anything missing from the deployment stays out of the
+    # summary instead of stopping the Worker.
+    runtime = runtime_summary(
+        getattr(deployment, "provider_id", None),
+        getattr(deployment, "provider_config", None),
+        getattr(getattr(getattr(deployment, "demand", None), "model", None), "model_ref", None),
+    )
+    return WorkerTelemetry(
+        gpu_uuids=spec.gpu_uuids,
+        runtime=runtime,
+        interval_seconds=interval,
+        # Same resolution as the GPU preflight.
+        nvidia_smi=os.environ.get(
+            "ASTRUMWEAVER_NVIDIA_SMI",
+            str(worker_section.get("nvidia_smi_command", "nvidia-smi")),
+        ),
     )
 
 
@@ -273,6 +344,22 @@ def _require_runtime_concurrency(
         raise RuntimeError("dual runtime requires max_concurrency=1")
 
 
+def _require_owned_speech_worker(deployment, declaration, spec, section) -> None:
+    # Explicit owned CPU lanes only. Never substitute the other synth provider.
+    provider = getattr(deployment, "provider_id", None)
+    serving_id = getattr(getattr(declaration, "deployment", None), "provider_id", None)
+    if provider not in _OWNED_CPU_SPEECH and serving_id not in _OWNED_CPU_SPEECH:
+        return
+    slots = section.get("max_concurrency", 1)
+    control = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", str(section["control_url"]))
+    if (provider != serving_id or spec.capabilities != {"audio.synthesize"}
+            or spec.resources != ResourceShape() or spec.gpu_uuids or spec.accelerators
+            or type(slots) is not int or slots != 1
+            or control is None or int(control[1]) > 65535
+            or section.get("health_host", "127.0.0.1") != "127.0.0.1"):
+        raise RuntimeError("owned speech requires matching manifests and a dedicated loopback CPU Worker")
+
+
 async def run_worker(
     config_path: str,
     runtime_manifest_path: str | None = None,
@@ -320,6 +407,8 @@ async def run_worker(
     _require_audio_managed_only(
         spec, executor_factory=executor_factory, runtime_manifest=runtime_manifest,
     )
+    deployment = _load_runtime_deployment(runtime_manifest) if runtime_manifest else None
+    _require_owned_speech_worker(deployment, serving_declaration, spec, worker_section)
     _run_gpu_preflight(spec, worker_section)
 
     client = ControlClient(
@@ -329,11 +418,9 @@ async def run_worker(
     )
     runtime_manager: RuntimeLifecycleManager | None = None
     supervisor: RuntimeHealthSupervisor | None = None
-    deployment: RuntimeDeploymentSpec | None = None
 
     try:
-        if runtime_manifest:
-            deployment = _load_runtime_deployment(runtime_manifest)
+        if deployment is not None:
             _require_runtime_concurrency(
                 deployment, int(worker_section.get("max_concurrency", 1)),
             )
@@ -342,6 +429,7 @@ async def run_worker(
                 deployment,
                 worker=spec,
                 host=discover_runtime_host_facts(),
+                serving=serving_declaration,
             )
             runtime_manager = RuntimeLifecycleManager(managed_runtime)
             health = await runtime_manager.ensure_ready(
@@ -389,7 +477,9 @@ async def run_worker(
             heartbeat_interval_seconds=float(
                 worker_section.get("heartbeat_interval_seconds", 5.0)
             ),
+            telemetry=_build_telemetry(worker_section, spec, deployment),
         )
+        telemetry_stop = asyncio.Event()
 
         health_config = uvicorn.Config(
             create_health_app(worker_runtime),
@@ -448,6 +538,11 @@ async def run_worker(
             drain_signal_loop(),
             name="astrumweaver-worker-drain-signal",
         )
+        telemetry = getattr(worker_runtime, "telemetry", None)
+        telemetry_task = asyncio.create_task(
+            telemetry.run(telemetry_stop) if telemetry is not None else telemetry_stop.wait(),
+            name="astrumweaver-worker-telemetry",
+        )
 
         try:
             done, _ = await asyncio.wait(
@@ -501,7 +596,8 @@ async def run_worker(
             # sibling health server or a claimed execution alive in-process.
             worker_runtime.request_stop()
             health_server.should_exit = True
-            tasks = (worker_task, health_task, signal_task, drain_task)
+            telemetry_stop.set()
+            tasks = (worker_task, health_task, signal_task, drain_task, telemetry_task)
             for task in tasks:
                 if not task.done():
                     task.cancel()

@@ -7,7 +7,10 @@ from hashlib import sha256
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from math import ceil
+import atexit
 import os
+import threading
+import weakref
 from typing import Any
 from uuid import uuid4
 
@@ -67,6 +70,11 @@ except ImportError:  # pragma: no cover - optional dependency path
     dict_row = None  # type: ignore[assignment]
     Jsonb = None  # type: ignore[assignment,misc]
 
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:  # pragma: no cover - falls back to one connection per call
+    ConnectionPool = None  # type: ignore[assignment,misc]
+
 
 def _json(value: Any) -> Any:
     return Jsonb(value) if Jsonb is not None else value
@@ -75,6 +83,12 @@ def _json(value: Any) -> Any:
 def _json_optional(value: Any) -> Any:
     """Persist absent optional JSON as SQL NULL, not JSONB null."""
     return None if value is None else _json(value)
+
+
+def _close_pool(ref: "weakref.ref[Any]") -> None:
+    pool = ref()
+    if pool is not None:
+        pool.close()
 
 
 # Separate advisory namespaces prevent Worker identity locks and GPU locks
@@ -187,9 +201,22 @@ class PostgresControlRepository:
         event_max_payload_bytes: int = 65536,
         event_max_total_bytes: int = 4 * 1024 * 1024,
         event_max_read: int = 512,
+        pool_min_size: int = 1,
+        pool_max_size: int = 10,
+        pool_timeout_seconds: float = 2.0,
     ) -> None:
         if not database_url:
             raise ValueError("database_url is required")
+        if type(pool_min_size) is not int or pool_min_size < 0:
+            raise ValueError("pool_min_size must be a non-negative integer")
+        if type(pool_max_size) is not int or pool_max_size < max(1, pool_min_size):
+            raise ValueError("pool_max_size must be a positive integer >= pool_min_size")
+        if (
+            isinstance(pool_timeout_seconds, bool)
+            or not isinstance(pool_timeout_seconds, (int, float))
+            or not 0 < pool_timeout_seconds < float("inf")
+        ):
+            raise ValueError("pool_timeout_seconds must be finite and positive")
         for value, name in (
             (worker_ttl_seconds, "worker_ttl_seconds"),
             (lease_seconds, "lease_seconds"),
@@ -207,6 +234,54 @@ class PostgresControlRepository:
         self.event_max_payload_bytes = event_max_payload_bytes
         self.event_max_total_bytes = event_max_total_bytes
         self.event_max_read = event_max_read
+        # Connecting costs ~40-50 ms per call in production; every claim,
+        # event, heartbeat and Gateway poll paid it. Calls without an
+        # admission deadline borrow a pooled connection instead. Bounded
+        # admissions keep a fresh connection with their own connect timeout.
+        # The short wait keeps an unreachable database a fast
+        # StorageUnavailable, well inside the Worker client's 10 s timeout.
+        self.pool_min_size = pool_min_size
+        self.pool_max_size = pool_max_size
+        self.pool_timeout_seconds = float(pool_timeout_seconds)
+        self._pool: Any = None
+        self._pool_closed = False
+        self._pool_lock = threading.Lock()
+
+    def _get_pool(self) -> Any:
+        if ConnectionPool is None:
+            return None
+        with self._pool_lock:
+            if self._pool_closed:
+                # After close(), late calls (for example a maintenance thread
+                # still finishing) use a fresh connection, not a new pool.
+                return None
+            if self._pool is None:
+                pool = ConnectionPool(
+                    self.database_url,
+                    kwargs={"row_factory": dict_row},
+                    min_size=self.pool_min_size,
+                    max_size=self.pool_max_size,
+                    timeout=self.pool_timeout_seconds,
+                    # Hand out only live connections: a restarted server or a
+                    # dropped TCP session is replaced, not returned.
+                    check=ConnectionPool.check_connection,
+                    open=False,
+                    name="astrumweaver-control",
+                )
+                pool.open(wait=False)
+                # Close before interpreter finalization, where the pool's
+                # own finalizer can no longer join its worker threads.
+                atexit.register(_close_pool, weakref.ref(pool))
+                self._pool = pool
+            return self._pool
+
+    def close(self) -> None:
+        """Close pooled connections. Later calls connect per call."""
+        with self._pool_lock:
+            pool, self._pool = self._pool, None
+            self._pool_closed = True
+        if pool is not None:
+            pool.close()
 
     @contextmanager
     def _connection(
@@ -252,12 +327,17 @@ class PostgresControlRepository:
                 raise StorageUnavailable(
                     "bounded PostgreSQL admission configuration is invalid"
                 ) from exc
+        pool = self._get_pool() if deadline is None else None
         try:
-            connection = psycopg.connect(conninfo, row_factory=dict_row)
+            if pool is not None:
+                connection = pool.getconn(timeout=self.pool_timeout_seconds)
+            else:
+                connection = psycopg.connect(conninfo, row_factory=dict_row)
         except Exception as exc:
             if deadline is not None and utc_now() >= deadline:
                 raise DeadlineExceededError("chat admission connection deadline expired") from exc
             raise StorageUnavailable("postgresql is unavailable") from exc
+        ready = False
         try:
             if deadline is not None:
                 # PostgreSQL 17 is needed for the transaction-wide timeout.
@@ -335,9 +415,24 @@ class PostgresControlRepository:
                 if after >= deadline or db_clock >= deadline:
                     raise DeadlineExceededError("chat admission deadline expired")
                 connection.rollback()
+            ready = True
             yield connection
         finally:
-            connection.close()
+            if pool is None:
+                connection.close()
+            elif not ready:
+                # A connection that failed its checks never goes back for reuse.
+                connection.close()
+                pool.putconn(connection)
+            else:
+                # Same outcome as closing: uncommitted work is discarded.
+                # A connection that cannot roll back is returned broken and
+                # the pool discards it.
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+                pool.putconn(connection)
 
     @contextmanager
     def _transaction(
@@ -680,6 +775,12 @@ class PostgresControlRepository:
         if row is None:
             raise NotFoundError(f"worker not found: {worker_id}")
         return self._worker(row)
+
+    def list_workers(self) -> list[WorkerRecord]:
+        """Every registered Worker (any state), ordered by id."""
+        with self._connection() as connection:
+            rows = connection.execute("SELECT * FROM workers ORDER BY id").fetchall()
+        return [self._worker(row) for row in rows]
 
     def set_worker_state(
         self,

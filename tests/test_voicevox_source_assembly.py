@@ -93,6 +93,7 @@ def test_disabled_is_constant_inert_and_never_touches_candidate(monkeypatch):
 def test_valid_static_review_redacts_private_metadata_and_preserves_stop_gates(
     monkeypatch,
 ):
+    registry_before = dict(_PROVIDER_TYPES)
     intent = static_intent()
     review = review_voicevox_source_assembly(enabled=True, intent=intent)
     assert review.enabled and review.status == "review_only_blocked"
@@ -124,8 +125,7 @@ def test_valid_static_review_redacts_private_metadata_and_preserves_stop_gates(
         assert secret not in repr(review)
         assert secret not in repr(intent)
 
-    assert "voicevox" not in _PROVIDER_TYPES
-    assert "style-bert-vits2" not in _PROVIDER_TYPES
+    assert dict(_PROVIDER_TYPES) == registry_before
 
     # Assembly construction is inert: no file hashing, socket or subprocess.
     def forbidden(*_args, **_kwargs):
@@ -146,6 +146,17 @@ def test_drifted_mutable_review_intent_fails_before_runtime_construction():
     object.__setattr__(intent, "profile_id", "changed-after-review")
     with pytest.raises(VoicevoxSourceAssemblyError, match="source assembly review"):
         review.compose_disposable_source_runtime()
+
+
+@pytest.mark.parametrize("option", ["private_home", "strict_style_identity"])
+def test_disposable_review_does_not_accept_manifest_only_options(option):
+    intent = static_intent()
+    if option == "private_home":
+        intent = replace(intent, launch=replace(intent.launch, private_home="/private/engine-home"))
+    else:
+        intent = replace(intent, http=replace(intent.http, strict_style_identity=("speaker", "style", "type")))
+    with pytest.raises(VoicevoxSourceAssemblyError):
+        review_voicevox_source_assembly(enabled=True, intent=intent)
 
 
 @pytest.mark.parametrize(
@@ -433,7 +444,8 @@ def real_intent(tmp_path: Path) -> VoicevoxSourceAssemblyIntent:
 
 
 @pytest.mark.asyncio
-async def test_real_disposable_linux_http_wav_roundtrip_no_global_registry(tmp_path):
+async def test_real_disposable_linux_http_wav_roundtrip_preserves_registry(tmp_path):
+    registry_before = dict(_PROVIDER_TYPES)
     intent = real_intent(tmp_path)
     review = review_voicevox_source_assembly(enabled=True, intent=intent)
     assert not review.can_apply
@@ -468,7 +480,7 @@ async def test_real_disposable_linux_http_wav_roundtrip_no_global_registry(tmp_p
     finally:
         await runtime.release()
     assert not (await runtime.health()).ready
-    assert "voicevox" not in _PROVIDER_TYPES
+    assert dict(_PROVIDER_TYPES) == registry_before
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from ..contracts import WorkerSpec
+from ..serving import ServingDeploymentDeclaration
 from .contracts import (
     ExecutionDemand,
     GPUTopology,
@@ -31,6 +32,7 @@ from .providers import (
     FREETOKEN_PROVIDER_ID,
     LLAMA_CPP_PROVIDER_ID,
     OLLAMA_PROVIDER_ID,
+    STRATA_PROVIDER_ID,
     VLLM_PROVIDER_ID,
     ExLlamaV3Provider,
     ExLlamaV3ProviderConfig,
@@ -40,8 +42,14 @@ from .providers import (
     LlamaCppProviderConfig,
     OllamaProvider,
     OllamaProviderConfig,
+    StrataProvider,
+    StrataProviderConfig,
     VllmProvider,
     VllmProviderConfig,
+)
+from .providers.voicevox_manifest import VOICEVOX_PROVIDER_ID, VoicevoxProvider, VoicevoxProviderConfig
+from .providers.style_bert_vits2_manifest import (
+    STYLE_BERT_VITS2_PROVIDER_ID, StyleBertManifestConfig, StyleBertManifestProvider,
 )
 
 
@@ -242,6 +250,8 @@ _PROVIDER_TYPES: Mapping[
     str,
     tuple[type[Any], type[Any]],
 ] = {
+    VOICEVOX_PROVIDER_ID: (VoicevoxProvider, VoicevoxProviderConfig),
+    STYLE_BERT_VITS2_PROVIDER_ID: (StyleBertManifestProvider, StyleBertManifestConfig),
     DUAL_LLAMA_CPP_PROVIDER_ID: (DualLlamaCppProvider, DualLlamaCppProviderConfig),
     OLLAMA_PROVIDER_ID: (OllamaProvider, OllamaProviderConfig),
     LLAMA_CPP_PROVIDER_ID: (
@@ -257,6 +267,7 @@ _PROVIDER_TYPES: Mapping[
         ExLlamaV3Provider,
         ExLlamaV3ProviderConfig,
     ),
+    STRATA_PROVIDER_ID: (StrataProvider, StrataProviderConfig),
 }
 
 
@@ -308,7 +319,14 @@ def provider_from_deployment(
             f"unsupported runtime provider: {deployment.provider_id}"
         )
     provider_type, config_type = entry
-    config = config_type(**dict(deployment.provider_config))
+    try:
+        config = config_type(**dict(deployment.provider_config))
+    except (TypeError, ValueError):
+        if provider_type is VoicevoxProvider:
+            raise ValueError("VOICEVOX manifest configuration is invalid") from None
+        if provider_type is StyleBertManifestProvider:
+            raise ValueError("Style-Bert-VITS2 manifest configuration is invalid") from None
+        raise
     return provider_type(config)
 
 
@@ -347,6 +365,7 @@ def managed_runtime_from_deployment(
     *,
     worker: WorkerSpec,
     host: RuntimeHostFacts,
+    serving: ServingDeploymentDeclaration | None = None,
 ):
     provider = provider_from_deployment(deployment)
     context = RuntimeCompatibilityContext(
@@ -365,6 +384,12 @@ def managed_runtime_from_deployment(
             "persisted runtime deployment is incompatible with current "
             f"Worker/host facts: {detail}"
         )
+    # An owned audio runtime must bind the two manifests *before* start().
+    # Its already provisioned assets do not authorize any SetupPlan action.
+    if isinstance(provider, (VoicevoxProvider, StyleBertManifestProvider)):
+        if deployment.setup_intent is not None:
+            raise ValueError("owned audio setup intent is not supported")
+        return provider.create_manifest_runtime(context, serving)
     setup_intent = (
         deployment.setup_intent
         if deployment.setup_intent is not None

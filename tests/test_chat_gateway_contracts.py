@@ -7,6 +7,7 @@ import pytest
 from astrumweaver.gateway.chat import (
     CHAT_CATALOG_SCHEMA,
     CHAT_OPERATION_SCHEMA,
+    FREETOKEN_CHAT_ADAPTER,
     LLAMA_CPP_CHAT_ADAPTER,
     ChatGatewayError,
     ChatGatewayProfile,
@@ -26,9 +27,14 @@ def digest(character: str) -> str:
     return "sha256:" + character * 64
 
 
-def profile(*, tools: bool = True) -> ChatGatewayProfile:
+def profile(
+    *,
+    tools: bool = True,
+    provider_id: str = "llama-cpp",
+    adapter_id: str = LLAMA_CPP_CHAT_ADAPTER,
+) -> ChatGatewayProfile:
     deployment = DeploymentIdentity(
-        provider_id="llama-cpp",
+        provider_id=provider_id,
         runtime_artifact_sha256=digest("1"),
         adapter_artifact_sha256=digest("2"),
         model_artifact_sha256=digest("3"),
@@ -66,7 +72,7 @@ def profile(*, tools: bool = True) -> ChatGatewayProfile:
     )
     return ChatGatewayProfile(
         resolved=resolve_profile(serving_profile, contract, deployment),
-        adapter_id=LLAMA_CPP_CHAT_ADAPTER,
+        adapter_id=adapter_id,
         request_timeout_seconds=30,
         max_attempts=2,
         created=1,
@@ -857,3 +863,34 @@ def test_opencode_text_parts_preserve_utf8_and_cannot_bypass_byte_limits():
         compile_chat_request(request, profile(), request_size_bytes=65537)
     assert error.value.code == "request_too_large"
     assert error.value.status_code == 413
+
+
+def test_freetoken_profile_compiles_to_freetoken_job_envelope():
+    value = profile(provider_id="freetoken", adapter_id=FREETOKEN_CHAT_ADAPTER)
+
+    compiled = compile_chat_request(
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        value,
+        request_size_bytes=128,
+    )
+
+    assert compiled.payload["adapter_id"] == "freetoken-chat-v1"
+    assert compiled.payload["limits"]["total_tokens"] == 5120
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "adapter_id", "code"),
+    [
+        ("freetoken", LLAMA_CPP_CHAT_ADAPTER, "invalid_profile"),
+        ("llama-cpp", FREETOKEN_CHAT_ADAPTER, "invalid_profile"),
+        ("llama-cpp", "vllm-chat-v1", "unsupported_adapter"),
+    ],
+)
+def test_chat_adapter_must_match_deployment_provider(provider_id, adapter_id, code):
+    with pytest.raises(ChatGatewayError) as excinfo:
+        profile(provider_id=provider_id, adapter_id=adapter_id)
+
+    assert excinfo.value.code == code

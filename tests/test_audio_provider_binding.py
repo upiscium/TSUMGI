@@ -432,7 +432,7 @@ def test_oversized_private_worker_snapshot_is_not_serialized_or_exposed():
 
 
 @pytest.mark.parametrize("kind", ["voicevox", "style-bert-vits2"])
-def test_audio_providers_cannot_be_started_via_existing_runtime_registry(kind):
+def test_review_only_audio_binding_never_supplies_a_manifest_opt_in(kind):
     from astrumweaver.runtime import (
         ExecutionDemand,
         GPUTopology,
@@ -458,9 +458,9 @@ def test_audio_providers_cannot_be_started_via_existing_runtime_registry(kind):
             gpu_topology=GPUTopology.NONE,
         ),
     )
-    # Explicitly assert the source-only B6a review does not install a provider
-    # in the executable Worker registry by side effect of importing setup.
+    # Knowing a provider ID does not authorize either native runtime.
     with pytest.raises(
-        ValueError, match=f"^unsupported runtime provider: {provider_id}$"
+        ValueError, match=("^VOICEVOX manifest configuration is invalid$" if provider_id == "voicevox"
+                           else "^Style-Bert-VITS2 manifest configuration is invalid$")
     ):
         provider_from_deployment(manifest)

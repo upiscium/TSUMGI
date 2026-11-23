@@ -1,8 +1,8 @@
-"""#216 B5c: provider-local, source-only isolated process and framed IPC.
+"""Owned Style-Bert process and framed IPC; no native modules in the Worker.
 
-No native Style-Bert-VITS2 runner, model import, registry entry, package or
-deployment is furnished. The injected/child protocol alone cannot establish
-authentic model loading, license rights, host GPU ownership, or an OS sandbox.
+The explicit JVNV manifest path adds native asset and probe-byte requirements
+to the historical disposable source-only handshake. Neither mode installs
+dependencies or constitutes an OS sandbox or a rights grant.
 """
 
 from __future__ import annotations
@@ -38,7 +38,9 @@ from .style_bert_vits2 import (
     StyleBertVits2Executor,
     StyleBertVits2ModelPin,
     StyleBertVits2ProviderConfig,
+    _wav_metadata,
 )
+from .jvnv_assets import JvnvInputs
 
 _SHA = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _FRAME_LIMIT = 32 * 1024
@@ -92,6 +94,7 @@ class StyleBertOwnedRuntimeSpec:
     boot_timeout_seconds: float = 3.0
     inference_timeout_seconds: float = 3.0
     stop_timeout_seconds: float = 2.0
+    jvnv_inputs: JvnvInputs | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -116,6 +119,9 @@ class StyleBertOwnedRuntimeSpec:
                 )
             )
             or self.voice_rights_qualified is not True
+            or (self.jvnv_inputs is not None and (
+                type(self.jvnv_inputs) is not JvnvInputs or self.device != "cpu"
+            ))
         ):
             raise _bad_config()
         dep = self.serving.deployment
@@ -184,7 +190,7 @@ def _trusted_file_digest(path: str) -> str:
         part_path = os.path.join(part_path, part)
         if stat.S_ISLNK(os.lstat(part_path).st_mode):
             raise StyleBertRuntimeFailure("stylebert_untrusted_artifact")
-    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= _FILE_LIMIT:
@@ -225,6 +231,8 @@ def _verify_artifacts(spec: StyleBertOwnedRuntimeSpec) -> None:
     if len(set(paths.values())) != len(paths):
         raise StyleBertRuntimeFailure("stylebert_duplicate_artifact")
     try:
+        if spec.jvnv_inputs is not None:
+            spec.jvnv_inputs.preflight(spec.model_directory, spec.interpreter_path)
         model_dir = Path(spec.model_directory)
         if not model_dir.is_dir() or model_dir.is_symlink():
             raise StyleBertRuntimeFailure("stylebert_untrusted_artifact")
@@ -252,6 +260,8 @@ def _verify_artifacts(spec: StyleBertOwnedRuntimeSpec) -> None:
 def _file_identities(spec: StyleBertOwnedRuntimeSpec) -> tuple[tuple[int, ...], ...]:
     """Cheap drift detection only; not loaded-model/binary provenance proof."""
     paths = (spec.model_directory, *_artifact_paths(spec).values())
+    if spec.jvnv_inputs is not None:
+        paths += spec.jvnv_inputs.watched_paths(spec.model_directory)
     result = []
     for path in paths:
         current = "/"
@@ -261,7 +271,7 @@ def _file_identities(spec: StyleBertOwnedRuntimeSpec) -> tuple[tuple[int, ...], 
                 raise StyleBertRuntimeFailure("stylebert_artifact_drift")
         info = os.stat(path, follow_symlinks=False)
         result.append(
-            (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode)
+            (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode)
         )
     return tuple(result)
 
@@ -304,6 +314,24 @@ async def _read_frame(reader: asyncio.StreamReader) -> dict:
     if type(parsed) is not dict or len(parsed) > 32:
         raise StyleBertRuntimeFailure("stylebert_invalid_ipc")
     return parsed
+
+
+async def _read_jvnv_probe(reader: asyncio.StreamReader, reply: dict, adapter: StyleBertVits2ProviderConfig) -> None:
+    frames = reply.get("probe_frames")
+    size = reply.get("probe_bytes")
+    sha = reply.get("probe_sha256")
+    if (reply.get("probe_format") != "pcm16-wav-v1"
+            or type(reply.get("probe_rate")) is not int or reply["probe_rate"] != 44100
+            or type(frames) is not int or not 4410 < frames <= 44100 * adapter.max_duration_seconds
+            or type(size) is not int or size != 44 + frames * 2 or size > adapter.max_output_bytes
+            or type(sha) is not str or re.fullmatch("[0-9a-f]{64}", sha) is None):
+        raise StyleBertRuntimeFailure("stylebert_invalid_probe")
+    # Under the enclosing boot deadline. Never stage, cache, or log the probe.
+    wav = await reader.readexactly(size)
+    meta = _wav_metadata(wav, adapter)
+    if (meta["channels"] != 1 or meta["sample_rate_hz"] != 44100 or meta["sample_frames"] != frames
+            or hashlib.sha256(wav).hexdigest() != sha or not any(memoryview(wav)[44:])):
+        raise StyleBertRuntimeFailure("stylebert_invalid_probe")
 
 
 class _ReadyBoundMedia:
@@ -354,6 +382,9 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
         self._file_ids: tuple[tuple[int, ...], ...] | None = None
         self._ipc_lock = asyncio.Lock()
         self._owned_stop_lock = asyncio.Lock()
+        self._startup: asyncio.Task | None = None
+        self._pending_spawn_cleanup: asyncio.Task | None = None
+        self._jvnv_consumed = False
         self._executor = _QualifiedStyleBertExecutor(
             config=config.adapter,
             api=self,
@@ -389,7 +420,7 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
         await proc.stdin.drain()
         response = await _read_frame(proc.stdout)
         if (
-            response.get("version") != _PROTOCOL_VERSION
+            type(response.get("version")) is not int or response["version"] != _PROTOCOL_VERSION
             or response.get("epoch") != self._epoch
             or response.get("request_id") != request.get("request_id")
         ):
@@ -401,18 +432,37 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
             self._released
             or self._state is not RuntimeHealthState.STOPPED
             or self._proc is not None
+            or self._startup is not None or self._pending_spawn_cleanup is not None or self._jvnv_consumed
         ):
             raise StyleBertRuntimeFailure("stylebert_start_not_allowed")
+        self._state = RuntimeHealthState.STARTING
+        self._jvnv_consumed = self._config.jvnv_inputs is not None
+        self._startup = asyncio.create_task(self._bootstrap())
+        try:
+            await self._startup
+        finally:
+            self._startup = None
+
+    async def _bootstrap(self) -> None:
         cfg = self._config
         try:
             async with asyncio.timeout(cfg.boot_timeout_seconds):
+                before = await asyncio.to_thread(_file_identities, cfg)
                 await asyncio.to_thread(_verify_artifacts, cfg)
-                self._file_ids = await asyncio.to_thread(_file_identities, cfg)
+                self._file_ids = before
+                if before != await asyncio.to_thread(_file_identities, cfg):
+                    raise StyleBertRuntimeFailure("stylebert_artifact_drift")
                 self._epoch = str(uuid4())
-                self._state = RuntimeHealthState.STARTING
                 # Fixed argv; no text, raw model paths or secrets in argv/env.
-                # The synthetic runner observes model identities via handshake.
-                self._proc = await asyncio.create_subprocess_exec(
+                child_env = {"PYTHONUNBUFFERED": "1", "CUDA_VISIBLE_DEVICES": cfg.gpu_uuid or ""}
+                cwd = "/"
+                if cfg.jvnv_inputs is not None:
+                    cwd = cfg.jvnv_inputs.private_home
+                    child_env.update(HOME=cwd, TMPDIR=cwd, PATH="/usr/bin:/bin",
+                                     HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
+                                     HF_HUB_DISABLE_TELEMETRY="1", TOKENIZERS_PARALLELISM="false",
+                                     OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
+                spawn = asyncio.create_task(asyncio.create_subprocess_exec(
                     cfg.interpreter_path,
                     "-I",
                     "-u",
@@ -420,16 +470,19 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
-                    cwd="/",
+                    cwd=cwd,
                     start_new_session=True,
                     close_fds=True,
-                    env={
-                        "PYTHONUNBUFFERED": "1",
-                        "CUDA_VISIBLE_DEVICES": cfg.gpu_uuid
-                        if cfg.device == "cuda"
-                        else "",
-                    },
-                )
+                    env=child_env,
+                ))
+                try:
+                    self._proc = await asyncio.shield(spawn)
+                except asyncio.CancelledError:
+                    # create_subprocess_exec may already have forked. Don't
+                    # extend the boot timeout waiting for an unbounded spawn,
+                    # but retain its eventual handle and fence reuse.
+                    self._pending_spawn_cleanup = asyncio.create_task(self._reap_late_spawn(spawn))
+                    raise
                 proc = self._proc
                 request = {
                     "version": _PROTOCOL_VERSION,
@@ -465,10 +518,13 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
                         for v in cfg.adapter.voices
                     ],
                 }
+                if cfg.jvnv_inputs is not None:
+                    request["probe_format"] = "pcm16-wav-v1"
+                    request["artifact_paths"]["dictionary"] = cfg.jvnv_inputs.dictionary_directory
                 reply = await self._send(request)
                 if (
                     reply.get("op") != "ready"
-                    or reply.get("pid") != proc.pid
+                    or type(reply.get("pid")) is not int or reply["pid"] != proc.pid
                     or reply.get("worker_id") != cfg.worker.worker_id
                     or reply.get("deployment") != cfg.serving.deployment.revision
                     or reply.get("device") != cfg.device
@@ -486,6 +542,15 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
                     or proc.returncode is not None
                 ):
                     raise StyleBertRuntimeFailure("stylebert_bootstrap_mismatch")
+                if cfg.jvnv_inputs is not None:
+                    if proc.stdout is None or json.dumps(reply["voices"], sort_keys=True) != json.dumps(request["voices"], sort_keys=True):
+                        raise StyleBertRuntimeFailure("stylebert_bootstrap_mismatch")
+                    await _read_jvnv_probe(proc.stdout, reply, cfg.adapter)
+                    if before != await asyncio.to_thread(_file_identities, cfg):
+                        raise StyleBertRuntimeFailure("stylebert_artifact_drift")
+                if (self._released or self._state is not RuntimeHealthState.STARTING
+                        or proc.returncode is not None or os.getpgid(proc.pid) != proc.pid):
+                    raise StyleBertRuntimeFailure("stylebert_process_lost")
                 self._state = RuntimeHealthState.READY
         except BaseException as error:
             self._fail("stylebert_bootstrap_failed")
@@ -570,6 +635,16 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
         async with self._owned_stop_lock:
             await self._stop_owned_once()
 
+    async def _reap_late_spawn(self, spawn: asyncio.Task) -> None:
+        try:
+            self._proc = await spawn
+        except Exception:
+            return
+        try:
+            await self._stop_owned()
+        except Exception:
+            self._fail("stylebert_cleanup_uncertain")
+
     async def _stop_owned_once(self) -> None:
         proc = self._proc
         if proc is None:
@@ -608,6 +683,8 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
             return self._health(RuntimeHealthState.FAILED, self._failed_detail)
         if self._state is RuntimeHealthState.STOPPED:
             return self._health(RuntimeHealthState.STOPPED)
+        if self._state is RuntimeHealthState.STARTING:
+            return self._health(RuntimeHealthState.STARTING)
         proc = self._proc
         if proc is None or proc.returncode is not None:
             self._fail("stylebert_process_lost")
@@ -616,9 +693,9 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
             try:
                 if os.getpgid(proc.pid) != proc.pid or not self._epoch:
                     self._fail("stylebert_process_identity_lost")
-                elif self._file_ids != _file_identities(self._config):
+                elif self._file_ids != await asyncio.to_thread(_file_identities, self._config):
                     self._fail("stylebert_artifact_drift")
-            except (OSError, StyleBertRuntimeFailure):
+            except (OSError, ValueError, StyleBertRuntimeFailure):
                 self._fail("stylebert_artifact_or_process_lost")
             return self._health(self._state, self._failed_detail)
         return self._health(RuntimeHealthState.STARTING)
@@ -627,6 +704,17 @@ class StyleBertOwnedManagedRuntime(ManagedRuntime, StyleBertVits2AsyncModelApi):
         # Revoke admission before awaiting IPC/process cleanup.
         if self._state is not RuntimeHealthState.FAILED:
             self._state = RuntimeHealthState.STOPPED
+        startup = self._startup
+        if startup is not None and not startup.done():
+            startup.cancel()
+            await asyncio.gather(startup, return_exceptions=True)
+        pending_spawn = self._pending_spawn_cleanup
+        if pending_spawn is not None:
+            _, pending = await asyncio.wait({pending_spawn}, timeout=self._config.stop_timeout_seconds)
+            if pending:
+                self._fail("stylebert_cleanup_uncertain")
+                raise StyleBertRuntimeFailure("stylebert_cleanup_uncertain")
+            self._pending_spawn_cleanup = None
         active = tuple(self._executor._inflight.values())
         for task in active:
             if not task.done():

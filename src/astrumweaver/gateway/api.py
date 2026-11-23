@@ -38,6 +38,9 @@ from .chat import (
 _log = logging.getLogger(__name__)
 # Post-admission cancellation gets a separate bounded resource budget.
 _POSTADMIT_CANCEL_TIMEOUT_SECONDS = 5
+# Poll interval while an admission waits for a busy replica.
+_ADMISSION_RETRY_SECONDS = 0.25
+_WAITABLE_CODES = frozenset({"overloaded", "admission_overloaded"})
 
 
 def load_chat_catalog(path: str) -> ChatProfileCatalog:
@@ -60,8 +63,11 @@ def _error(
     message: str,
     error_type: str = "invalid_request_error",
 ) -> JSONResponse:
+    # A busy replica usually frees within seconds; say so to retrying clients.
+    headers = {"Retry-After": "1"} if code in _WAITABLE_CODES else None
     return JSONResponse(
         status_code=status_code,
+        headers=headers,
         content={
             "error": {
                 "message": message,
@@ -95,6 +101,16 @@ def _require_client(
         )
 
 
+class _PreStreamFailure(ChatGatewayError):
+    """The stream failed before any SSE byte was produced.
+
+    The Job is already terminal, or this stream has requested its cancel.
+
+    The route answers it with an ordinary JSON error and status, so clients
+    can react (OpenCode compacts only on an HTTP context-overflow error).
+    """
+
+
 class _OwnedChatStream:
     """Durable Job owner that also works before the first SSE iteration."""
 
@@ -109,17 +125,33 @@ class _OwnedChatStream:
         self._cancel = cancel
         self._closed = False
         self._terminal_seen = False
+        self._prefetched: str | None = None
 
     def __aiter__(self):
         return self
 
+    async def prefetch(self) -> None:
+        """Read the first frame before response headers are sent.
+
+        Raises ChatGatewayError when the Job failed before any frame, and
+        StopAsyncIteration when the stream ended without one.
+        """
+        self._prefetched = await self.__anext__()
+
     async def __anext__(self) -> str:
         if self._closed:
             raise StopAsyncIteration
+        if self._prefetched is not None:
+            value, self._prefetched = self._prefetched, None
+            return value
         try:
             value = await anext(self._iterator)
         except StopAsyncIteration:
             # Natural exhaustion is not an abandoned response.
+            self._terminal_seen = True
+            raise
+        except _PreStreamFailure:
+            # The generator saw the terminal Job; nothing is left to cancel.
             self._terminal_seen = True
             raise
         if value == "data: [DONE]\n\n":
@@ -159,6 +191,9 @@ class ChatGatewayService:
         poll_interval_seconds: float = 0.05,
         max_pending_admissions: int = 8,
         max_postadmit_cancellations: int = 8,
+        stream_keepalive_seconds: float = 15.0,
+        admission_wait_seconds: float = 0.0,
+        max_admission_waiters: int = 16,
     ) -> None:
         if type(max_pending_admissions) is not int or max_pending_admissions < 1:
             raise ValueError("max_pending_admissions must be a positive integer")
@@ -174,6 +209,31 @@ class ChatGatewayService:
         self.repository = repository
         self.catalog = catalog
         self.poll_interval_seconds = float(poll_interval_seconds)
+        if (
+            isinstance(stream_keepalive_seconds, bool)
+            or not isinstance(stream_keepalive_seconds, (int, float))
+            or not math.isfinite(float(stream_keepalive_seconds))
+            or stream_keepalive_seconds <= 0
+        ):
+            raise ValueError("stream_keepalive_seconds must be finite and positive")
+        # An SSE comment sent while a stream waits (long prompt reads), so idle
+        # timeouts in front of the Gateway do not cut a healthy stream.
+        self.stream_keepalive_seconds = float(stream_keepalive_seconds)
+        if (
+            isinstance(admission_wait_seconds, bool)
+            or not isinstance(admission_wait_seconds, (int, float))
+            or not math.isfinite(float(admission_wait_seconds))
+            or admission_wait_seconds < 0
+        ):
+            raise ValueError("admission_wait_seconds must be finite and non-negative")
+        if type(max_admission_waiters) is not int or max_admission_waiters < 1:
+            raise ValueError("max_admission_waiters must be a positive integer")
+        # How long a request may wait for a busy replica before 429. Each
+        # profile usually has one replica, and clients such as OpenCode send
+        # a title request next to the main one. 0 keeps the fail-fast 429.
+        self.admission_wait_seconds = float(admission_wait_seconds)
+        self.max_admission_waiters = max_admission_waiters
+        self._admission_waiters = 0
         # A nonblocking per-service gate: reserve before starting a thread.
         # Cancellation transfers its permit to late cleanup until completion.
         self.max_pending_admissions = max_pending_admissions
@@ -388,6 +448,55 @@ class ChatGatewayService:
             status_code=502,
         )
 
+    async def _submit_when_free(
+        self,
+        request: Request,
+        body: dict[str, object],
+        *,
+        request_size_bytes: int,
+        max_attempts: int | None = None,
+    ):
+        """Submit, retrying an overloaded admission for admission_wait_seconds.
+
+        An overloaded submission inserts no Job, so retrying is safe. Waiters
+        are bounded; the rest get 429 at once. Order among waiters is not
+        strictly FIFO: each polls every _ADMISSION_RETRY_SECONDS.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.admission_wait_seconds
+        waiting = False
+        try:
+            while True:
+                try:
+                    return await self._submit(
+                        request,
+                        body,
+                        request_size_bytes=request_size_bytes,
+                        max_attempts=max_attempts,
+                    )
+                except ChatGatewayError as exc:
+                    # admission_overloaded: this Gateway's own permits are
+                    # busy, often with other waiters' retries. Both clear soon.
+                    if exc.code not in _WAITABLE_CODES or loop.time() >= deadline:
+                        raise
+                    if not waiting:
+                        if self._admission_waiters >= self.max_admission_waiters:
+                            raise
+                        self._admission_waiters += 1
+                        waiting = True
+                if await request.is_disconnected():
+                    raise ChatGatewayError(
+                        "client_disconnected",
+                        "chat client disconnected while waiting for a replica",
+                        status_code=499,
+                    )
+                await asyncio.sleep(
+                    min(_ADMISSION_RETRY_SECONDS, max(0.0, deadline - loop.time()))
+                )
+        finally:
+            if waiting:
+                self._admission_waiters -= 1
+
     async def _submit(
         self,
         request: Request,
@@ -557,7 +666,7 @@ class ChatGatewayService:
         *,
         request_size_bytes: int,
     ) -> dict[str, object]:
-        profile, record = await self._submit(
+        profile, record = await self._submit_when_free(
             request,
             body,
             request_size_bytes=request_size_bytes,
@@ -607,7 +716,7 @@ class ChatGatewayService:
         *,
         request_size_bytes: int,
     ) -> AsyncIterator[str]:
-        profile, record = await self._submit(
+        profile, record = await self._submit_when_free(
             request,
             body,
             request_size_bytes=request_size_bytes,
@@ -621,6 +730,14 @@ class ChatGatewayService:
         async def generate() -> AsyncIterator[str]:
             sequence = 0
             terminal = False
+            started = False
+            last_sent = loop.time()
+
+            def failure(code: str, message: str, status_code: int) -> str:
+                # Before any frame, the route turns this into a JSON error.
+                if not started:
+                    raise _PreStreamFailure(code, message, status_code=status_code)
+                return _stream_error(code, message)
             try:
                 while True:
                     if await request.is_disconnected():
@@ -636,9 +753,10 @@ class ChatGatewayService:
                     for event in events:
                         if event.kind != "chat.completion.chunk":
                             await self._cancel(job_id)
-                            yield _stream_error(
+                            yield failure(
                                 "invalid_stream_event",
                                 "chat backend emitted an unsupported event",
+                                502,
                             )
                             return
                         try:
@@ -650,13 +768,16 @@ class ChatGatewayService:
                             )
                         except ChatGatewayError:
                             await self._cancel(job_id)
-                            yield _stream_error(
+                            yield failure(
                                 "invalid_provider_response",
                                 "chat backend emitted an invalid stream chunk",
+                                502,
                             )
                             return
                         sequence = event.sequence
+                        started = True
                         yield _stream_data(chunk)
+                        last_sent = loop.time()
 
                     current = await asyncio.to_thread(
                         self.repository.get_job,
@@ -679,6 +800,15 @@ class ChatGatewayService:
                             terminal = True
                             yield "data: [DONE]\n\n"
                             return
+                        if not started:
+                            terminal = True
+                            try:
+                                self._terminal(current, profile_id=profile.profile_id)
+                            except ChatGatewayError as exc:
+                                raise _PreStreamFailure(
+                                    exc.code, str(exc), status_code=exc.status_code
+                                ) from exc
+                            raise RuntimeError("terminal Job neither failed nor was cancelled")
                         if current.status is JobStatus.CANCELLED:
                             terminal = True
                             yield _stream_error(
@@ -715,11 +845,18 @@ class ChatGatewayService:
                     remaining = stop_at - loop.time()
                     if remaining <= 0:
                         await self._cancel(job_id)
-                        yield _stream_error(
+                        yield failure(
                             "gateway_timeout",
                             "chat stream exceeded the bounded gateway deadline",
+                            504,
                         )
                         return
+                    if loop.time() - last_sent >= self.stream_keepalive_seconds:
+                        # Response headers go out with the first frame, so
+                        # a keep-alive also commits this stream to SSE.
+                        started = True
+                        yield ": keep-alive\n\n"
+                        last_sent = loop.time()
                     await asyncio.sleep(
                         min(self.poll_interval_seconds, remaining)
                     )
@@ -766,6 +903,9 @@ def create_chat_router(
     poll_interval_seconds: float = 0.05,
     max_pending_admissions: int = 8,
     max_postadmit_cancellations: int = 8,
+    stream_keepalive_seconds: float = 15.0,
+    admission_wait_seconds: float = 0.0,
+    max_admission_waiters: int = 16,
 ) -> APIRouter:
     mode = ClientAuthMode(client_auth)
     if mode is ClientAuthMode.BEARER and not client_token:
@@ -777,6 +917,9 @@ def create_chat_router(
         poll_interval_seconds=poll_interval_seconds,
         max_pending_admissions=max_pending_admissions,
         max_postadmit_cancellations=max_postadmit_cancellations,
+        stream_keepalive_seconds=stream_keepalive_seconds,
+        admission_wait_seconds=admission_wait_seconds,
+        max_admission_waiters=max_admission_waiters,
     )
     router = APIRouter()
 
@@ -872,6 +1015,18 @@ def create_chat_router(
                     value,
                     request_size_bytes=len(raw),
                 )
+                try:
+                    await iterator.prefetch()
+                except StopAsyncIteration:
+                    await iterator.aclose()
+                    return _error(
+                        499,
+                        code="client_disconnected",
+                        message="chat client disconnected",
+                    )
+                except BaseException:
+                    await iterator.aclose()
+                    raise
                 return _OwnedChatStreamingResponse(
                     iterator,
                     media_type="text/event-stream",

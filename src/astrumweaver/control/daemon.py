@@ -30,6 +30,17 @@ def _load_toml(path: str) -> dict[str, Any]:
         return tomllib.load(handle)
 
 
+def _catalog_profile_names(catalog: object) -> dict[str, str]:
+    """deployment revision -> profile id, for the operator console."""
+    names: dict[str, str] = {}
+    for profile in getattr(catalog, "profiles", ()):
+        try:
+            names[profile.resolved.deployment.revision] = profile.profile_id
+        except AttributeError:
+            continue
+    return names
+
+
 def build_app(config_path: str):
     try:
         config = _load_toml(config_path)
@@ -84,11 +95,55 @@ def build_app(config_path: str):
             section.get("event_max_total_bytes", 4 * 1024 * 1024)
         ),
         event_max_read=int(section.get("event_max_read", 512)),
+        pool_min_size=int(section.get("db_pool_min_size", 1)),
+        pool_max_size=int(section.get("db_pool_max_size", 10)),
+        pool_timeout_seconds=float(section.get("db_pool_timeout_seconds", 2.0)),
     )
     audio_setup = audio_config.build(repository) if audio_config is not None else None
     audio_input_channel = audio_setup.input_channel if audio_setup is not None else None
     audio_output_channel = audio_setup.output_channel if audio_setup is not None else None
     audio_routers = audio_setup.routers if audio_setup is not None else ()
+    admin_section = dict(config.get("admin_ui") or {})
+    if type(admin_section.get("enabled", False)) is not bool:
+        raise RuntimeError("admin_ui.enabled must be boolean")
+    admin_hosts = admin_section.get("allowed_hosts", [])
+    if not isinstance(admin_hosts, list) or not all(isinstance(h, str) for h in admin_hosts):
+        raise RuntimeError("admin_ui.allowed_hosts must be a list of host names")
+    admin_auth = None
+    admin_user = admin_section.get("username")
+    admin_hash = admin_section.get("password_hash")
+    admin_file = admin_section.get("credentials_file")
+    if (admin_user is None) != (admin_hash is None):
+        raise RuntimeError("admin_ui.username and admin_ui.password_hash must be set together")
+    if admin_user is not None and admin_file is not None:
+        raise RuntimeError("admin_ui: use either username + password_hash or credentials_file, not both")
+    if admin_user is not None or admin_file is not None:
+        if admin_file is not None and (not isinstance(admin_file, str) or not admin_file.strip()):
+            raise RuntimeError("admin_ui.credentials_file must be a path")
+        if admin_user is not None and (not isinstance(admin_user, str) or not isinstance(admin_hash, str)):
+            raise RuntimeError("admin_ui.username and admin_ui.password_hash must be text")
+        from .admin_auth import BasicAuth, CredentialsFile, StaticCredentials
+
+        proxies = admin_section.get("trusted_proxies", [])
+        if not isinstance(proxies, list) or not all(isinstance(p, str) for p in proxies):
+            raise RuntimeError("admin_ui.trusted_proxies must be a list of addresses")
+        try:
+            if admin_section.get("enabled", False):  # a disabled console writes no setup code
+                source = (
+                    CredentialsFile(admin_file) if admin_file is not None
+                    else StaticCredentials(admin_user, admin_hash)
+                )
+                admin_auth = BasicAuth(source, trusted_proxies=proxies)
+                if not proxies:
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "admin_ui.trusted_proxies is empty: behind a reverse proxy every client shares "
+                        "one login lockout, so set it to the proxy address"
+                    )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+    profile_names: dict[str, str] = {}
     try:
         app = create_app(
             repository,
@@ -110,6 +165,7 @@ def build_app(config_path: str):
                     "chat_gateway.catalog is required when chat gateway is enabled"
                 )
             catalog = load_chat_catalog(catalog_path)
+            profile_names.update(_catalog_profile_names(catalog))
             app.include_router(
                 create_chat_router(
                     repository,
@@ -121,6 +177,12 @@ def build_app(config_path: str):
                     ),
                     max_pending_admissions=chat_section.get(
                         "max_pending_admissions", 8
+                    ),
+                    admission_wait_seconds=chat_section.get(
+                        "admission_wait_seconds", 0.0
+                    ),
+                    max_admission_waiters=chat_section.get(
+                        "max_admission_waiters", 16
                     ),
                 )
             )
@@ -138,6 +200,7 @@ def build_app(config_path: str):
                     "embedding gateway is enabled"
                 )
             embedding_catalog = load_embedding_catalog(catalog_path)
+            profile_names.update(_catalog_profile_names(embedding_catalog))
             app.include_router(
                 create_embedding_router(
                     repository,
@@ -166,6 +229,7 @@ def build_app(config_path: str):
                     "decision gateway is enabled"
                 )
             decision_catalog = load_decision_catalog(catalog_path)
+            profile_names.update(_catalog_profile_names(decision_catalog))
             app.include_router(
                 create_decision_router(
                     repository,
@@ -182,6 +246,19 @@ def build_app(config_path: str):
             )
         for router in audio_routers:
             app.include_router(router)
+        if admin_section.get("enabled", False):
+            # Basic authentication when username and password_hash are set;
+            # without them there is none (see control/admin.py). Off unless asked for.
+            from .admin import create_admin_router
+
+            app.include_router(
+                create_admin_router(
+                    repository,
+                    profile_names=profile_names,
+                    allowed_hosts=admin_hosts,
+                    auth=admin_auth,
+                )
+            )
         return app
     except Exception:
         if audio_setup is not None:
