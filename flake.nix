@@ -58,19 +58,10 @@
           driverBridge = cudaPkgs.callPackage ./nix/decision-llama-driver-bridge.nix {
             inherit core;
           };
-          # The heavy llama.cpp build keeps the store-path name it had before the
-          # rename (`astrumweaver-llama-decision-cuda-sm*`), so hosts that already
-          # hold it do not recompile CUDA llama.cpp. Its metadata therefore sits under
-          # share/astrumweaver; this alias republishes it under share/tsumgi, where the
-          # code reads it.
-          metadata = cudaPkgs.runCommand "tsumgi-d1-decision-metadata-sm${cudaArch}" { } ''
-            mkdir -p "$out/share/tsumgi"
-            cp ${core}/share/astrumweaver/* "$out/share/tsumgi/"
-          '';
         in
         cudaPkgs.buildEnv {
           name = "tsumgi-d1-decision-cuda-sm${cudaArch}-runtime";
-          paths = [ core driverBridge metadata ];
+          paths = [ core driverBridge ];
         };
       fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
         if [ "$1" = "--query-gpu=uuid" ]; then
