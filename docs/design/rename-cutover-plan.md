@@ -1,6 +1,6 @@
 # TSUMGI rename: production cutover plan (stage 7)
 
-Status: **draft for approval. Nothing here has been done.** It needs the owner's
+Status: **plan approved in outline; the window is not set. Nothing here has been done.** It needs the owner's
 approval and a time window before every phase. It rests on what stages 1-5
 measured: the audit and rehearsal results in [rename-phase-b.md](rename-phase-b.md),
 the tool in [../host-migration.md](../host-migration.md), and the live rehearsal on
@@ -115,17 +115,20 @@ profiles. They are single replicas, so choose a quiet moment.
   unexpected, not a step of the rollback.
 - A Worker moved before Control is rolled back keeps working with the old Control.
 
-## Decisions for the owner before the window
+## Decisions
 
-1. Approval of this plan and the window (date, time, who is on hand).
-2. Whether migrations 006/007 are applied in this window. They come with the audio
-   series (epoch fences and preparations) and are unused while those features are
-   off; they are additive and the old Control tolerates them, so the risk is low.
-   The alternative is to hold them back and ship them with the first release that
-   uses them (the new Control then needs them: it refuses a database that is not
-   at 007).
-3. Release shape: a prerelease first (`v0.3.0-rc.1`, used for the cutover) and a
-   GA promotion after a quiet period, as for v0.2.0, or straight to `v0.3.0`.
+Decided by the owner on 2026-11-23:
+
+- **Release shape:** `v0.3.0-rc.1` first, used for the cutover; GA is promoted after a
+  quiet period, by changing version metadata only (as for v0.2.0).
+- **Migrations 006/007** (audio epoch fences and preparations, additive) are applied
+  in the cutover window, at phase 3 step 3.
+
+Still needed before the window:
+
+1. Approval of this plan, and the window (date, time, who is on hand).
+2. The checks in "Before the window" completed, in particular the offline load of the
+   re-pinned files and the rehearsal Control against a database copy.
 
 ## Not covered
 
