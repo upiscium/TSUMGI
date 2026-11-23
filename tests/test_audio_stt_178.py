@@ -1,5 +1,6 @@
 """Synthetic-only tests for the offline #178 comparative scorer."""
 
+import errno
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -409,7 +410,7 @@ def test_report_destination_rules(tmp_path):
 
 def test_a_file_system_without_hard_links_gets_an_exclusive_private_report(tmp_path, monkeypatch):
     def no_links(*_a, **_k):
-        raise PermissionError("hard links are not supported here")
+        raise OSError(errno.EPERM, "hard links are not supported here")
 
     monkeypatch.setattr(stt.os, "link", no_links)
     report = tmp_path / "report.json"
@@ -422,7 +423,7 @@ def test_a_file_system_without_hard_links_gets_an_exclusive_private_report(tmp_p
 
 
 def test_a_failed_fallback_write_leaves_no_partial_report(tmp_path, monkeypatch):
-    monkeypatch.setattr(stt.os, "link", lambda *_a, **_k: (_ for _ in ()).throw(PermissionError("no links")))
+    monkeypatch.setattr(stt.os, "link", lambda *_a, **_k: (_ for _ in ()).throw(OSError(errno.EOPNOTSUPP, "no links")))
     real_fsync = os.fsync
     calls = {"n": 0}
 
@@ -451,3 +452,75 @@ def test_a_failing_temp_cleanup_after_a_successful_publish_is_not_an_error(tmp_p
     report = tmp_path / "report.json"
     stt.write_report_exclusive(report, {"a": 1})  # no exception: the report exists
     assert json.loads(report.read_text())["a"] == 1
+
+
+# ---- second review follow-ups ---------------------------------------------------------
+
+@pytest.mark.parametrize("prediction", ["水を0.3本買う", "水を1.3本買う", "水を1,3本買う", "水を１3本買う", "水を13本買う"])
+def test_other_numbers_that_end_in_3_hon_are_not_hits(prediction):
+    f = fixture_value()
+    f["normalization"] = {"form": "none", "remove_whitespace": True}  # no NFKC: full-width stays full-width
+    c = replace(candidate(), predictions={"homo-sanpo": "今日は散歩に行く", "homo-sanbon": prediction})
+    assert compare(f, "sha256:f", [c])["candidates"][0]["homophone_target_hits"]["per_target"]["3本"]["hits"] == 0
+
+
+def test_the_plain_3_hon_and_a_leading_particle_are_still_hits():
+    for prediction in ("水を3本買う", "3本", "約3本です"):
+        c = replace(candidate(), predictions={"homo-sanpo": "今日は散歩に行く", "homo-sanbon": prediction})
+        hits = compare(fixture_value(), "sha256:f", [c])["candidates"][0]["homophone_target_hits"]
+        assert hits["per_target"]["3本"]["hits"] == 1, prediction
+
+
+@pytest.mark.parametrize("code", [errno.ENOSPC, errno.EIO, errno.EACCES])
+def test_only_unsupported_hard_links_fall_back_to_a_second_write(tmp_path, monkeypatch, code):
+    monkeypatch.setattr(stt.os, "link", lambda *_a, **_k: (_ for _ in ()).throw(OSError(code, "disk")))
+    report = tmp_path / "report.json"
+    with pytest.raises(AudioStt178Error, match="could not be created"):
+        stt.write_report_exclusive(report, {"a": 1})
+    assert not report.exists()
+    assert not [p for p in tmp_path.iterdir()]  # and no temp file is left
+
+
+def test_the_fallback_removes_only_the_file_it_created(tmp_path, monkeypatch):
+    monkeypatch.setattr(stt.os, "link", lambda *_a, **_k: (_ for _ in ()).throw(OSError(errno.EPERM, "no links")))
+    report = tmp_path / "report.json"
+    real_fsync = os.fsync
+    state = {"n": 0}
+
+    def swap_then_fail(fd):
+        state["n"] += 1
+        if state["n"] == 2:  # the exclusive create is being written: someone replaces the path
+            os.rename(report, tmp_path / "ours.json")
+            report.write_text("somebody else's file")
+            raise OSError(errno.EIO, "disk error")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(stt.os, "fsync", swap_then_fail)
+    with pytest.raises(AudioStt178Error):
+        stt.write_report_exclusive(report, {"a": 1})
+    assert report.read_text() == "somebody else's file"  # not deleted
+
+
+@pytest.mark.parametrize("big", [10**400, -(10**400)])
+def test_huge_integers_are_a_clean_error_not_an_overflow(big):
+    c = candidate()
+    measured = dict(c.measured)
+    measured["warm_latency_seconds"] = [0.1, big]
+    with pytest.raises(AudioStt178Error):
+        compare(fixture_value(), "sha256:f", [replace(c, measured=measured)])
+
+
+def test_a_huge_duration_in_a_fixture_file_is_one_clean_error(tmp_path):
+    f = fixture_value()
+    text = json.dumps(f, ensure_ascii=False).replace('"duration_seconds": 1.0', '"duration_seconds": ' + "9" * 400)
+    path = tmp_path / "fixture.json"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(AudioStt178Error):
+        stt.load_fixture(path)
+
+
+def test_a_utf8_byte_order_mark_is_refused_cleanly(tmp_path):
+    path = tmp_path / "fixture.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(fixture_value(), ensure_ascii=False).encode("utf-8"))
+    with pytest.raises(AudioStt178Error):
+        stt.load_fixture(path)

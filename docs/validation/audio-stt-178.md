@@ -24,9 +24,11 @@ normalization and whitespace removal, only an answer containing the expected
 string and not its alternative earns a hit. An answer containing both
 `散歩` and `3本` counts as a miss, not an excluded case. This checks for the
 strings, not Japanese morphological word boundaries, with one exception that
-matters for the numeral: `3本` preceded by another ASCII digit (`13本`, `23本`)
-is a different count and earns no hit, so a model that gets the number wrong is
-not credited. Include natural conversation,
+matters for the numeral: `3本` preceded by another digit (ASCII or full-width) or
+by a decimal or thousands separator (`13本`, `23本`, `0.3本`, `1,3本`) is a
+different number and earns no hit, so a model that gets the number wrong is not
+credited. Kanji numerals before the `3` (`十3本`) are not recognised; the
+fixture should not rely on them. Include natural conversation,
 numerals, names, noise, pauses, and short/long utterances in the *real*
 curated fixture. The synthetic unit fixture is deliberately not such evidence.
 
@@ -52,11 +54,18 @@ predictions, or measured metrics is an error, not a pass. Support evidence
 must describe what was actually verified; `unknown` is allowed, model-card
 claims alone do not qualify. The harness refuses to overwrite the report. It
 writes a private temporary file and hard-links it into place (atomic, mode
-`0600`); on a file system without hard links it falls back to an exclusive
-create, which still never replaces a file and removes a partial one. The report
-parent must already exist. The report records the SHA-256 of the fixture and of
-the results file it scored. Input files must be regular files (links and
-devices are refused), JSON must not contain `NaN`, `Infinity` or duplicate keys,
+`0600`); on a file system that reports hard links as unsupported (`EPERM`, `EOPNOTSUPP`,
+`ENOTSUP`, `ENOSYS`, `EMLINK`, `EXDEV`) it falls back to an exclusive create,
+which still never replaces a file and removes a partial one it created. Any
+other error (`ENOSPC`, `EIO`, `EACCES`) is a failure, not a reason to try again.
+The fallback is not atomic: a crash during it can leave a truncated report,
+which the no-overwrite rule then refuses to replace, so delete it by hand. The report
+parent must already exist. The report records `fixture_sha256`, the hash of the fixture's canonical
+re-serialised JSON (not of the file bytes, so `sha256sum` will not match it),
+and `results_sha256`, the hash of the results file's raw bytes. Input files
+must be regular files: symbolic links, FIFOs and devices are refused (a hard
+link to a regular file is not detected). JSON must be UTF-8 without a byte-order
+mark, and must not contain `NaN`, `Infinity` or duplicate keys,
 identity fields are capped at 256 characters, support evidence at 4096, and
 `failures` / `limitations` must be lists of at most 100 strings of 2000
 characters. Fixture size is capped at 4 MiB, results at 32 MiB, cases

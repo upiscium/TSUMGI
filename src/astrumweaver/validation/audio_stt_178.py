@@ -7,6 +7,7 @@ downloads models, reads audio, or writes outside the requested report path.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import math
@@ -33,7 +34,9 @@ CONTRAST_TARGETS = ("散歩", "3本")
 
 # "13本" or "23本" contains the text "3本" but is another count: a model that
 # gets the number wrong must not be credited with the "3本" side of the contrast.
-_CONTRAST_PATTERN = {"散歩": re.compile("散歩"), "3本": re.compile("(?<![0-9])3本")}
+# \d is Unicode-aware (full-width digits too); a "." or "," before it is a decimal or
+# a thousands separator (0.3本, 1,3本). Kanji numerals before the 3 are not caught.
+_CONTRAST_PATTERN = {"散歩": re.compile("散歩"), "3本": re.compile(r"(?<![\d.,，．])3本")}
 
 
 def _matches_contrast(text: str, target: str) -> bool:
@@ -48,6 +51,16 @@ MAX_IDENTITY_CHARS = 256
 MAX_EVIDENCE_CHARS = 4096
 MAX_NOTES = 100
 MAX_NOTE_CHARS = 2000
+
+
+def _finite(value: Any) -> bool:
+    """True for a finite int or float; a huge JSON integer is simply not finite here."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _reject_constant(_name: str) -> Any:
@@ -164,9 +177,7 @@ def load_fixture(path: Path) -> tuple[dict[str, Any], str]:
                            for k in ("id", "audio", "reference"))
                 or len(item["id"]) > 256 or len(item["audio"]) > 4096
                 or len(item["reference"]) > MAX_TEXT_CHARS
-                or isinstance(item["duration_seconds"], bool)
-                or not isinstance(item["duration_seconds"], (int, float))
-                or not math.isfinite(item["duration_seconds"])
+                or not _finite(item["duration_seconds"])
                 or item["duration_seconds"] <= 0
                 or not isinstance(item["tags"], list)
                 or not all(isinstance(tag, str) and len(tag) <= 256
@@ -223,10 +234,12 @@ def _measured_resource(data: Mapping[str, Any], case_count: int) -> dict[str, An
     result: dict[str, Any] = {}
     for key, value in data.items():
         if (not isinstance(value, list) or len(value) != case_count or
-                any(isinstance(v, bool) or not isinstance(v, (float, int)) or
-                    not math.isfinite(v) or v < 0 for v in value)):
+                any(not _finite(v) or v < 0 for v in value)):
             raise AudioStt178Error(f"invalid measured resource series: {key}")
-        result[key] = [float(v) for v in value]
+        try:
+            result[key] = [float(v) for v in value]
+        except OverflowError as exc:
+            raise AudioStt178Error(f"invalid measured resource series: {key}") from exc
     if any(v > 100 for v in result["cpu_utilization_percent"] + result["gpu_utilization_percent"]):
         raise AudioStt178Error("CPU/GPU utilization percentages cannot exceed 100")
     return result
@@ -298,7 +311,7 @@ def compare(fixture: Mapping[str, Any], fixture_digest: str,
         target_hits = sum(value["hits"] for value in hits.values())
         elapsed = resources["warm_latency_seconds"]
         durations = [float(case["duration_seconds"]) for case in fixture["cases"]]
-        if len(durations) != len(case_ids) or any(d <= 0 or not math.isfinite(d) for d in durations):
+        if len(durations) != len(case_ids) or any(d <= 0 or not _finite(d) for d in durations):
             raise AudioStt178Error("each case needs a positive audio duration for RTF")
         rtf = [t / d for t, d in zip(elapsed, durations)]
         if any(not math.isfinite(value) for value in rtf):
@@ -372,6 +385,15 @@ def _read_bounded(path: Path, limit: int) -> bytes:
     return value
 
 
+# errno values that mean "this file system cannot hard-link", not "the disk is broken"
+_NO_HARD_LINKS = frozenset(
+    code for code in (
+        getattr(errno, name, None)
+        for name in ("EPERM", "EOPNOTSUPP", "ENOTSUP", "ENOSYS", "EMLINK", "EXDEV")
+    ) if code is not None
+)
+
+
 def _fsync_directory(path: Path) -> None:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
@@ -410,7 +432,9 @@ def write_report_exclusive(path: Path, report: Mapping[str, Any]) -> None:
             os.link(temp_name, path)
         except FileExistsError:
             raise
-        except OSError:
+        except OSError as exc:
+            if exc.errno not in _NO_HARD_LINKS:
+                raise  # ENOSPC, EIO, EACCES ...: a second, non-atomic write would not help
             _create_exclusive(path, data)
         _fsync_directory(parent)
     except FileExistsError as exc:
@@ -427,6 +451,7 @@ def write_report_exclusive(path: Path, report: Mapping[str, Any]) -> None:
 
 def _create_exclusive(path: Path, data: bytes) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    created = os.fstat(fd)
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
@@ -434,7 +459,9 @@ def _create_exclusive(path: Path, data: bytes) -> None:
             os.fsync(handle.fileno())
     except BaseException:
         try:
-            os.unlink(path)  # we created it, so a partial file is ours to remove
+            current = os.stat(path, follow_symlinks=False)
+            if (current.st_ino, current.st_dev) == (created.st_ino, created.st_dev):
+                os.unlink(path)  # ours: remove the partial file; never someone else's
         except OSError:
             pass
         raise
