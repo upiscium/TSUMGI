@@ -6,7 +6,7 @@ TSUMGI is a deployment-agnostic compute fabric for scheduling capability-based w
 
 It is GPU-first, but its control-plane contracts are intentionally not tied to LLMs, a particular accelerator generation, Proxmox, or a one-GPU-per-worker topology.
 
-> **v0.3.0 release candidate:** [v0.3.0-rc.2 notes](docs/releases/v0.3.0-rc.2.md) (a fix of rc.1, whose decision runtime package could not be built) describe the TSUMGI runtime rename (a breaking change), the host migration tool, the operator console and the opt-in audio source series. It does not update any installed host.
+> **v0.3.0 release candidate:** [v0.3.0-rc.3 notes](docs/releases/v0.3.0-rc.3.md) (the candidate the production site runs on, with the decision runtime build renamed) describe the TSUMGI runtime rename (a breaking change), the host migration tool, the operator console and the opt-in audio source series. It does not update any installed host.
 >
 > **Published stable release:** [v0.2.1](https://github.com/upiscium/TSUMGI/releases/tag/v0.2.1), a patch release that pools Control's PostgreSQL connections (lower per-request latency). [v0.2.1 release notes](docs/releases/v0.2.1.md). It builds on [v0.2.0](https://github.com/upiscium/TSUMGI/releases/tag/v0.2.0) ([notes](docs/releases/v0.2.0.md)): Strata and FreeToken runtimes, llama.cpp KV cache types, and OpenCode-ready streaming. **Breaking since v0.1.x:** the Bonsai 2 runtime flavor is removed, so stored `bonsai2-pq2` manifests no longer load. Native audio engine Serving remains opt-in and unqualified.
 >
@@ -101,7 +101,7 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 
 ## Documentation
 - [Operator console](docs/admin-console.md) — read-only Worker status and Hugging Face model checks (off by default, no authentication).
-- [v0.3.0-rc.2 candidate notes](docs/releases/v0.3.0-rc.2.md) — the TSUMGI runtime rename, host migration, operator console and opt-in audio sources; fixes the rc.1 decision runtime build. The [rc.1 notes](docs/releases/v0.3.0-rc.1.md) stay as history.
+- [v0.3.0-rc.3 candidate notes](docs/releases/v0.3.0-rc.3.md) — the TSUMGI runtime rename, host migration, operator console and opt-in audio sources, with the production cutover evidence. The [rc.2](docs/releases/v0.3.0-rc.2.md) and [rc.1](docs/releases/v0.3.0-rc.1.md) notes stay as history.
 - [v0.2.1 release notes](docs/releases/v0.2.1.md) — Control PostgreSQL connection pooling.
 - [v0.2.0 GA release notes](docs/releases/v0.2.0.md) and [historical RC2](docs/releases/v0.2.0-rc.2.md) / [RC1](docs/releases/v0.2.0-rc.1.md) notes — Qwen3.6 serving runtimes, OpenCode-ready streaming, and the breaking Bonsai 2 removal.
 - [v0.1.3 GA release notes](docs/releases/v0.1.3.md) and [historical RC2](docs/releases/v0.1.3-rc.2.md) / [RC1](docs/releases/v0.1.3-rc.1.md) notes — reviewed Chat compatibility and fail-closed audio Worker scope.

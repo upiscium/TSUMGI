@@ -13,7 +13,7 @@ let
 in
 python312Packages.buildPythonPackage {
   pname = "tsumgi";
-  version = "0.3.0pre2";
+  version = "0.3.0pre3";
   pyproject = true;
 
   src = lib.cleanSourceWith {
