@@ -17,7 +17,7 @@ let
 in
 assert builtins.elem cudaArch [ "61" "86" ];
 cuda.backendStdenv.mkDerivation {
-  pname = "astrumweaver-llama-decision-cuda-sm${cudaArch}";
+  pname = "tsumgi-llama-decision-cuda-sm${cudaArch}";
   version = "0.6.0-dev-${builtins.substring 0 8 sourceRevision}";
 
   src = fetchFromGitHub {
@@ -60,10 +60,10 @@ cuda.backendStdenv.mkDerivation {
   # Make the source/arch pin queryable after building, including offline.
   postInstall = ''
     test -x "$out/bin/llama-server"
-    mkdir -p "$out/share/astrumweaver"
-    printf '%s\n' '${sourceRevision}' > "$out/share/astrumweaver/llama-cpp-revision"
-    printf '%s\n' '${cudaArch}' > "$out/share/astrumweaver/cuda-sm"
-    printf '%s\n' '12.9' > "$out/share/astrumweaver/cuda-toolkit"
+    mkdir -p "$out/share/tsumgi"
+    printf '%s\n' '${sourceRevision}' > "$out/share/tsumgi/llama-cpp-revision"
+    printf '%s\n' '${cudaArch}' > "$out/share/tsumgi/cuda-sm"
+    printf '%s\n' '12.9' > "$out/share/tsumgi/cuda-toolkit"
   '';
 
   meta = {
