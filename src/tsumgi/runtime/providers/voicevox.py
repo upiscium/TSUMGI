@@ -190,7 +190,7 @@ def _review_speakers(value: object, voice: VoicevoxVoicePin) -> bool:
     return matches == 1 and selectors == 1
 
 
-def _validate_query(value: object, max_bytes: int) -> dict:
+def _validate_query(value: object, max_bytes: int, *, max_nodes: int = 2048) -> dict:
     """Reject exponential/shared JSON expansion before bounded serialization.
 
     The injected source API is trusted to cap HTTP bytes separately, but a
@@ -199,7 +199,7 @@ def _validate_query(value: object, max_bytes: int) -> dict:
     """
     if (type(value) is not dict or type(value.get("accent_phrases")) is not list):
         raise _error("invalid_query")
-    remaining = 2048
+    remaining = max_nodes
     ancestors: set[int] = set()
 
     def check(item: object, depth: int) -> None:

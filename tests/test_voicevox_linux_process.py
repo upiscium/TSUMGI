@@ -20,6 +20,7 @@ from tsumgi.runtime.providers.voicevox_linux_process import (
     LinuxVoicevoxOwnedProcessControl,
     VoicevoxLinuxLaunchSpec,
     VoicevoxOwnedProcessError,
+    _launch_environment,
 )
 from tsumgi.runtime.providers.voicevox_managed import (
     VoicevoxOwnedManagedRuntime,
@@ -99,6 +100,54 @@ async def ready(controller: LinuxVoicevoxOwnedProcessControl, *, seconds=3.0):
             if observation is not None:
                 return observation
             await asyncio.sleep(0.025)
+
+
+@pytest.mark.parametrize("mode", ["valid", "absent", "shared", "symlink", "nonempty", "unsafe_parent"])
+def test_manifest_private_home_fail_closed_without_reusing_or_erasing_state(tmp_path, monkeypatch, mode):
+    parent = tmp_path / "parent"
+    parent.mkdir(mode=0o700)
+    home = parent / "home"
+    if mode != "absent":
+        home.mkdir(mode=0o700)
+    if mode == "shared":
+        home.chmod(0o755)
+    if mode == "unsafe_parent":
+        parent.chmod(0o777)
+    if mode == "symlink":
+        link = parent / "link"
+        link.symlink_to(home, target_is_directory=True)
+        home = link
+    if mode == "nonempty":
+        (home / "prior-state").write_text("keep")
+    monkeypatch.setenv("HOME", "/unrelated-home")
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "never-inherit-me")
+    plain = VoicevoxLinuxLaunchSpec("/opt/engine/run", ())
+    assert _launch_environment(plain) == {"PATH": "/usr/bin:/bin", "PYTHONNOUSERSITE": "1"}
+    configured = replace(plain, private_home=str(home))
+    if mode == "valid":
+        assert _launch_environment(configured) == {**_launch_environment(plain), "HOME": str(home)}
+    else:
+        with pytest.raises(VoicevoxOwnedProcessError):
+            _launch_environment(configured)
+    if mode == "nonempty":
+        assert (home / "prior-state").read_text() == "keep"
+
+
+async def test_preprovisioned_home_reaches_only_owned_synthetic_child(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    code = ("import os\n"
+            f"assert os.environ['HOME'] == {str(home)!r}\n"
+            "assert 'TSUMGI_WORKER_TOKEN' not in os.environ\n" + RUNNER)
+    spec, launch, _, _ = setup(tmp_path, runner_code=code)
+    controller = LinuxVoicevoxOwnedProcessControl(config=spec, launch_spec=replace(launch, private_home=str(home)))
+    monkeypatch.setenv("TSUMGI_WORKER_TOKEN", "never-inherit-me")
+    nonce = "11111111-1111-4111-8111-111111111111"
+    try:
+        await controller.launch(config=spec, nonce=nonce)
+        assert (await ready(controller)).launch_nonce == nonce
+    finally:
+        await controller.stop_owned(nonce=nonce)
 
 
 @pytest.mark.asyncio

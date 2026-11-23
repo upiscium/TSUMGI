@@ -230,6 +230,10 @@ def _review_enabled_voicevox_source_assembly(
         or launch.executable_path != runtime.executable_path
         or http.endpoint != runtime.endpoint
         or http.adapter != runtime.adapter
+        # The separate executable manifest lane owns these options. B6d's
+        # historical review digest does not bind them; never accept them here.
+        or launch.private_home is not None
+        or http.strict_style_identity is not None
         or launch.stop_timeout_seconds > runtime.stop_timeout_seconds
         or http.request_timeout_seconds > runtime.adapter.synthesis_timeout_seconds
         or port is None
