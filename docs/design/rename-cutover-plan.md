@@ -83,11 +83,10 @@ profiles. They are single replicas, so choose a quiet moment.
 2. Stop the old Control (`systemctl stop astrumweaver-control`). Workers already on
    the new build log "control unavailable" and retry; that is expected.
 3. **Migrate the schema:** run `tsumgi-migrate` from the new build against the
-   production database (migrations 006 and 007 add tables; nothing is dropped). The
-   old Control refuses a database at 007, so a Control rollback needs the old
-   stack to start against a database at 005: take the `pg_dump` from step 6 as the
-   restore point, or accept that the old Control cannot return once 006/007 are in
-   place (decision for the owner, see below).
+   production database (migrations 006 and 007 add tables; nothing is dropped or
+   changed). The old Control only checks that *its own* migrations are applied and
+   ignores extra ones (v0.2.1 `check_storage`), so it still starts against the
+   migrated database; a Control rollback therefore needs no data restore.
 4. Rename the database: `ALTER DATABASE astrumweaver RENAME TO tsumgi;` (nothing
    else connected). Update the database URL in `control.env` happens in the next step.
 5. Put the re-pinned decision catalog in place, then `tsumgi-migrate-host apply
@@ -111,20 +110,20 @@ profiles. They are single replicas, so choose a quiet moment.
   backup directory (tested live: 5.6 s, a second round trip identical).
 - **Control and database (phase 3):** stop the new Control, `ALTER DATABASE tsumgi
   RENAME TO astrumweaver`, run the Control host's `rollback.sh`, start the old Control.
-  Migrations 006/007 stay in the database (additive); the old Control does not accept
-  that. Either restore the `pg_dump` taken before the window, or keep the old Control
-  off until the new one is fixed. This is the one step that cannot be undone without
-  restoring data, so the owner decides before the window.
+  Migrations 006/007 stay in the database as unused tables; the old Control accepts
+  them. The `pg_dump` taken before the window is the restore point for anything
+  unexpected, not a step of the rollback.
 - A Worker moved before Control is rolled back keeps working with the old Control.
 
 ## Decisions for the owner before the window
 
 1. Approval of this plan and the window (date, time, who is on hand).
-2. Whether the migrations 006/007 may be applied to production at all in this
-   release: they come with the audio series (epoch fences and preparations) and
-   are unused while those features are off, but they make the database one-way
-   for the old Control. The alternative is to release the rename first on the
-   older schema and ship the audio migrations later.
+2. Whether migrations 006/007 are applied in this window. They come with the audio
+   series (epoch fences and preparations) and are unused while those features are
+   off; they are additive and the old Control tolerates them, so the risk is low.
+   The alternative is to hold them back and ship them with the first release that
+   uses them (the new Control then needs them: it refuses a database that is not
+   at 007).
 3. Release shape: a prerelease first (`v0.3.0-rc.1`, used for the cutover) and a
    GA promotion after a quiet period, as for v0.2.0, or straight to `v0.3.0`.
 
