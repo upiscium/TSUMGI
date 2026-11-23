@@ -5,7 +5,7 @@ let
 
   migrations = stdenvNoCC.mkDerivation {
     pname = "tsumgi-control-assets";
-    version = "0.3.0pre1";
+    version = "0.3.0pre2";
     src = ../.;
     dontBuild = true;
     installPhase = ''
@@ -15,7 +15,7 @@ let
   };
 in
 buildEnv {
-  name = "tsumgi-control-support-0.3.0pre1";
+  name = "tsumgi-control-support-0.3.0pre2";
   paths = [
     controlCli
     migrations

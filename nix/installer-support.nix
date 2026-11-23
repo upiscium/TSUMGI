@@ -10,7 +10,7 @@ let
 
   migrations = stdenvNoCC.mkDerivation {
     pname = "tsumgi-installer-assets";
-    version = "0.3.0pre1";
+    version = "0.3.0pre2";
     src = ../.;
     dontBuild = true;
     installPhase = ''
@@ -19,7 +19,7 @@ let
     '';
   };
   base = buildEnv {
-    name = "tsumgi-installer-support-base-0.3.0pre1";
+    name = "tsumgi-installer-support-base-0.3.0pre2";
     paths = [
       controlCli
       migrations
@@ -29,7 +29,7 @@ let
   };
 in
 stdenvNoCC.mkDerivation {
-  name = "tsumgi-installer-support-0.3.0pre1";
+  name = "tsumgi-installer-support-0.3.0pre2";
   dontUnpack = true;
   installPhase = ''
     mkdir -p "$out"
