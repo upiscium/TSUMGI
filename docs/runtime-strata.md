@@ -168,3 +168,68 @@ Qwen3.6 UD-Q4_K_XL at 12K.
 | over-context stream | SSE error with `context_length_exceeded` |
 | Worker stop | the Strata processes and GPU memory were released |
 | HumanEval+ | 150/164 (FreeToken with the same GGUF quantization: 151) |
+
+## Multi-GPU Workers (layer split)
+
+Strata's Qwen3.8-Flash-Next family (including the Coder build), Inkling and Hy4 engines split the layers over
+two or more GPUs: set `"gpu": [0, 1]` and `"layer_split": "auto"` in the run config. The Qwen3.6 engine
+ignores both options and runs on one GPU. Pascal cards (sm_61) use the CUDA 12 engine and RTX 30 cards the
+CUDA 13 engine, both from Strata 0.2.20; the Coder lanes below were validated with that release, while the
+single-GPU Qwen3.6 setup above still pins 0.2.13.
+
+Worker rules for such a lane:
+
+- Worker class `gpu-multi`, `gpu_count = 2`, both UUIDs in `gpu_uuids` and in `/etc/tsumgi/gpu-uuids`. The
+  preflight runs in `exact-visible` mode, so the host (for example an LXC) must show exactly the GPUs of the
+  lane. Give each LXC only its own `/dev/nvidiaN` entries.
+- `max_concurrency = 1` and Strata `parallel = 1`: the v1 WorkerRuntime rejects a larger value at start. Two
+  lanes of the same profile serve two requests at once; further requests queue in the Gateway.
+- The model has two GGUF shards. The serving identity hashes both, and the file checked by
+  `ExecStartPre=sha256sum --check` must list both.
+- The engine variant (`cuda12` or `cuda13`) is part of the deployment identity. Hosts with different GPU
+  generations are therefore different deployments and need different profile ids.
+- `tools/strata_multigpu_manifests.py` writes the manifests, `worker.toml` and `gpu-uuids` for one lane from a
+  prepared run config; its output reproduced the deployed `runtime.json`, `serving.json` and
+  `catalog-entry.json` byte for byte. Run it with the installed tsumgi Python.
+
+```sh
+python tools/strata_multigpu_manifests.py OUT_DIR WORKER_ID CONTROL_URL STRATA_ROOT \
+  RUN_CONFIG EVIDENCE_JSON PROFILE_ID --quantization IQ1_M
+```
+
+**Thinking.** The Coder profiles always run with thinking on (`enable_thinking = true`). The reasoning comes
+back separately as `reasoning_content` and counts against the output limit, so the serving contract sets
+`output_tokens` to 8192. With thinking off the same model returned an empty review once and repeated one
+identical tool call 180 to 240 times in two OpenCode review runs. The Gateway rejects `chat_template_kwargs`
+(`unsupported_field`); thinking is a Worker setting.
+
+**Memory.** The experts of shard 1 go to host RAM except for what the GPUs hold, and setup wants RAM of at
+least the experts plus about 10 GB. Coder IQ1_M (23 GB of experts) runs on a 32 GB host at 128K. A 192K context
+adds host KV cache, and a 40 GB host was used for it. Flash-Next IQ3_S (50 GB of experts) needs 64 GB.
+
+Measured through TSUMGI and on the lane hosts (Coder IQ1_M unless noted; thinking off for the accuracy
+suites, 196 MBPP+, 200 BFCL simple, 150 GSM8K items, the same items for every row):
+
+| Lane | Prompt reading | Decode | MBPP+ | BFCL | GSM8K |
+| --- | --- | --- | --- | --- | --- |
+| 2x GTX 1080 Ti, 128K | 370-780 tok/s | 38-45 tok/s | 163 | 194 | 142 |
+| 2x RTX 3060, 192K | 1,000-1,830 tok/s | 34-69 tok/s | 161 | 194 | 141 |
+| 2x GTX 1080 Ti, Flash-Next IQ3_S, 64 GB RAM | 370-545 tok/s | 23-39 tok/s | 164 | 184 | 148 |
+| Qwen3.6 UD-Q4_K_S, llama.cpp, 2x RTX 3060 (previous profile) | not measured | about 95 tok/s | 156 | 183 | 142 |
+
+A 191K-token prompt took 111 s on the RTX 3060 lane and 247 s on three GTX 1080 Ti. The prefix cache works
+(a repeated 10K prompt returned in about 1 s). IQ3_S passed the OpenCode task suite but its reviews took 10 to
+15 minutes on Pascal, so it was not kept. Inkling-2-Mini has no prefix cache (`cached_tokens` stays 0) and
+re-reads the whole context on every agent step; it was not used.
+
+**Operations.**
+
+- Restart Control only while no job is running. A Worker whose job was in flight logs `Explicit Worker
+  recovery blocked by Control conflict` for about 4.5 minutes and requests get 503 `no compatible chat
+  deployment is available` meanwhile. With idle Workers every profile was back within 3 to 10 seconds.
+- Moving a Strata install directory leaves absolute symlinks (`bin/strata`, `data/terminal/current`); recreate
+  them.
+- The two shards plus the draft layer are about 64 GB, so a Proxmox backup of the container includes them.
+- The hand-installed `tsumgi-gpu-mode` of the lab hosts must pass every UUID (`--gpu-uuid` once per line of
+  `/etc/tsumgi/gpu-uuids`) and check the memory of every card; the Nix module configures its version from the
+  Worker's declared GPU UUID set.
