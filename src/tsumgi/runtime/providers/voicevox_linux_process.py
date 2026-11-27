@@ -15,6 +15,7 @@ import re
 import signal
 import stat
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -214,6 +215,10 @@ def _proc_generation(pid: int) -> tuple[int, str]:
     return int(fields[19]), fields[0]  # field 22 starttime, field 3 state
 
 
+_EXEC_WINDOW_ATTEMPTS = 10
+_EXEC_WINDOW_SLEEP_SECONDS = 0.005
+
+
 def _proc_fixed_command(pid: int, argv: tuple[str, ...]) -> bool:
     """Check full child argv, because exec of same pinned binary retains PID.
 
@@ -221,8 +226,19 @@ def _proc_fixed_command(pid: int, argv: tuple[str, ...]) -> bool:
     Detects unreviewed re-exec/argv drift; refuses READY rather than adopting.
     """
     try:
-        with open(f"/proc/{pid}/cmdline", "rb") as source:
-            raw = source.read(65537)
+        # A PyInstaller onedir bootloader (the real VOICEVOX ``run``) re-execs
+        # itself ~1 ms after spawn; during execve the kernel reports an empty
+        # cmdline for the same PID. Retry briefly so that window is not read as
+        # an identity failure. A permanently empty cmdline (exited/zombie) still
+        # fails after the bounded wait.
+        raw = b""
+        for attempt in range(_EXEC_WINDOW_ATTEMPTS):
+            with open(f"/proc/{pid}/cmdline", "rb") as source:
+                raw = source.read(65537)
+            if raw:
+                break
+            if attempt + 1 < _EXEC_WINDOW_ATTEMPTS:
+                time.sleep(_EXEC_WINDOW_SLEEP_SECONDS)
         if not raw or len(raw) > 65536 or raw[-1:] != b"\0":
             return False
         tokens = raw[:-1].split(b"\0")
