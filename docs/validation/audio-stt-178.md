@@ -106,8 +106,10 @@ generic and do not print exception text, transcript, or input path.
 
 ## Human selection gate
 
-Current gate: **DECISION REQUIRED; DES-AUDIO-006 remains blocked for
-implementation.** Human options are the pinned Japanese Parakeet candidate,
+Current gate: **a candidate was selected on 2026-11-27 (Faster-Whisper
+large-v3-turbo, float32), with a real-speaker re-check required before activation**; see
+[the results note](audio-stt-178-results.md#maintainer-decision-2026-11-27). The harness
+itself still reports `DECISION_REQUIRED`, by design. The options before the decision were the pinned Japanese Parakeet candidate,
 pinned Faster-Whisper candidate, or neither / gather more evidence. Initial
 measurable candidate thresholds are CER ≤ 0.10, WER ≤ 0.20 and mean RTF ≤
 1.0 on the agreed labelled private fixture, with the agreed GTX 1080 Ti

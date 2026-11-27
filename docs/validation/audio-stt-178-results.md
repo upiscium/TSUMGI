@@ -119,3 +119,27 @@ the RTX 4080 (same decoding; differences only from numerics).
   without CUDA graphs. Other settings could change speed.
 - The harness still reports `empirical_completion: false` and the human
   selection gate stays `DECISION_REQUIRED`.
+
+## Maintainer decision (2026-11-27)
+
+The maintainer selected **`deepdml/faster-whisper-large-v3-turbo-ct2`** (MIT, a
+third-party CTranslate2 conversion of Whisper large-v3-turbo) at the pinned revision
+above, **float32** on the GTX 1080 Ti, as the Japanese STT candidate for DES-AUDIO-006.
+
+Reasons recorded: accuracy equal to large-v3 on this fixture (CER 0.047, WER 0.061,
+both contrast targets 3/3) at about half its peak VRAM (about 4.2 GiB against 7.8 GiB
+of 11 GiB) and under a second of warm p95 latency; Parakeet is much faster but wrote
+the counter in the `3本` items as a kana reading (0/3).
+
+Conditions attached to the selection:
+
+- **Real-speaker re-check before any activation.** The evidence is read speech plus six
+  synthetic contrast items; a conversational, real-speaker check of the `散歩` / `3本`
+  contrast and of numerals is still required.
+- The conversion is third-party; the pinned revision and weight SHA-256 are the identity
+  to deploy, not the model name.
+- float32 is what was measured on this GPU; int8 is unmeasured and would need its own
+  measurement because it changes accuracy.
+
+This note records the decision; the harness itself still reports
+`empirical_completion: false` and a `DECISION_REQUIRED` gate by design.
