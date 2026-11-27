@@ -21,7 +21,11 @@ from ..control.auth import ClientAuthMode
 from ..control.models import WorkerState
 from ..control.worker_auth import WorkerCredentials
 from ..control.audio_epoch import validate_fence_arguments, validate_fence_lookup
-from ..control.audio_prepare import validate_prepare_arguments, validate_prepare_lookup
+from ..control.audio_prepare import (
+    validate_prepare_arguments,
+    validate_prepare_lookup,
+    validate_release_arguments,
+)
 from ..control.repository import (
     ConflictError,
     ControlRepository,
@@ -90,6 +94,12 @@ async def _optional_json_v1(request: Request) -> dict[str, Any]:
 def _unique_fence_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     if len({name for name, _ in pairs}) != len(pairs):
         raise ValueError("duplicate fence field")
+    return dict(pairs)
+
+
+def _unique_release_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    if len({name for name, _ in pairs}) != len(pairs):
+        raise ValueError("duplicate release field")
     return dict(pairs)
 
 
@@ -392,6 +402,55 @@ def create_app(
             except (ValueError, TypeError):
                 raise HTTPException(status_code=422, detail="invalid audio epoch fence request") from None
             record = await asyncio.to_thread(repository.get_audio_epoch_fence, worker_id, epoch)
+            return JSONResponse(
+                {"protocol_version": PROTOCOL_VERSION, **record.to_dict()},
+                headers={"cache-control": "no-store"},
+            )
+
+        @app.post(
+            "/v1/admin/audio-epochs/{worker_id}/{epoch}/release",
+            dependencies=[Depends(require_epoch_operator)],
+        )
+        async def release_audio_epoch_preparation(
+            worker_id: str, epoch: str, request: Request
+        ) -> JSONResponse:
+            # Ends a preparation's hold on the Worker; no activation or admission grant.
+            if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+                raise HTTPException(status_code=415, detail="audio epoch release requires JSON")
+            try:
+                async with asyncio.timeout(5):
+                    raw = await _bounded_audio_body(request, 2048)
+                body = json.loads(raw, object_pairs_hook=_unique_release_fields)
+                if not isinstance(body, dict) or set(body) != {
+                    "protocol_version", "release_request_id",
+                } or body["protocol_version"] != PROTOCOL_VERSION:
+                    raise ValueError
+                validate_release_arguments(worker_id, epoch, body["release_request_id"])
+            except TimeoutError:
+                raise HTTPException(status_code=408, detail="audio epoch release request timed out") from None
+            except (ValueError, TypeError, RecursionError):
+                raise HTTPException(status_code=422, detail="invalid audio epoch release request") from None
+            record = await asyncio.to_thread(
+                repository.release_audio_epoch_preparation, worker_id, epoch,
+                release_request_id=body["release_request_id"],
+            )
+            return JSONResponse(
+                {"protocol_version": PROTOCOL_VERSION, **record.to_dict()},
+                headers={"cache-control": "no-store"},
+            )
+
+        @app.get(
+            "/v1/admin/audio-epochs/{worker_id}/{epoch}/release",
+            dependencies=[Depends(require_epoch_operator)],
+        )
+        async def read_audio_epoch_preparation_release(worker_id: str, epoch: str) -> JSONResponse:
+            try:
+                validate_prepare_lookup(worker_id, epoch)
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=422, detail="invalid audio epoch release request") from None
+            record = await asyncio.to_thread(
+                repository.get_audio_epoch_preparation_release, worker_id, epoch
+            )
             return JSONResponse(
                 {"protocol_version": PROTOCOL_VERSION, **record.to_dict()},
                 headers={"cache-control": "no-store"},

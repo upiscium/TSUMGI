@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import hashlib
 
-from audio_epoch_acceptance import E1, E2, WORKER_ID
+from audio_epoch_acceptance import CLIENT, E1, E2, OPERATOR, WORKER_ID, envelope
 from worker_identity_cases import OTHER, OTHER_ID, bearer
 
 REQUEST = "32345678-1234-4234-9234-123456789abc"
@@ -66,6 +66,7 @@ PREPARATION_TABLES = (
     "audio_preparation_qualifications",
     "audio_preparation_qualification_revocations",
     "audio_epoch_preparations",
+    "audio_epoch_preparation_releases",
 )
 
 
@@ -82,6 +83,79 @@ def core_effects(h):
     if rows is not None:
         state = {**state, "database_rows": {k: v for k, v in rows.items() if k not in PREPARATION_TABLES}}
     return state, files
+
+
+RELEASE = "52345678-1234-4234-9234-123456789abc"
+RELEASE_2 = "62345678-1234-4234-9234-123456789abc"
+EPOCH_3 = "32345678-1234-4234-9234-123456789def"
+
+
+def release(h, epoch=E2, request_id=RELEASE, *, worker_id=WORKER_ID, headers=None):
+    return h.client.post(
+        f"/v1/admin/audio-epochs/{worker_id}/{epoch}/release",
+        headers=OPERATOR if headers is None else headers,
+        json={"protocol_version": "v1", "release_request_id": request_id},
+    )
+
+
+def read_release(h, epoch=E2, *, worker_id=WORKER_ID):
+    return h.client.get(
+        f"/v1/admin/audio-epochs/{worker_id}/{epoch}/release", headers=OPERATOR,
+    )
+
+
+def read_preparation(h, epoch=E2):
+    return h.client.get(
+        f"/v1/workers/{WORKER_ID}/audio-epochs/{epoch}", headers=h.worker_headers,
+    )
+
+
+def offline_worker(h):
+    assert h.register(E1).status_code == 201
+    assert h.state(E1, "offline").status_code == 200
+
+
+def prepare_expired(h, repo):
+    """A preparation recorded in the past, so it has already expired now."""
+    now = datetime.now(UTC)
+    q = qualification_for(
+        h, repo, issued_at=now - timedelta(seconds=300), expires_at=now + timedelta(seconds=300),
+    )
+    record = repo.prepare_audio_epoch(
+        WORKER_ID, E2, qualification_revision=q.qualification_revision,
+        expected_intent_revision=0, prepare_request_id=REQUEST, ttl_seconds=60,
+        now=now - timedelta(seconds=120),
+    )
+    assert record.expires_at < now
+    return q, record
+
+
+def force_online(repo, worker_id=WORKER_ID):
+    """Put a prepared Worker online behind the API's back, to test the selection guard."""
+    if hasattr(repo, "database_url"):
+        import psycopg
+
+        with psycopg.connect(repo.database_url) as connection:
+            connection.execute(
+                "UPDATE workers SET state = 'online', last_seen_at = clock_timestamp() "
+                "WHERE id = %s", (worker_id,),
+            )
+        return
+    from dataclasses import replace
+    from tsumgi.control.models import WorkerState
+
+    with repo._lock:
+        repo._workers[worker_id] = replace(
+            repo._workers[worker_id], state=WorkerState.ONLINE, last_seen_at=datetime.now(UTC),
+        )
+
+
+def submit_status(h):
+    return h.client.post("/v1/jobs", headers=CLIENT, json=envelope(
+        capability="audio.synthesize", serving=h.profile.binding.to_dict(),
+        deadline_at=(datetime.now(UTC) + timedelta(seconds=300)).isoformat(),
+        max_attempts=3, payload={"input": "synthetic epoch acceptance"},
+    )).status_code
 
 
 class AudioPreparationCases:
@@ -150,7 +224,12 @@ class AudioPreparationCases:
         assert historical.json() == receipt
         assert historical.json()["can_claim"] is False
         assert historical.json()["can_activate"] is False
-        assert h.register(E2).status_code == 409
+        # Revoking the qualification releases the Worker (it no longer holds it out);
+        # the history above stays readable and unchanged.
+        assert h.register(E2).status_code == 201
+        assert h.client.get(
+            f"/v1/workers/{WORKER_ID}/audio-epochs/{E2}", headers=h.worker_headers,
+        ).json() == receipt
 
     def test_foreign_worker_qualification_and_credentials_are_rejected(self, preparation_harness):
         h = preparation_harness
@@ -249,3 +328,146 @@ class AudioPreparationCases:
         )
         assert second.intent_revision == 2
         assert second.expires_at == q.expires_at  # a qualification that ends sooner shortens the record
+
+    def test_expiry_releases_the_guard(self, preparation_harness):
+        h = preparation_harness
+        repo = h.qualification_repository
+        offline_worker(h)
+        _, record = prepare_expired(h, repo)
+        before = read_preparation(h).json()
+        assert h.register(E2).status_code == 201
+        assert h.state(E2, "online").status_code == 200
+        queued = h.submit()
+        claimed = h.claim(E2)
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["job_id"] == queued["job_id"]
+        # History is not rewritten: the preparation reads back exactly as recorded.
+        assert read_preparation(h).json() == before
+        assert before["prepare_request_id"] == record.prepare_request_id
+
+    def test_qualification_revocation_releases_the_guard(self, preparation_harness):
+        h = preparation_harness
+        repo = h.qualification_repository
+        offline_worker(h)
+        q = qualification_for(h, repo)
+        receipt = prepare(h, q.qualification_revision).json()
+        assert h.register(E2).status_code == 409
+        repo.revoke_audio_preparation_qualification(q.qualification_revision)
+        assert h.register(E2).status_code == 201
+        assert h.state(E2, "online").status_code == 200
+        h.submit()
+        assert h.claim(E2).status_code == 200
+        assert read_preparation(h).json() == receipt
+
+    def test_explicit_release_releases_the_guard_and_keeps_history(self, preparation_harness):
+        h = preparation_harness
+        repo = h.qualification_repository
+        offline_worker(h)
+        q = qualification_for(h, repo)
+        receipt = prepare(h, q.qualification_revision).json()
+        assert h.register(E2).status_code == 409
+        assert read_release(h).status_code == 404
+        before = core_effects(h)
+        response = release(h)
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
+        released = response.json()
+        assert released["protocol_version"] == "v1"
+        assert released["schema_version"] == "audio-epoch-preparation-release-v1"
+        assert released["state"] == "released"
+        assert released["worker_id"] == WORKER_ID and released["runtime_instance_epoch"] == E2
+        assert released["release_request_id"] == RELEASE
+        assert released["released_at"].endswith("Z")
+        assert set(released) == {
+            "protocol_version", "schema_version", "state", "worker_id",
+            "runtime_instance_epoch", "release_request_id", "released_at",
+        }
+        assert read_release(h).json() == released
+        assert core_effects(h)[0] == before[0]  # a release does not touch Workers or Jobs
+        assert read_preparation(h).json() == receipt
+        assert h.register(E2).status_code == 201
+        assert h.state(E2, "online").status_code == 200
+        queued = h.submit()
+        claimed = h.claim(E2)
+        assert claimed.status_code == 200 and claimed.json()["job_id"] == queued["job_id"]
+
+    def test_an_active_preparation_still_holds_the_worker_out(self, preparation_harness):
+        h = preparation_harness
+        repo = h.qualification_repository
+        offline_worker(h)
+        q = qualification_for(h, repo)
+        prepare(h, q.qualification_revision)
+        assert h.register(E2).status_code == 409
+        assert h.register(E1).status_code == 409
+        assert h.state(E1, "online").status_code == 409
+        assert h.claim(E1).status_code == 409
+        # Selection is guarded on its own: even an online Worker is not a candidate.
+        force_online(repo)
+        assert submit_status(h) == 503
+        assert release(h).status_code == 200
+        assert submit_status(h) == 201
+
+    def test_release_is_idempotent_and_conflicts_are_409(self, preparation_harness):
+        h = preparation_harness
+        repo = h.qualification_repository
+        offline_worker(h)
+        q = qualification_for(h, repo)
+        prepare(h, q.qualification_revision)
+        first = release(h)
+        assert first.status_code == 200
+        before = h.effects()
+        assert release(h).json() == first.json()  # same request id: unchanged receipt
+        assert h.effects() == before
+        assert release(h, request_id=RELEASE_2).status_code == 409
+        assert read_release(h).json() == first.json()
+        # Unknown preparation: 404, and nothing is recorded.
+        assert release(h, epoch=EPOCH_3).status_code == 404
+        assert read_release(h, epoch=EPOCH_3).status_code == 404
+        # A request id already used by another preparation is a conflict.
+        second = prepare(h, q.qualification_revision, epoch=EPOCH_3,
+                         request_id="72345678-1234-4234-9234-123456789abc",
+                         expected_intent_revision=1)
+        assert second.status_code == 200, second.text
+        assert release(h, epoch=EPOCH_3, request_id=RELEASE).status_code == 409
+        assert read_release(h, epoch=EPOCH_3).status_code == 404
+        assert release(h, epoch=EPOCH_3, request_id=RELEASE_2).status_code == 200
+
+    def test_expired_or_revoked_preparations_can_still_be_released(self, preparation_harness):
+        h = preparation_harness
+        repo = h.qualification_repository
+        offline_worker(h)
+        q, _ = prepare_expired(h, repo)
+        assert release(h).status_code == 200
+        assert read_release(h).status_code == 200
+        revoked = qualification_for(h, repo)
+        assert prepare(h, revoked.qualification_revision, epoch=EPOCH_3,
+                       request_id="72345678-1234-4234-9234-123456789abc",
+                       expected_intent_revision=1).status_code == 200
+        repo.revoke_audio_preparation_qualification(revoked.qualification_revision)
+        assert release(h, epoch=EPOCH_3, request_id=RELEASE_2).status_code == 200
+
+    def test_new_preparation_after_release_needs_the_right_intent_revision(self, preparation_harness):
+        h = preparation_harness
+        repo = h.qualification_repository
+        offline_worker(h)
+        q = qualification_for(h, repo)
+        first = prepare(h, q.qualification_revision)
+        assert first.status_code == 200
+        # While the first is active a second intent is refused ...
+        assert prepare(h, q.qualification_revision, epoch=EPOCH_3,
+                       request_id="72345678-1234-4234-9234-123456789abc",
+                       expected_intent_revision=1).status_code == 409
+        assert release(h).status_code == 200
+        # ... a released preparation is not replayed as active ...
+        assert prepare(h, q.qualification_revision).status_code == 409
+        # ... and after release the next intent is recorded with the right revision.
+        assert prepare(h, q.qualification_revision, epoch=EPOCH_3,
+                       request_id="72345678-1234-4234-9234-123456789abc",
+                       expected_intent_revision=0).status_code == 409
+        third = prepare(h, q.qualification_revision, epoch=EPOCH_3,
+                        request_id="72345678-1234-4234-9234-123456789abc",
+                        expected_intent_revision=1)
+        assert third.status_code == 200, third.text
+        assert third.json()["intent_revision"] == 2
+        assert h.register(E2).status_code == 409  # the new preparation is active again
+        assert read_preparation(h).json() == first.json()

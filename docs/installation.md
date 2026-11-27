@@ -110,7 +110,8 @@ TSUMGI schema creation/upgrades are separate: run
 `tsumgi-migrate`, or explicitly enable the NixOS
 `migrateOnStart` option described below.
 
-A Control built from v0.3.0 refuses a database that is not at migration `007`, so
+A Control built from v0.3.0 refuses a database that is not at migration `007`; a build that includes the audio epoch preparation release table
+requires migration `008` (additive), so
 the schema must be migrated before Control starts. A fresh installation runs
 `tsumgi-migrate` once on the empty database; an existing v0.2.x site follows
 [Moving a host](host-migration.md) instead, which also covers the rename of

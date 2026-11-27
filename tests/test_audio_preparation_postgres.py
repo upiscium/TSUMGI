@@ -86,6 +86,10 @@ def preparation_harness(postgres17_database, tmp_path, monkeypatch):
                     "SELECT * FROM audio_epoch_preparations "
                     "ORDER BY worker_id, runtime_instance_epoch LIMIT 129",
                 ).fetchall(),
+                "audio_epoch_preparation_releases": connection.execute(
+                    "SELECT * FROM audio_epoch_preparation_releases "
+                    "ORDER BY worker_id, runtime_instance_epoch LIMIT 129",
+                ).fetchall(),
             }
         assert len(ids) <= 128
         assert all(len(rows) <= 128 for rows in raw.values())
