@@ -51,6 +51,10 @@ from .providers.voicevox_manifest import VOICEVOX_PROVIDER_ID, VoicevoxProvider,
 from .providers.style_bert_vits2_manifest import (
     STYLE_BERT_VITS2_PROVIDER_ID, StyleBertManifestConfig, StyleBertManifestProvider,
 )
+from .providers.faster_whisper_manifest import (
+    PROVIDER_ID as FASTER_WHISPER_PROVIDER_ID, FasterWhisperManifestConfig,
+    FasterWhisperManifestProvider,
+)
 from .providers.parakeet_manifest import (
     PROVIDER_ID as PARAKEET_PROVIDER_ID, ParakeetManifestConfig, ParakeetManifestProvider,
 )
@@ -256,6 +260,7 @@ _PROVIDER_TYPES: Mapping[
     VOICEVOX_PROVIDER_ID: (VoicevoxProvider, VoicevoxProviderConfig),
     STYLE_BERT_VITS2_PROVIDER_ID: (StyleBertManifestProvider, StyleBertManifestConfig),
     PARAKEET_PROVIDER_ID: (ParakeetManifestProvider, ParakeetManifestConfig),
+    FASTER_WHISPER_PROVIDER_ID: (FasterWhisperManifestProvider, FasterWhisperManifestConfig),
     DUAL_LLAMA_CPP_PROVIDER_ID: (DualLlamaCppProvider, DualLlamaCppProviderConfig),
     OLLAMA_PROVIDER_ID: (OllamaProvider, OllamaProviderConfig),
     LLAMA_CPP_PROVIDER_ID: (
@@ -330,6 +335,8 @@ def provider_from_deployment(
             raise ValueError("VOICEVOX manifest configuration is invalid") from None
         if provider_type is StyleBertManifestProvider:
             raise ValueError("Style-Bert-VITS2 manifest configuration is invalid") from None
+        if provider_type is FasterWhisperManifestProvider:
+            raise ValueError("Faster-Whisper manifest configuration is invalid") from None
         if provider_type is ParakeetManifestProvider:
             raise ValueError("Parakeet manifest configuration is invalid") from None
         raise
@@ -392,7 +399,10 @@ def managed_runtime_from_deployment(
         )
     # An owned audio runtime must bind the two manifests *before* start().
     # Its already provisioned assets do not authorize any SetupPlan action.
-    if isinstance(provider, (VoicevoxProvider, StyleBertManifestProvider, ParakeetManifestProvider)):
+    if isinstance(provider, (
+        VoicevoxProvider, StyleBertManifestProvider, ParakeetManifestProvider,
+        FasterWhisperManifestProvider,
+    )):
         if deployment.setup_intent is not None:
             raise ValueError("owned audio setup intent is not supported")
         return provider.create_manifest_runtime(context, serving)
