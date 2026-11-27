@@ -106,6 +106,6 @@ Real acceptance on source revision
   `409 embedding_space_mismatch` before durable admission.
 
 Canonical redacted evidence is
-[`validation/embedding/embedding-v1.md`](../../validation/embedding/embedding-v1.md).
+[`validation/embedding/embedding-v1.md`](https://github.com/upiscium/TSUMGI/blob/main/validation/embedding/embedding-v1.md).
 The evidence binds the exact model/tokenizer/deployment/profile/contract/space
 identities without publishing fixture text or deployment-local paths.

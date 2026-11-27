@@ -93,7 +93,7 @@ The example limits are placeholders and must match the selected
   and serving-contract revision
   `sha256:d476ebd2c0af5ff9ff988ae64080bbcabce6c139df0450b54defbf5665f2cd5f`.
 - Canonical redacted evidence:
-  [`validation/opencode/chat-v1.md`](../../validation/opencode/chat-v1.md).
+  [`validation/opencode/chat-v1.md`](https://github.com/upiscium/TSUMGI/blob/main/validation/opencode/chat-v1.md).
 
 The packaged `tsumgi-opencode-chat-accept` command first validates the
 live gateway's namespaced model metadata against the expected profile revision,

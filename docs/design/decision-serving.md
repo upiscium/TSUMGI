@@ -238,7 +238,7 @@ model quality or calibration. In particular, the failure to abstain on the
 deliberate unknown is retained as a real limitation.
 
 Canonical redacted evidence is
-[`validation/decision/shadow-v1.md`](../../validation/decision/shadow-v1.md).
+[`validation/decision/shadow-v1.md`](https://github.com/upiscium/TSUMGI/blob/main/validation/decision/shadow-v1.md).
 
 ## Additional model qualification: Liquid AI d1-3B
 

@@ -278,7 +278,7 @@ Each concrete provider must prove its own compatibility rules through provider t
 The canonical public matrix is available in both forms:
 
 - [Runtime Compatibility Matrix](runtime-compatibility.md) — human-readable interpretation and validation boundaries.
-- [`acceptance/runtime-providers-v0.1.toml`](../acceptance/runtime-providers-v0.1.toml) — machine-readable claims and evidence references.
+- [`acceptance/runtime-providers-v0.1.toml`](https://github.com/upiscium/TSUMGI/blob/main/acceptance/runtime-providers-v0.1.toml) — machine-readable claims and evidence references.
 
 ## Setup TUI relationship
 

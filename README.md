@@ -98,6 +98,7 @@ Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmo
 - Existing development machines may later participate as drainable/borrowable workers without reprovisioning.
 
 ## Documentation
+- [Documentation site](https://upiscium.github.io/TSUMGI/) — these pages, rendered.
 - [Operator console](docs/admin-console.md) — read-only Worker status and Hugging Face model checks (off by default, no authentication).
 - [v0.3.0 release notes](docs/releases/v0.3.0.md) — the TSUMGI runtime rename, host migration, operator console and opt-in audio sources, with the production evidence. The candidate notes [rc.3](docs/releases/v0.3.0-rc.3.md), [rc.2](docs/releases/v0.3.0-rc.2.md) and [rc.1](docs/releases/v0.3.0-rc.1.md) stay as history.
 - [v0.2.1 release notes](docs/releases/v0.2.1.md) — Control PostgreSQL connection pooling.

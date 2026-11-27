@@ -48,11 +48,11 @@ the assumption that “PyInstaller needs reexec”.
 
 ## Current TSUMGI launch contract
 
-[`voicevox_manifest.py`](../../src/tsumgi/runtime/providers/voicevox_manifest.py)
+[`voicevox_manifest.py`](https://github.com/upiscium/TSUMGI/blob/main/src/tsumgi/runtime/providers/voicevox_manifest.py)
 fixes the executable to `<engine_root>/run` and the argv tail to
 `--host 127.0.0.1 --port <port>`. It still rejects activation SetupPlans.
 
-[`voicevox_linux_process.py`](../../src/tsumgi/runtime/providers/voicevox_linux_process.py)
+[`voicevox_linux_process.py`](https://github.com/upiscium/TSUMGI/blob/main/src/tsumgi/runtime/providers/voicevox_linux_process.py)
 directly spawns that path, hashes its bytes beforehand, and checks the child's
 executable inode/device/size/mtime, UID, start generation, process group, exact
 argv and owned IPv4 loopback listener. It sets `cwd="/"` and constructs a new
