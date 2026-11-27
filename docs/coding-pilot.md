@@ -155,7 +155,7 @@ genuine direct-remote baseline exists.
 ## First delegated-local observation
 
 The first single-Worker run is recorded in
-[`validation/coding-pilot/coding-v1.md`](../validation/coding-pilot/coding-v1.md).
+[`validation/coding-pilot/coding-v1.md`](https://github.com/upiscium/TSUMGI/blob/main/validation/coding-pilot/coding-v1.md).
 
 The delegated-local lane observed three tasks: two were accepted and one was
 rejected, for an observed accepted rate of `0.667`. The rejected discovery run
@@ -167,7 +167,7 @@ The test-addition and scoped-fix runs each changed only their one permitted path
 and passed their independent checker. At the time this first historical record
 was captured, the direct-remote lane was explicitly `NOT_RUN` and remote
 usage/electrical cost were UNKNOWN. This historical record is intentionally
-preserved unchanged; see [the later genuine direct-remote observation](../validation/coding-pilot/direct-remote-v1.md), recorded separately on
+preserved unchanged; see [the later genuine direct-remote observation](https://github.com/upiscium/TSUMGI/blob/main/validation/coding-pilot/direct-remote-v1.md), recorded separately on
 2026-10-09. The coding disposition remains `experimental`, not accepted.
 
 ## Recorder

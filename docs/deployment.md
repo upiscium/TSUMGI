@@ -80,7 +80,7 @@ primary group, with the matching GID. If an empty same-name group was
 pre-provisioned, the helper reuses it with `useradd --gid`; peer/private groups
 are not reused. Both units contain
 `SupplementaryGroups=tsumgi-config`. The exact base units are the
-[Control template](../systemd/tsumgi-control.service.in) and [Worker template](../systemd/tsumgi-worker.service.in).
+[Control template](https://github.com/upiscium/TSUMGI/blob/main/systemd/tsumgi-control.service.in) and [Worker template](https://github.com/upiscium/TSUMGI/blob/main/systemd/tsumgi-worker.service.in).
 
 ## Control Plane
 
@@ -292,7 +292,7 @@ existing Worker account. In a full Control + Worker migration, the old
    ```
 
    Change the role identity and state, inserting the supplementary group
-   **immediately after `Group=`** exactly as in the [Control unit template](../systemd/tsumgi-control.service.in):
+   **immediately after `Group=`** exactly as in the [Control unit template](https://github.com/upiscium/TSUMGI/blob/main/systemd/tsumgi-control.service.in):
 
    ```ini
    User=tsumgi-control
@@ -315,7 +315,7 @@ existing Worker account. In a full Control + Worker migration, the old
    peer private group.
 
 4. Edit the existing Worker unit and insert the same line immediately after
-   its existing `Group=` line, matching the [Worker unit template](../systemd/tsumgi-worker.service.in):
+   its existing `Group=` line, matching the [Worker unit template](https://github.com/upiscium/TSUMGI/blob/main/systemd/tsumgi-worker.service.in):
 
    ```sh
    sudoedit /etc/systemd/system/tsumgi-worker.service

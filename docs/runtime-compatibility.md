@@ -1,7 +1,7 @@
 # Runtime Compatibility Matrix
 
 This document is the human-readable view of the canonical machine-readable
-matrix at [`acceptance/runtime-providers-v0.1.toml`](../acceptance/runtime-providers-v0.1.toml).
+matrix at [`acceptance/runtime-providers-v0.1.toml`](https://github.com/upiscium/TSUMGI/blob/main/acceptance/runtime-providers-v0.1.toml).
 
 The matrix describes **TSUMGI v0.x provider contract behavior**. It is
 not a universal certification of every upstream runtime version, GPU model,
@@ -121,7 +121,7 @@ evidence for:
 - generic systemd RuntimeProvider integration.
 
 The cross-provider acceptance suite is
-[`tests/test_runtime_provider_acceptance.py`](../tests/test_runtime_provider_acceptance.py).
+[`tests/test_runtime_provider_acceptance.py`](https://github.com/upiscium/TSUMGI/blob/main/tests/test_runtime_provider_acceptance.py).
 It additionally proves that:
 
 - every matrix provider exists in the real provider catalog surface;

@@ -232,6 +232,13 @@
         default = import ./nix/modules/default.nix;
       };
 
+      # Documentation tools (Sphinx, Furo, MyST) for the GitHub Pages site: `nix develop .#docs`.
+      devShells.${system}.docs = pkgs.mkShell {
+        packages = [
+          (pkgs.python3.withPackages (ps: [ ps.sphinx ps.furo ps.myst-parser ]))
+        ];
+      };
+
       apps.${system}.check-generated-nixos = {
         type = "app";
         program = "${generatedNixosCheck}/bin/check-generated-nixos";

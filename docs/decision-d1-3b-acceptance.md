@@ -78,7 +78,7 @@ Observed aggregate (not a general model benchmark):
 | Median queue wait | 40.230 ms |
 | Median wall-minus-execution overhead | 75.663 ms |
 
-- Canonical redacted evidence: [`validation/decision/d1-3b-shadow-v1.md`](../validation/decision/d1-3b-shadow-v1.md).
+- Canonical redacted evidence: [`validation/decision/d1-3b-shadow-v1.md`](https://github.com/upiscium/TSUMGI/blob/main/validation/decision/d1-3b-shadow-v1.md).
 - Generated evidence SHA-256: `b148d3c2a05164bfb67df568e528daad6e1ec4ed63b6d0c861a664d7173d101e`.
 - Fixture identity: `sha256:0ce83f866ff1172343318cb4915c312a99ef112ebf6ea00e2e6977e1885a515c` (raw fixture never committed).
 - Quality disposition: **OBSERVED_ONLY / experimental**; the deliberate unknown was not abstained on. Preserve the result without tuning the threshold against the same fixture and relabeling it as calibrated.

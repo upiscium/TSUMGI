@@ -67,7 +67,7 @@ Keep them outside the repository.
 
 ## PostgreSQL prerequisite
 
-**For TSUMGI v0.1, use PostgreSQL 17.x.** The repository CI currently
+**For TSUMGI v0.3, use PostgreSQL 17.x.** The repository CI currently
 runs the durable Control integration tests against PostgreSQL 17, so PostgreSQL
 17 is the validated and recommended major version. Within that major version,
 use the latest available PostgreSQL 17 minor release.
@@ -109,6 +109,12 @@ responsibilities.
 TSUMGI schema creation/upgrades are separate: run
 `tsumgi-migrate`, or explicitly enable the NixOS
 `migrateOnStart` option described below.
+
+A Control built from v0.3.0 refuses a database that is not at migration `007`, so
+the schema must be migrated before Control starts. A fresh installation runs
+`tsumgi-migrate` once on the empty database; an existing v0.2.x site follows
+[Moving a host](host-migration.md) instead, which also covers the rename of
+service names, paths and environment variables.
 
 ## Where configuration files live
 
@@ -190,8 +196,8 @@ rejected. An existing live account must have the same-name group as its
 primary group, with the matching GID. If the account is absent but that
 same-name group was pre-provisioned and is empty,
 the helper reuses it with `useradd --gid`; it does not reuse a peer or shared
-role group. See the exact [Control unit template](../systemd/tsumgi-control.service.in)
-and [Worker unit template](../systemd/tsumgi-worker.service.in).
+role group. See the exact [Control unit template](https://github.com/upiscium/TSUMGI/blob/main/systemd/tsumgi-control.service.in)
+and [Worker unit template](https://github.com/upiscium/TSUMGI/blob/main/systemd/tsumgi-worker.service.in).
 
 ## Option A — NixOS
 
@@ -646,6 +652,11 @@ then use the reviewed RuntimeProvider setup path described in
 
 ## Upgrading
 
+> **Coming from v0.2.x or earlier?** v0.3.0 renamed the runtime from `astrumweaver`
+> to `tsumgi`. Do not upgrade in place by hand: use `tsumgi-migrate-host` as described
+> in [Moving a host](host-migration.md), and read the [naming](naming.md) page for the
+> new names.
+
 **Production HOLD:** The commands in this section change installed binaries and may restart running services. For **any existing deployment**, do **not** upgrade a moving flake input, a Nix profile, Control/Worker, or PostgreSQL merely by following this guide. First approve an immutable source/package revision and complete the [#124 operator rollout gates](operator-rollout-gates.md): site/change owner, installation inventory, separate recoverable PG17 backup and restored-Control readback, schema compatibility, existing-version rollback test, selected-GPU boundary, maintenance window and explicit **GO/NO-GO**. Release version/publication [#79](release-readiness.md) is a separate decision. The commands below are a procedural reference **only after site authority is established**.
 
 ### NixOS
@@ -782,3 +793,7 @@ integration assets.
 Once the binaries/services are installed, continue with:
 
 [Getting Started — verify the installation](getting-started.md#verify-the-installation)
+
+Then, optionally, turn on the read-only [operator console](admin-console.md)
+(`[admin_ui]`, off by default; it is protected by a password you set on first run).
+The opt-in audio Workers stay disabled unless you enable them explicitly.
