@@ -6,10 +6,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-# Only the v0.3.0 RC is accepted for the current source.
+# Only the v0.3.0 GA is accepted for the current source: a metadata-only promotion of v0.3.0-rc.3.
 # A GA promotion must be reviewed separately before adding stable metadata.
 EXPECTED_NIX_VERSION_BY_PYTHON = {
-    "0.3.0rc3": "0.3.0pre3",
+    "0.3.0": "0.3.0",
 }
 assert PROJECT_VERSION in EXPECTED_NIX_VERSION_BY_PYTHON, PROJECT_VERSION
 CURRENT_NIX_VERSION = EXPECTED_NIX_VERSION_BY_PYTHON[PROJECT_VERSION]
@@ -109,9 +109,9 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
 def test_rc_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "tsumgi"
-    assert project["version"] == "0.3.0rc3"
+    assert project["version"] == "0.3.0"
     assert project["version"] == PROJECT_VERSION
-    assert re.fullmatch(r"0\.3\.0rc3", project["version"])
+    assert re.fullmatch(r"0\.3\.0", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
         _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
     assert (ROOT / "src/tsumgi").is_dir()
@@ -271,7 +271,7 @@ def test_ga_release_notes_constrain_claims_and_publication() -> None:
     assert "v0.1.0-rc.1 was" not in readme  # README links to published RC, avoids stale preparation.
     # README must reflect the current published stable line and next
     # maintenance release instead of claiming v0.1.0 is still current.
-    assert "> **Published stable release:** [v0.2.1]" in readme
+    assert "> **Published stable release:** [v0.3.0]" in readme
     assert "> **Prior prereleases:**" in readme
     assert "v0.1.2" in readme
     assert "v0.1.0.md" in readme and "ga-qualification-v0.1.0.md" in readme
@@ -315,6 +315,7 @@ def test_v013_ga_notes_and_rc_history_remain_historical_releases() -> None:
         "docs/releases/v0.2.1.md": "afcaa9136e2bc94b7b639f1fe4711d08a871b38442a291ea8c507df49fc70463",
         "docs/releases/v0.3.0-rc.1.md": "46e6900fc7fb1d28cc8949c90fb9b3fd8a30b11501747908b81fc840a6adabdc",
         "docs/releases/v0.3.0-rc.2.md": "59614d24c52efa334a143f787034f666420bf6a75c21c2b2c36ca8402a04e9a5",
+        "docs/releases/v0.3.0-rc.3.md": "0e39061890f381c269011242bc7c7c28a9410ddd825f66cbaa4a0a0e46502765",
         "docs/releases/v0.2.0.md": "91a34b6e28686b4f0d98f57483a95849640a85d070c7c173fe4b307e96578fe5",
     }
     for path, digest in frozen_docs.items():
@@ -398,7 +399,7 @@ def test_v021_notes_remain_a_historical_release() -> None:
     assert "No audio engine is qualified" in flat
     assert "does not update running services" in flat
     assert "SHA256SUMS" in notes
-    assert "> **Published stable release:** [v0.2.1]" in readme
+    assert "releases/tag/v0.2.1)" in readme
     assert "docs/releases/v0.2.1.md" in readme
 
 
@@ -433,29 +434,35 @@ def test_v030_rc2_notes_remain_a_historical_candidate() -> None:
     assert "docs/releases/v0.3.0-rc.2.md" in readme  # kept as history
 
 
-def test_v030_rc3_notes_match_metadata_and_state_the_runtime_rename() -> None:
+def test_v030_rc3_notes_remain_a_historical_candidate() -> None:
     rc = (ROOT / "docs/releases/v0.3.0-rc.3.md").read_text()
     readme = (ROOT / "README.md").read_text()
-    flat = " ".join(rc.split())
-    assert PROJECT_VERSION == "0.3.0rc3" and CURRENT_NIX_VERSION == "0.3.0pre3"
     assert "| Git tag | `v0.3.0-rc.3`" in rc
-    assert f"`tsumgi=={PROJECT_VERSION}`" in rc
-    assert f"`{CURRENT_NIX_VERSION}`" in rc
-    assert "Published `v0.3.0-rc.1`" in rc and "`v0.3.0-rc.2`" in rc and "Published `v0.2.1`" in rc
-    # The one change on top of rc.2 and the evidence for it.
+    assert "`tsumgi==0.3.0rc3`" in rc and "`0.3.0pre3`" in rc
     assert "PR #300" in rc and "tsumgi-llama-decision-cuda-sm" in rc
-    assert "test_decision_runtime_metadata.py" in rc
-    assert "Nothing else changed since rc.2" in flat
-    assert "production cutover evidence" in rc.lower()
+    assert "docs/releases/v0.3.0-rc.3.md" in readme  # kept as history
+
+
+def test_v030_ga_notes_match_metadata_and_promote_rc3_unchanged() -> None:
+    ga = (ROOT / "docs/releases/v0.3.0.md").read_text()
+    readme = (ROOT / "README.md").read_text()
+    flat = " ".join(ga.split())
+    assert PROJECT_VERSION == "0.3.0" and CURRENT_NIX_VERSION == "0.3.0"
+    assert "| Git tag | `v0.3.0` " in ga
+    assert "`tsumgi==0.3.0`" in ga
+    assert "| Nix Control, Worker, Installer and Integration | `0.3.0` |" in ga
+    assert "Published `v0.2.1`" in ga
+    assert "`v0.3.0-rc.2` and `v0.3.0-rc.3`" in ga
+    # GA is a metadata-only promotion of the published rc.3 source.
+    assert "bd83e5d" in ga and "version-and-release-metadata-only" in ga
     # The breaking changes and the tools are still stated.
     for name in ("services.tsumgi", "TSUMGI_*", "x_tsumgi", "tsumgi-decisions-v1", "tsumgi_revision"):
-        assert name in rc, name
-    assert "tsumgi-migrate-host" in rc and "tsumgi-repin-decision" in rc
+        assert name in ga, name
+    assert "tsumgi-migrate-host" in ga and "tsumgi-repin-decision" in ga
     assert "No audio engine is qualified" in flat
     assert "Epoch preparation has no release path yet" in flat
-    assert "does not update running services" in flat
+    assert "does not update running services" in flat or "does **not** upgrade" in ga
     assert "refuses a database that is not at `007`" in flat
-    assert "SHA256SUMS" in rc
-    assert "docs/releases/v0.3.0-rc.3.md" in readme and "docs/host-migration.md" in readme
-    # The published stable line stays v0.2.1 until GA is promoted.
-    assert "> **Published stable release:** [v0.2.1]" in readme
+    assert "SHA256SUMS" in ga
+    assert "> **Published stable release:** [v0.3.0]" in readme
+    assert "docs/releases/v0.3.0.md" in readme and "docs/host-migration.md" in readme
