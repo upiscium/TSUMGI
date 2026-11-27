@@ -90,8 +90,8 @@ def _recv(fd, deadline):
                       parse_constant=reject_constant)
 
 
-def check_home_parent(home: Path, *, cap: bool = True) -> list[Path]:
-    """Validate the dedicated parent; return its (only allowed) stale run dirs."""
+def check_home_parent(home: Path) -> list[Path]:
+    """Validate the dedicated parent; return its (only allowed) run dirs, no count limit."""
     st = home.lstat()
     if (os.geteuid() == 0 or not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid()
             or stat.S_IMODE(st.st_mode) != 0o700):
@@ -100,7 +100,7 @@ def check_home_parent(home: Path, *, cap: bool = True) -> list[Path]:
     for entry in os.scandir(home):
         info = entry.stat(follow_symlinks=False)
         if (not RUN_DIR.fullmatch(entry.name) or not entry.is_dir(follow_symlinks=False)
-                or info.st_uid != os.geteuid() or (cap and len(stale) >= MAX_RUN_DIRS)):
+                or info.st_uid != os.geteuid()):
             raise RuntimeError("invalid private home")
         stale.append(Path(entry.path))
     return stale
@@ -136,18 +136,30 @@ class FasterWhisperProcess:
     def _force_rmtree(path):
         def fix(func, p, _exc):
             try:
-                os.chmod(os.path.dirname(p), 0o700)
-                os.chmod(p, 0o700)
+                # Never chmod through a symlink planted by a dead child.
+                parent = os.path.dirname(p)
+                if not os.path.islink(parent):
+                    os.chmod(parent, 0o700)
+                if not os.path.islink(p):
+                    os.chmod(p, 0o700)
                 func(p)
             except OSError:
                 pass
         shutil.rmtree(path, onerror=fix)
 
     def _fresh_home(self):
-        # Every run directory is held under an exclusive flock for its owner's
-        # lifetime. Only directories whose lock can be taken (no live owner) are
-        # swept; a stubborn leftover never blocks a start, a live one is never touched.
-        for stale in check_home_parent(self.private_home, cap=False):
+        """Create this start's fresh run directory.
+
+        Assumes ONE Worker per ``private_home`` (the manifest requires a
+        dedicated directory). Each live instance holds an exclusive flock on its
+        run directory; only directories whose lock can be taken (no live owner)
+        are swept. A dead leftover that cannot be removed never blocks a start and
+        does not count against the cap; only LIVE run directories do. A second
+        start racing this one between mkdir and flock is outside the supported
+        one-Worker-per-home model.
+        """
+        live = 0
+        for stale in check_home_parent(self.private_home):
             try:
                 fd = os.open(stale, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
             except OSError:
@@ -156,12 +168,14 @@ class FasterWhisperProcess:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 os.close(fd)
+                live += 1
                 continue  # live owner
             try:
                 self._force_rmtree(stale)
             finally:
                 os.close(fd)
-        check_home_parent(self.private_home)  # re-validate, now with the entry cap
+        if live >= MAX_RUN_DIRS:
+            raise RuntimeError("too many live run directories")
         run = self.private_home / ("run-" + uuid.uuid4().hex)
         os.mkdir(run, 0o700)
         self._run_dir = run
@@ -242,7 +256,7 @@ class FasterWhisperProcess:
                 reply=_recv(self._proc.stdout.fileno(),deadline)
                 if (type(reply) is not dict or set(reply)!={"kind","epoch","request_id","text"} or reply["kind"]!="result" or
                     reply["epoch"]!=self.epoch or reply["request_id"]!=rid or type(reply["text"]) is not str or
-                    not reply["text"] or len(reply["text"].encode("utf-8"))>_MAX_TEXT):
+                    len(reply["text"].encode("utf-8"))>_MAX_TEXT):
                     raise ValueError()
                 return reply["text"]
         except Exception:

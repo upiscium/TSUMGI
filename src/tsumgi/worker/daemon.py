@@ -380,7 +380,7 @@ def _require_parakeet_worker(deployment, declaration, spec, section, runtime_sec
         raise RuntimeError("Parakeet requires matching manifests and a dedicated loopback single-GPU Worker")
 
 
-def _require_faster_whisper_worker(deployment, declaration, spec, section, runtime_section) -> None:
+def _require_faster_whisper_worker(deployment, declaration, spec, section) -> None:
     provider = getattr(deployment, "provider_id", None)
     serving_id = getattr(getattr(declaration, "deployment", None), "provider_id", None)
     if FASTER_WHISPER_PROVIDER_ID not in (provider, serving_id):
@@ -392,8 +392,7 @@ def _require_faster_whisper_worker(deployment, declaration, spec, section, runti
             or type(slots) is not int or slots != 1
             or section.get("gpu_preflight", True) is not True
             or local is None or int(local[1]) > 65535
-            or section.get("health_host", "127.0.0.1") != "127.0.0.1"
-            or "parakeet_trial" in runtime_section):
+            or section.get("health_host", "127.0.0.1") != "127.0.0.1"):
         raise RuntimeError("Faster-Whisper requires matching manifests and a dedicated loopback single-GPU Worker")
 
 
@@ -447,7 +446,7 @@ async def run_worker(
     deployment = _load_runtime_deployment(runtime_manifest) if runtime_manifest else None
     _require_owned_speech_worker(deployment, serving_declaration, spec, worker_section)
     _require_parakeet_worker(deployment, serving_declaration, spec, worker_section, runtime_section)
-    _require_faster_whisper_worker(deployment, serving_declaration, spec, worker_section, runtime_section)
+    _require_faster_whisper_worker(deployment, serving_declaration, spec, worker_section)
     _run_gpu_preflight(spec, worker_section)
 
     client = ControlClient(

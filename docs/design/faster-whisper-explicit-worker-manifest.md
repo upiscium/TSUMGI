@@ -85,19 +85,23 @@ Deliberate differences from earlier providers (docs/validation/audio-tts-real-en
   the child is reaped, and removes stale `run-*` directories of a crashed
   predecessor (each live instance holds an exclusive `flock` on its own run
   directory, so a second start never removes a live one, and an unremovable
-  leftover never blocks a start). Any other entry in the parent (or more than 16 run directories,
-  or a symlink) refuses the launch. A restart policy therefore works without
-  provisioning a new HOME, and no state is reused between runs. The parent
-  must be dedicated to this one Worker; the model copy (about 1.6 GB) is
+  leftover never blocks a start; only live, flock-held run directories count
+  against a cap of 16). Any other entry in the parent (a non-run name, a
+  non-directory, a symlink or a foreign owner) refuses the launch. A restart
+  policy therefore works without provisioning a new HOME, and no state is
+  reused between runs. Exactly one Worker per `private_home` is assumed (a
+  second start racing between directory creation and locking is outside that
+  model); the model copy (about 1.6 GB) is
   written under it, so size the filesystem for that.
 - Core dumps are disabled in the child; the Python-level network guard denies
   socket creation after the model is loaded. This is defence in depth, **not**
   a sandbox: egress still has to be restricted by the deployment.
 
-Open points for the maintainer: a silent or no-speech clip yields an empty
-transcript, which (like Parakeet) is treated as a failure that revokes the
-instance; the temperature fallback schedule is the faster-whisper 1.2.1
-default, as measured, so output is not guaranteed bit-deterministic.
+Decisions to confirm: a silent or no-speech clip yields an empty transcript,
+which is returned as a valid empty result (the transcription API and JobResult
+already treat empty text as valid silence) and does not revoke the instance.
+The temperature fallback schedule is the faster-whisper 1.2.1 default, as
+measured, so output is not guaranteed bit-deterministic.
 
 ## What this does not do
 

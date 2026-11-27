@@ -151,7 +151,9 @@ def test_load_uses_the_fixed_engine_arguments_on_a_verified_copy_and_then_denies
         socket.create_connection(("127.0.0.1", 9))
 
 
-def test_decoding_is_japanese_only_and_not_configurable_per_call(model_dir, monkeypatch):
+def test_defensive_language_assertion_and_input_bounds(model_dir, monkeypatch):
+    # The language is forced to "ja" in the call, so a mismatch cannot occur with the real
+    # engine; this only exercises the defensive assertion against a double that misreports it.
     calls = []
     _install(monkeypatch, model_dir, "wrong_language", calls)
     engine = native.FasterWhisperNative.load(str(model_dir), gpu_uuid=GPU)

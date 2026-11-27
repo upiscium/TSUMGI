@@ -251,7 +251,7 @@ def test_model_directory_must_be_exactly_the_pinned_regular_files(configured, tm
 
 
 @pytest.mark.parametrize("case", ["mode", "foreign_entry", "foreign_dir", "symlink_run", "file_run",
-                                  "too_many", "home_symlink"])
+                                  "home_symlink"])
 def test_private_home_parent_policy(configured, tmp_path, case):
     cfg, _, _ = configured
     home = Path(cfg.private_home)
@@ -265,9 +265,6 @@ def test_private_home_parent_policy(configured, tmp_path, case):
         (home / ("run-" + "a" * 32)).symlink_to(tmp_path)
     elif case == "file_run":
         (home / ("run-" + "a" * 32)).write_bytes(b"x")
-    elif case == "too_many":
-        for i in range(17):
-            (home / f"run-{i:032x}").mkdir()
     else:
         link = tmp_path / "home-link"
         link.symlink_to(home)
@@ -434,3 +431,31 @@ async def test_managed_runtime_reaches_stopped_after_a_real_process_level_refusa
     await runtime.stop()
     assert (await runtime.health()).state is RuntimeHealthState.STOPPED
     await runtime.release()
+
+
+def test_preflight_plus_real_sweep_with_many_leftovers_and_a_live_instance(configured):
+    """17+ dead (some unremovable-looking) run dirs never block; a flock-held one survives."""
+    import fcntl, os
+    from tsumgi.runtime.providers import faster_whisper_process as process
+    cfg, _, _ = configured
+    home = Path(cfg.private_home)
+    for i in range(18):
+        d = home / f"run-{i:032x}"
+        (d / "sub").mkdir(parents=True, mode=0o700)
+        (d / "sub" / "f").write_text("x")
+        if i % 2:
+            (d / "sub").chmod(0o500)
+    live = home / ("run-" + "f" * 32)
+    live.mkdir(mode=0o700)
+    fd = os.open(live, os.O_RDONLY | os.O_DIRECTORY)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        cfg.preflight()  # no count limit here
+        p = process.FasterWhisperProcess(
+            cfg.interpreter_path, cfg.model_dir, GPU, private_home=cfg.private_home,
+            base_python_root=cfg.base_python_root, epoch="e", interpreter_sha256=cfg.interpreter_sha256)
+        run = p._fresh_home()
+        assert sorted(os.listdir(home)) == sorted([live.name, run.name])
+        p._remove_run_dir()
+    finally:
+        os.close(fd)

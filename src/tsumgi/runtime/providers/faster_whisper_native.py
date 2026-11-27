@@ -127,6 +127,7 @@ class FasterWhisperNative:
         if type(wav) is not bytes or not wav or len(wav) > 1 << 20:
             raise ValueError("invalid WAV")
         segments, info = self._model.transcribe(io.BytesIO(wav), **DECODING)
+        # Defensive only: language is forced above, so this should be unreachable.
         if getattr(info, "language", "ja") != "ja":
             raise RuntimeError("unexpected language")
         return "".join(segment.text for segment in segments)

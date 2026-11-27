@@ -27,17 +27,19 @@ def _object(pairs):
 def _reject_constant(_value):
     raise ValueError("invalid JSON constant")
 
-def _read_exact(stream, size):
+def _read_exact(stream, size, *, eof_ok=False):
     data = bytearray()
     while len(data) < size:
         part = stream.read(size-len(data))
         if not part:
+            if eof_ok and not data:
+                raise EOFError()  # clean end at a frame boundary
             raise ValueError("truncated private frame")
         data.extend(part)
     return bytes(data)
 
-def _recv(stream):
-    size, = struct.unpack(">I", _read_exact(stream, 4))
+def _recv(stream, *, allow_eof=False):
+    size, = struct.unpack(">I", _read_exact(stream, 4, eof_ok=allow_eof))
     if not 1 <= size <= _MAX_FRAME:
         raise ValueError("invalid frame")
     return json.loads(_read_exact(stream, size), object_pairs_hook=_object,
@@ -91,7 +93,7 @@ def main(argv=None):
                      "ctranslate2":module.VERSIONS["ctranslate2"]})
         while True:
             try:
-                frame = _recv(source)
+                frame = _recv(source, allow_eof=True)
             except EOFError:
                 return 0
             if (type(frame) is not dict or set(frame) != {"kind","epoch","request_id","wav"}):
@@ -106,7 +108,7 @@ def main(argv=None):
             if not 44 <= len(raw) <= _MAX_WAV:
                 raise ValueError("invalid WAV size")
             text = native.transcribe(raw).encode("utf-8")
-            if not 1 <= len(text) <= _MAX_TEXT:
+            if len(text) > _MAX_TEXT:
                 raise ValueError("invalid text")
             _send(sink, {"kind":"result","epoch":init["epoch"],"request_id":rid,"text":text.decode("utf-8")})
     except BaseException:

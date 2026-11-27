@@ -173,7 +173,7 @@ def test_child_crash_during_request_revokes_and_reaps(make):
         p.transcribe(WAV)  # never reused after a failure
 
 
-@pytest.mark.parametrize("mode", ["empty", "huge"])
+@pytest.mark.parametrize("mode", ["huge"])
 def test_invalid_child_text_revokes_the_instance(make, mode):
     build, _ = make
     p = build(mode)
@@ -338,3 +338,66 @@ def test_duplicate_json_keys_and_truncated_frames_rejected():
     child_module._send(stream, {"kind": "fixture"})
     stream.seek(0)
     assert child_module._recv(stream) == {"kind": "fixture"}
+
+
+def test_empty_transcript_is_a_valid_result_and_keeps_the_child_alive(make):
+    build, _ = make
+    p = build("empty")
+    p.start()
+    assert p.transcribe(WAV) == ""
+    assert p.alive and p.transcribe(WAV) == ""
+
+
+def test_clean_eof_at_a_frame_boundary_exits_zero_but_truncation_is_an_error(tmp_path):
+    import subprocess
+    child = Path(process._CHILD_PATH)
+    def run(tail):
+        boot = {"kind": "bootstrap", "epoch": "e", "request_id": "a" * 32, "model_dir": "/m",
+                "model_revision": pins.MODEL_REVISION, "model_sha256": pins.FILE_SHA256["model.bin"],
+                "gpu_uuid": GPU}
+        import json
+        raw = json.dumps(boot).encode()
+        # The real child module with the real native module cannot load without the engine,
+        # so run it with a fake native next to a copy.
+        d = tmp_path / ("c" + str(len(tail)))
+        d.mkdir()
+        shutil.copy(child, d / "faster_whisper_child.py")
+        (d / "faster_whisper_native.py").write_text(FAKE_NATIVE)
+        p = subprocess.run([sys.executable, "-I", "-B", str(d / "faster_whisper_child.py")],
+                           input=struct.pack(">I", len(raw)) + raw + tail, capture_output=True, timeout=20,
+                           env={"PATH": os.defpath})
+        return p.returncode
+    assert run(b"") == 0                      # parent closed the pipe between frames
+    assert run(b"\x00\x00") == 1              # truncated header
+    assert run(struct.pack(">I", 50) + b"{") == 1  # truncated frame body
+
+
+def test_symlink_planted_in_a_run_directory_is_never_chmodded_through(make, tmp_path):
+    build, home = make
+    outside = tmp_path / "outside"
+    outside.write_text("keep")
+    outside.chmod(0o644)
+    stale = home / ("run-" + "e" * 32)
+    stale.mkdir(mode=0o700)
+    (stale / "link").symlink_to(outside)
+    (stale / "locked").mkdir(mode=0o700)
+    (stale / "locked" / "f").write_text("x")
+    (stale / "locked").chmod(0o500)
+    p = build()
+    p.start()
+    assert stale.name not in runs(home)
+    assert outside.read_text() == "keep" and oct(outside.stat().st_mode & 0o777) == "0o644"
+    p.close()
+
+
+def test_many_dead_leftovers_never_block_but_live_ones_count(make):
+    build, home = make
+    for i in range(20):
+        d = home / f"run-{i:032x}"
+        (d / "sub").mkdir(parents=True, mode=0o700)
+        (d / "sub" / "f").write_text("x")
+        (d / "sub").chmod(0o500)
+    live = build()
+    live.start()
+    assert runs(home) == [live._run_dir.name]
+    live.close()

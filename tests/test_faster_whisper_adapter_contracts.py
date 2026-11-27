@@ -63,7 +63,7 @@ async def test_non_profile_pcm_is_not_silently_converted(channels, rate, width):
     child.transcribe.assert_not_called()
 
 
-@pytest.mark.parametrize("text", [None, "", "  ", "\ud800", "あ" * 5462])
+@pytest.mark.parametrize("text", [None, "\ud800", "あ" * 5462])
 async def test_invalid_text_is_redacted_and_instance_is_revoked(text):
     job, media = case(pcm())
     child = backend(text)
@@ -144,3 +144,15 @@ async def test_backend_failure_is_explicit_and_never_falls_back():
         await executor.execute_audio(replace(job, job_id="next"), media)
     assert again.value.code == "runtime_unavailable"
     child.transcribe.assert_called_once()
+
+
+@pytest.mark.parametrize("text", ["", "  "])
+async def test_no_speech_clip_returns_an_empty_transcript_without_revoking(text):
+    job, media = case(pcm())
+    child = backend(text)
+    executor = FasterWhisperExecutor(child)
+    result = await executor.execute_audio(job, media)
+    assert result.text == text
+    child.close.assert_not_called()
+    again = await executor.execute_audio(replace(job, job_id="next"), media)
+    assert again.text == text

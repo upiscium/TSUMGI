@@ -21,8 +21,8 @@ _EXECUTE_TIMEOUT=90
 _CLEANUP_TIMEOUT=5
 
 def valid_transcript(text,*,limit=_TEXT):
-    """Non-empty UTF-8 (no lone surrogates), bounded, no control characters but whitespace."""
-    if type(text) is not str or not text.strip() or len(text)>limit: return False
+    """UTF-8 (no lone surrogates; an empty transcript is a valid no-speech result), bounded, no control characters but whitespace."""
+    if type(text) is not str or len(text)>limit: return False
     try:
         if len(text.encode("utf-8"))>limit: return False
     except UnicodeError:

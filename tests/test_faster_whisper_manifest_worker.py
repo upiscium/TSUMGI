@@ -337,7 +337,7 @@ async def test_cancelled_decode_closes_backend_and_cannot_reuse_it(tmp_path, mon
 
 
 @pytest.mark.parametrize("case", [
-    "disabled", "omitted", "unknown", "trial", "gpu_count", "gpu_uuid",
+    "disabled", "omitted", "unknown", "gpu_count", "gpu_uuid",
     "serving", "slots", "model_pin", "lock_pin", "low_vram", "preflight",
     "writable_dependency", "executable_pth", "base_python_pin", "extra_model_file",
     "foreign_home_entry", "serving_other_provider", "float16_override",
@@ -356,12 +356,6 @@ async def test_invalid_faster_whisper_admission_never_registers(tmp_path, monkey
         elif case == "unknown":
             config["unreviewed_option"] = True
         _write(runtime_path, raw)
-    elif case == "trial":
-        control = h.config.read_text()
-        h.config.write_text(
-            control.replace(f'manifest = "{runtime_path}"',
-                            f'manifest = "{runtime_path}"\nparakeet_trial = true'),
-        )
     elif case in ("gpu_count", "gpu_uuid", "slots", "low_vram", "preflight"):
         control = h.config.read_text()
         if case == "gpu_count":
