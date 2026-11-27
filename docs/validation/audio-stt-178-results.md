@@ -3,8 +3,8 @@
 **This is evidence for the maintainer's decision, not a selection.** It
 summarises one private run of the [#178 harness](audio-stt-178.md). No
 transcripts, case IDs, audio or paths are published here; the full report stays
-private. The numbers are **not** valid for the GTX 1080 Ti target (see
-limitations).
+private. The first measurement (RTX 4080) is not valid for the GTX 1080 Ti target; a
+second measurement on a GTX 1080 Ti follows below.
 
 ## Dataset
 
@@ -62,16 +62,48 @@ an indication, not a rate.
 
 ## Proposed screening thresholds (CER ≤ 0.10, WER ≤ 0.20, mean RTF ≤ 1.0)
 
-All three candidates are within all three thresholds on this fixture and
-hardware. The thresholds are screening only. The 1080 Ti identity requirement
-is **not** met, so no candidate passes the gate as written.
+All three candidates are within all three thresholds on this fixture, on the
+RTX 4080 and on the GTX 1080 Ti. The thresholds are screening only; the choice
+is a human decision.
+
+## GTX 1080 Ti measurement (production LXC, GPU lent for the run)
+
+Same fixture, same harness and the same pinned models, run on a GTX 1080 Ti
+(11 GiB, driver 580.173.02, Ubuntu LXC) while its Worker was drained and the
+GPU was otherwise free. Candidates ran one at a time, sequentially.
+
+| Candidate | CER | WER | Exact match | 散歩 / 3本 hits | Mean RTF | Warm p50 / p95 (s) | Cold p50 / p95 (s) | Peak VRAM (MiB) | Peak RAM (MiB) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Parakeet ja (FP32) | 0.063 | 0.066 | 0.314 | 3/3, 0/3 | 0.008 | 0.090 / 0.118 | 2.26 / 2.29 | 3,214 | 1,800 |
+| Faster-Whisper large-v3 (float32) | 0.047 | 0.058 | 0.285 | 3/3, 3/3 | 0.144 | 1.72 / 2.57 | 2.28 / 3.12 | 7,964 | 1,698 |
+| Faster-Whisper large-v3-turbo (float32) | 0.047 | 0.061 | 0.273 | 3/3, 3/3 | 0.068 | 0.795 / 0.996 | 0.945 / 1.15 | 4,284 | 808 |
+
+All three are within all three screening thresholds. Accuracy is the same as on
+the RTX 4080 (same decoding; differences only from numerics).
+
+- **Whisper runs in float32, not float16.** CTranslate2 refuses float16 on this
+  GPU (compute capability 6.1: `Requested float16 compute type, but the target
+  device or backend do not support efficient float16 computation`); float32 is
+  the closest choice that keeps the accuracy. This differs from the RTX 4080 run
+  (float16), so the Whisper latencies and VRAM are not comparable across the
+  two GPUs. int8 variants were not measured.
+- **VRAM is device-level.** Inside an LXC the driver cannot attribute memory to
+  a process, so peak VRAM is the device's used memory during the run (the GPU was
+  otherwise free, 2 MiB before). A first attempt sampled per-process memory and
+  recorded 0 MiB for every case; it was discarded and the run repeated.
+- Mean GPU utilisation during calls: about 71 % (Parakeet), 96 % (large-v3),
+  89 % (turbo); mean CPU utilisation (share of the 8-core host) 13 to 26 %.
+- Cold latency per case is an estimate, as above. FLEURS, noise and contrast
+  limitations below apply unchanged.
+- The 1080 Ti identity requirement of the gate is met for the measurement;
+  the selection gate itself stays `DECISION_REQUIRED` (a human choice).
 
 ## Limitations
 
-- Measured on an RTX 4080 (Ada), **not** the GTX 1080 Ti of issue #178.
-  Latency, VRAM headroom and utilisation do not transfer; the 1080 Ti
-  measurement is to be repeated separately.
-- The GPU was shared with an unrelated job (about 10.6 GiB VRAM and 70–100%
+- The first measurement ran on an RTX 4080 (Ada); its latency, VRAM and
+  utilisation do not transfer to the 1080 Ti, which is measured separately
+  above.
+- During the RTX 4080 runs the GPU was shared with an unrelated job (about 10.6 GiB VRAM and 70–100%
   device utilisation) during every run. Latency and device GPU utilisation are
   contaminated, probably pessimistically.
 - FLEURS is clean read speech, not conversation. The noise condition is
@@ -87,3 +119,27 @@ is **not** met, so no candidate passes the gate as written.
   without CUDA graphs. Other settings could change speed.
 - The harness still reports `empirical_completion: false` and the human
   selection gate stays `DECISION_REQUIRED`.
+
+## Maintainer decision (2026-11-27)
+
+The maintainer selected **`deepdml/faster-whisper-large-v3-turbo-ct2`** (MIT, a
+third-party CTranslate2 conversion of Whisper large-v3-turbo) at the pinned revision
+above, **float32** on the GTX 1080 Ti, as the Japanese STT candidate for DES-AUDIO-006.
+
+Reasons recorded: accuracy equal to large-v3 on this fixture (CER 0.047, WER 0.061,
+both contrast targets 3/3) at about half its peak VRAM (about 4.2 GiB against 7.8 GiB
+of 11 GiB) and under a second of warm p95 latency; Parakeet is much faster but wrote
+the counter in the `3本` items as a kana reading (0/3).
+
+Conditions attached to the selection:
+
+- **Real-speaker re-check before any activation.** The evidence is read speech plus six
+  synthetic contrast items; a conversational, real-speaker check of the `散歩` / `3本`
+  contrast and of numerals is still required.
+- The conversion is third-party; the pinned revision and weight SHA-256 are the identity
+  to deploy, not the model name.
+- float32 is what was measured on this GPU; int8 is unmeasured and would need its own
+  measurement because it changes accuracy.
+
+This note records the decision; the harness itself still reports
+`empirical_completion: false` and a `DECISION_REQUIRED` gate by design.
