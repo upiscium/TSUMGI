@@ -1,4 +1,4 @@
-"""Validate the v0.3.0 RC tier while preserving historical release evidence."""
+"""Validate the v0.4.0 RC tier while preserving historical release evidence."""
 import re
 import hashlib
 import tomllib
@@ -6,10 +6,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-# Only the v0.3.0 GA is accepted for the current source: a metadata-only promotion of v0.3.0-rc.3.
+# Only the v0.4.0 RC is accepted for the current source.
 # A GA promotion must be reviewed separately before adding stable metadata.
 EXPECTED_NIX_VERSION_BY_PYTHON = {
-    "0.3.0": "0.3.0",
+    "0.4.0rc1": "0.4.0pre1",
 }
 assert PROJECT_VERSION in EXPECTED_NIX_VERSION_BY_PYTHON, PROJECT_VERSION
 CURRENT_NIX_VERSION = EXPECTED_NIX_VERSION_BY_PYTHON[PROJECT_VERSION]
@@ -109,9 +109,9 @@ def _assert_current_nix_product_attributes(path: str, data: str) -> None:
 def test_rc_candidate_product_versions_align_across_python_and_nix() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "tsumgi"
-    assert project["version"] == "0.3.0"
+    assert project["version"] == "0.4.0rc1"
     assert project["version"] == PROJECT_VERSION
-    assert re.fullmatch(r"0\.3\.0", project["version"])
+    assert re.fullmatch(r"0\.4\.0rc1", project["version"])
     for path in EXPECTED_NIX_PRODUCT_ATTRIBUTES:
         _assert_current_nix_product_attributes(path, (ROOT / path).read_text())
     assert (ROOT / "src/tsumgi").is_dir()
@@ -317,6 +317,7 @@ def test_v013_ga_notes_and_rc_history_remain_historical_releases() -> None:
         "docs/releases/v0.3.0-rc.2.md": "59614d24c52efa334a143f787034f666420bf6a75c21c2b2c36ca8402a04e9a5",
         "docs/releases/v0.3.0-rc.3.md": "0e39061890f381c269011242bc7c7c28a9410ddd825f66cbaa4a0a0e46502765",
         "docs/releases/v0.2.0.md": "91a34b6e28686b4f0d98f57483a95849640a85d070c7c173fe4b307e96578fe5",
+        "docs/releases/v0.3.0.md": "1bf4292e9b34a3056551ac64ed4c89eed7a4b7e1a7c844477d907d75f96fd63b",
     }
     for path, digest in frozen_docs.items():
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
@@ -443,11 +444,10 @@ def test_v030_rc3_notes_remain_a_historical_candidate() -> None:
     assert "docs/releases/v0.3.0-rc.3.md" in readme  # kept as history
 
 
-def test_v030_ga_notes_match_metadata_and_promote_rc3_unchanged() -> None:
+def test_v030_ga_notes_remain_a_historical_release() -> None:
     ga = (ROOT / "docs/releases/v0.3.0.md").read_text()
     readme = (ROOT / "README.md").read_text()
     flat = " ".join(ga.split())
-    assert PROJECT_VERSION == "0.3.0" and CURRENT_NIX_VERSION == "0.3.0"
     assert "| Git tag | `v0.3.0` " in ga
     assert "`tsumgi==0.3.0`" in ga
     assert "| Nix Control, Worker, Installer and Integration | `0.3.0` |" in ga
@@ -466,3 +466,23 @@ def test_v030_ga_notes_match_metadata_and_promote_rc3_unchanged() -> None:
     assert "SHA256SUMS" in ga
     assert "> **Published stable release:** [v0.3.0]" in readme
     assert "docs/releases/v0.3.0.md" in readme and "docs/host-migration.md" in readme
+
+
+def test_v040_rc_notes_match_metadata_and_state_the_schema_step() -> None:
+    rc = (ROOT / "docs/releases/v0.4.0-rc.1.md").read_text()
+    readme = (ROOT / "README.md").read_text()
+    flat = " ".join(rc.split())
+    assert PROJECT_VERSION == "0.4.0rc1" and CURRENT_NIX_VERSION == "0.4.0pre1"
+    assert "| Git tag | `v0.4.0-rc.1`" in rc
+    assert f"`tsumgi=={PROJECT_VERSION}`" in rc
+    assert f"`{CURRENT_NIX_VERSION}`" in rc
+    assert "Published `v0.3.0`" in rc
+    assert "008_audio_epoch_preparation_releases.sql" in rc
+    assert "apply `008` before starting this Control" in flat
+    assert "No audio engine is qualified" in flat
+    assert "still has no authentication" in flat
+    assert "does not update any running service" in flat
+    assert "SHA256SUMS" in rc
+    assert "docs/releases/v0.4.0-rc.1.md" in readme
+    # The published stable line stays v0.3.0 until GA is promoted.
+    assert "> **Published stable release:** [v0.3.0]" in readme
