@@ -4,7 +4,7 @@ let
   pythonEnv = python312.withPackages (_: [ tsumgi ]);
 in
 buildEnv {
-  name = "tsumgi-worker-support-0.3.0";
+  name = "tsumgi-worker-support-0.4.0pre1";
   paths = [
     pythonEnv
     integration
