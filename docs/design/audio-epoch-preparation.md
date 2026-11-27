@@ -122,6 +122,8 @@ no-store). All qualification material in the tests is synthetic.
   and cleanup protocol being out of scope, but it is an operational risk to
   decide before this is enabled anywhere: either cleanup/activation lands first,
   or the guard becomes "unexpired and not revoked".
+  A proposal with options and a recommendation is in
+  [audio-epoch-preparation-lifecycle.md](audio-epoch-preparation-lifecycle.md).
 - **Migration 007 was edited in place** (bare hex to `sha256:` checks) before it
   was ever applied. It must not exist in any database in its first form; if one
   does, replace it with a new migration instead of re-running this file.
