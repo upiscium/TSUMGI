@@ -1252,3 +1252,47 @@ async def test_cancelled_overlapping_stop_does_not_clear_active_stop_fence(tmp_p
     assert original_proc.returncode is not None
     assert controller._proc is None
     assert not controller._stopping
+
+
+def _fake_cmdline(monkeypatch, payloads):
+    """Serve successive /proc/<pid>/cmdline reads from ``payloads``."""
+    import io
+
+    from tsumgi.runtime.providers import voicevox_linux_process as module
+
+    reads = []
+
+    def fake_open(path, mode="r", *args, **kwargs):
+        assert path == "/proc/4242/cmdline" and mode == "rb"
+        reads.append(path)
+        return io.BytesIO(payloads[min(len(reads), len(payloads)) - 1])
+
+    monkeypatch.setattr(module, "open", fake_open, raising=False)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    return module, reads
+
+
+def test_empty_cmdline_during_bootloader_reexec_is_retried_not_an_identity_failure(monkeypatch):
+    """Real VOICEVOX `run` (PyInstaller) re-execs itself ~1 ms after spawn.
+
+    During that execve the same PID reports an empty /proc cmdline. The
+    first inspection after launch used to read it as an identity mismatch and
+    latch the runtime FAILED (observed on ~1 in 6 real starts).
+    """
+    argv = ("/engine/run", "--host", "127.0.0.1", "--port", "50123")
+    raw = b"\0".join(token.encode() for token in argv) + b"\0"
+    module, reads = _fake_cmdline(monkeypatch, [b"", b"", raw])
+    assert module._proc_fixed_command(4242, argv) is True
+    assert len(reads) == 3
+
+
+def test_permanently_empty_cmdline_still_fails_after_a_bounded_wait(monkeypatch):
+    module, reads = _fake_cmdline(monkeypatch, [b""])
+    assert module._proc_fixed_command(4242, ("/engine/run",)) is False
+    assert len(reads) == module._EXEC_WINDOW_ATTEMPTS
+
+
+def test_changed_cmdline_is_not_retried(monkeypatch):
+    module, reads = _fake_cmdline(monkeypatch, [b"/engine/other\0"])
+    assert module._proc_fixed_command(4242, ("/engine/run",)) is False
+    assert len(reads) == 1
