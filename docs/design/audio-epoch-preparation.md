@@ -41,6 +41,8 @@ establish, written down because no design document existed.
 | --- | --- |
 | `POST /v1/workers/{worker_id}/audio-epochs/{epoch}/prepare` | Record the preparation of `epoch` (compare-and-swap on the intent revision) |
 | `GET /v1/workers/{worker_id}/audio-epochs/{epoch}` | Read the exact historical record, independently of what is current |
+| `POST /v1/admin/audio-epochs/{worker_id}/{epoch}/release` | Operator only: record that the preparation no longer holds the Worker out |
+| `GET /v1/admin/audio-epochs/{worker_id}/{epoch}/release` | Operator only: read the stored release record (404 if none) |
 
 A POST body is exactly `protocol_version = "v1"`, `qualification_revision`,
 `expected_intent_revision` (a non-negative integer, not a boolean) and
@@ -56,6 +58,35 @@ A receipt has `schema_version = "audio-epoch-preparation-v1"`,
 qualification, the request id, `expected_intent_revision`, `intent_revision`
 (always the former plus one), and `prepared_at` / `expires_at` (the earlier of
 the qualification's expiry and `ttl_seconds` after the request).
+
+## Release and the active preparation
+
+A preparation is **active** iff it has no release record, its `expires_at` is
+later than the request time, and its qualification is not revoked. The guard
+that keeps a Worker out of registration, heartbeat, claims, state changes and
+job candidate selection is "has an *active* preparation", no longer "has any
+preparation". A Worker therefore leaves the prepared state by expiry, by
+revocation of the qualification, or by an explicit release, and never needs a
+database edit. The request time is passed by the caller (not SQL `now()`), so
+the in-memory and PostgreSQL repositories agree.
+
+The release routes sit in the same block as the fence routes: the same operator
+bearer credential (`TSUMGI_AUDIO_EPOCH_OPERATOR_TOKEN`, so they exist only when
+`[audio_epoch_fencing]` is enabled), the same strictness and `no-store`. A POST
+body is exactly `protocol_version = "v1"` and `release_request_id` (a canonical
+UUID); JSON content type (415), at most 2048 bytes within five seconds (413,
+408), duplicate or unknown fields and bad values are 422.
+
+The release receipt has `schema_version = "audio-epoch-preparation-release-v1"`,
+`state = "released"`, `worker_id`, `runtime_instance_epoch`,
+`release_request_id` and `released_at`. Semantics: the preparation must exist
+(404); the same `release_request_id` again returns the stored receipt unchanged;
+a different one for an already released preparation, or an id already used for
+another preparation, is 409. An already expired or revoked preparation may be
+released (it only records the release). History is never rewritten: the
+preparation record reads back exactly as before. A released preparation is not
+replayed as active and does not block recording the next intent (which still
+needs the right `expected_intent_revision`).
 
 ## What must hold (all failures are one generic 409)
 
@@ -76,9 +107,10 @@ the qualification's expiry and `ttl_seconds` after the request).
   historical receipt stays readable and unchanged: revocation never rewrites
   history.
 
-A Worker with any preparation is not admitted by registration or heartbeat, and
-its claims and state changes are refused (it is checked in the same places as a
-fenced epoch); a prepared epoch cannot be registered.
+A Worker with an active preparation is not admitted by registration or heartbeat,
+and its claims and state changes are refused (it is checked in the same places as
+a fenced epoch); a prepared epoch cannot be registered while its preparation is
+active.
 
 ## Digest convention
 
@@ -98,9 +130,15 @@ unique request id, unique intent revision per Worker, a check that
 `ON DELETE RESTRICT`. The in-memory repository implements the same rules and is a
 rehearsal only, never durable evidence.
 
+Migration `008_audio_epoch_preparation_releases.sql` is additive: an append-only
+`audio_epoch_preparation_releases` table keyed by Worker and epoch, with a unique
+request id and a foreign key to the preparation (`ON DELETE RESTRICT`). Control
+now requires migrations up to `008`; the older migrations are unchanged and
+nothing is dropped.
+
 ## Not part of this slice
 
-Activation, cleanup, a positive grant of any kind, native or external-engine
+Activation (the cleanup receipt of the previous epoch is still only proposed), a positive grant of any kind, native or external-engine
 qualification, an HTTP way to store or revoke qualifications, wiring into Nix or
 Worker activation, and any claim that a voice or model may be used.
 
@@ -113,17 +151,11 @@ no-store). All qualification material in the tests is synthetic.
 
 ## Known limits and decisions to confirm
 
-- **A preparation is not undone by expiry.** Any recorded preparation keeps the
-  Worker out of registration, heartbeat and claims for good, whatever
-  `expires_at` or a later revocation says; `expires_at` only governs replay and
-  whether a *new* intent may be recorded. There is no cleanup or release yet, so
-  a Worker that was prepared can only be brought back by hand in the database.
-  That follows the draft's explicit "any preparation" guard and the activation
-  and cleanup protocol being out of scope, but it is an operational risk to
-  decide before this is enabled anywhere: either cleanup/activation lands first,
-  or the guard becomes "unexpired and not revoked".
-  A proposal with options and a recommendation is in
-  [audio-epoch-preparation-lifecycle.md](audio-epoch-preparation-lifecycle.md).
+- **Release and expiry (cleanup slice, implemented).** The earlier limit that a
+  preparation kept the Worker out forever is gone: see "Release and the active
+  preparation". Activation (option C of
+  [audio-epoch-preparation-lifecycle.md](audio-epoch-preparation-lifecycle.md)) is
+  deferred. The feature stays default-off and is not enabled anywhere.
 - **Migration 007 was edited in place** (bare hex to `sha256:` checks) before it
   was ever applied. It must not exist in any database in its first form; if one
   does, replace it with a new migration instead of re-running this file.

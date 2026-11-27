@@ -1,6 +1,6 @@
 # Audio epoch preparation: lifecycle proposal (cleanup and activation)
 
-Status: **proposal, nothing implemented, nothing enabled.** It answers the open
+Status: **approved by the maintainer (A + B); C deferred; implemented in this change; the feature stays off.** It answers the open
 question in [audio-epoch-preparation.md](audio-epoch-preparation.md#known-limits-and-decisions-to-confirm):
 a Worker that has been *prepared* stays out of registration, heartbeat and claims
 for good, because the guard is "any recorded preparation" and no cleanup or release

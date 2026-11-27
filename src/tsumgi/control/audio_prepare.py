@@ -179,6 +179,35 @@ class AudioEpochPreparation:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class AudioEpochPreparationRelease:
+    worker_id: str
+    runtime_instance_epoch: str
+    release_request_id: str
+    released_at: datetime
+
+    def __post_init__(self) -> None:
+        if type(self.worker_id) is not str or _WORKER.fullmatch(self.worker_id) is None:
+            raise ValueError("invalid audio epoch preparation")
+        for name in ("runtime_instance_epoch", "release_request_id"):
+            value = getattr(self, name)
+            try:
+                parsed = UUID(value) if type(value) is str else None
+            except ValueError:
+                parsed = None
+            if parsed is None or parsed.int == 0 or str(parsed) != value:
+                raise ValueError("invalid audio epoch preparation")
+        object.__setattr__(self, "released_at", _timestamp(self.released_at))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "audio-epoch-preparation-release-v1", "state": "released",
+            "worker_id": self.worker_id, "runtime_instance_epoch": self.runtime_instance_epoch,
+            "release_request_id": self.release_request_id,
+            "released_at": _iso(self.released_at),
+        }
+
+
 def validate_prepare_arguments(worker_id, epoch, qualification_revision,
                                expected_intent_revision, prepare_request_id,
                                ttl_seconds) -> None:
@@ -201,6 +230,12 @@ def validate_prepare_arguments(worker_id, epoch, qualification_revision,
 def validate_prepare_lookup(worker_id, epoch) -> None:
     validate_prepare_arguments(
         worker_id, epoch, "sha256:" + "0" * 64, 0, "00000000-0000-4000-8000-000000000000", 1,
+    )
+
+
+def validate_release_arguments(worker_id, epoch, release_request_id) -> None:
+    validate_prepare_arguments(
+        worker_id, epoch, "sha256:" + "0" * 64, 0, release_request_id, 1,
     )
 
 
