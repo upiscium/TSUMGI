@@ -102,5 +102,97 @@ class LeaseRetentionCases:
             make_repo(audio_lease_seconds=value)
 
 
+    # ---------------- G7: bounded retention of audio text ----------------
+
+    def _finish(self, repo, clock, job, claim, result):
+        repo.complete_job(job.job_id, result, worker_id="owner",
+                          lease_token=claim.lease_token,
+                          runtime_instance_epoch=EPOCH, now=clock.now)
+
+    def test_tts_input_is_redacted_after_the_retention_and_nothing_else_changes(
+        self, make_repo, clock,
+    ):
+        from tsumgi.control.repository import AUDIO_TEXT_REDACTED
+        repo = make_repo()
+        job = submit_audio(repo, clock.now)
+        claim = repo.claim_next_job("owner", runtime_instance_epoch=EPOCH, now=clock.now)
+        self._finish(repo, clock, job, claim, JobResult(metrics={"seconds": 1.5}))
+        before = repo.get_job(job.job_id)
+        clock.now += timedelta(seconds=3599)
+        assert repo.redact_audio_job_text(3600, now=clock.now) == 0
+        assert repo.get_job(job.job_id) == before
+        clock.now += timedelta(seconds=2)
+        assert repo.redact_audio_job_text(3600, now=clock.now) == 1
+        after = repo.get_job(job.job_id)
+        assert after.payload["input"] == AUDIO_TEXT_REDACTED
+        assert after.payload["voice"] == {"alias": "a"}
+        assert after.payload["response_format"] == "wav"
+        for field in ("job_id", "status", "capability", "created_at", "started_at",
+                      "finished_at", "attempts", "serving", "deadline_at", "result"):
+            assert getattr(after, field) == getattr(before, field), field
+        assert "private spoken text" not in repr(after)
+        assert repo.redact_audio_job_text(3600, now=clock.now) == 0  # idempotent
+
+    def test_stt_transcript_is_redacted_and_the_digest_payload_is_kept(self, make_repo, clock):
+        from tsumgi.control.repository import AUDIO_TEXT_REDACTED
+        repo = make_repo()
+        receipt = {"uri": "tsumgi-audio-input:x", "media_type": "audio/wav",
+                   "digest": "sha256:" + "a" * 64, "size_bytes": 10}
+        job = submit_audio(repo, clock.now, "audio.transcribe", payload={
+            "language": "ja", "response_format": "json", "audio_input": receipt})
+        claim = repo.claim_next_job("owner", runtime_instance_epoch=EPOCH, now=clock.now)
+        self._finish(repo, clock, job, claim, JobResult(text=" 秘密の文字起こし\n"))
+        assert repo.get_job(job.job_id).result.text == " 秘密の文字起こし\n"
+        clock.now += timedelta(seconds=10)
+        assert repo.redact_audio_job_text(5, now=clock.now) == 1
+        after = repo.get_job(job.job_id)
+        assert after.result.text == AUDIO_TEXT_REDACTED
+        assert after.status is JobStatus.SUCCEEDED
+        assert dict(after.payload["audio_input"]) == receipt
+        assert "秘密" not in repr(after)
+
+    @pytest.mark.parametrize("terminal", ["failed", "cancelled"])
+    def test_failed_and_cancelled_tts_text_is_redacted_too(self, make_repo, clock, terminal):
+        from tsumgi.control.repository import AUDIO_TEXT_REDACTED
+        repo = make_repo()
+        job = submit_audio(repo, clock.now)
+        claim = repo.claim_next_job("owner", runtime_instance_epoch=EPOCH, now=clock.now)
+        if terminal == "failed":
+            repo.fail_job(job.job_id, "boom", retryable=False, worker_id="owner",
+                          lease_token=claim.lease_token, runtime_instance_epoch=EPOCH,
+                          now=clock.now)
+        else:
+            repo.cancel_job(job.job_id, now=clock.now)
+        clock.now += timedelta(seconds=100)
+        assert repo.redact_audio_job_text(60, now=clock.now) == 1
+        assert repo.get_job(job.job_id).payload["input"] == AUDIO_TEXT_REDACTED
+
+    def test_non_terminal_and_non_audio_jobs_are_never_touched(self, make_repo, clock):
+        repo = make_repo()
+        queued = submit_audio(repo, clock.now)  # queued, not terminal
+        repo.register_worker(WorkerRegistration(spec=WorkerSpec(
+            worker_id="plain", worker_class="cpu-test", resources=ResourceShape(),
+            capabilities=frozenset({"generic.echo"}))), now=clock.now)
+        generic = repo.submit_job(JobSubmission(
+            capability="generic.echo", payload={"input": "keep me"}), now=clock.now)
+        repo.cancel_job(generic.job_id, now=clock.now)
+        clock.now += timedelta(days=30)
+        assert repo.redact_audio_job_text(1, now=clock.now) == 0
+        assert repo.get_job(queued.job_id).payload["input"] == "private spoken text"
+        assert repo.get_job(generic.job_id).payload["input"] == "keep me"
+
+    def test_limit_bounds_one_pass_and_arguments_are_validated(self, make_repo, clock):
+        repo = make_repo()
+        jobs = [submit_audio(repo, clock.now, key=f"k{i}") for i in range(3)]
+        for job in jobs:
+            repo.cancel_job(job.job_id, now=clock.now)
+        clock.now += timedelta(seconds=10)
+        assert repo.redact_audio_job_text(1, now=clock.now, limit=2) == 2
+        assert repo.redact_audio_job_text(1, now=clock.now, limit=2) == 1
+        for bad in (-1, True, 1.5):
+            with pytest.raises(ValueError):
+                repo.redact_audio_job_text(bad)
+
+
 class TestInMemory(LeaseRetentionCases):
     pass

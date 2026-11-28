@@ -67,3 +67,43 @@ async def test_maintenance_releases_terminal_inputs_and_consumed_outputs(
             while "consumed" not in calls or ("terminal" not in calls):
                 await asyncio.sleep(0.01)
     assert {"terminal", "consumed"} <= set(calls)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_purges_audio_text_after_the_retention(tmp_path):
+    """#318 G7: the existing maintenance loop applies the retention to Job rows."""
+    from datetime import UTC, datetime, timedelta
+    from tsumgi.control.repository import AUDIO_TEXT_REDACTED
+    from test_audio_lease_retention import submit_audio
+
+    repo = InMemoryControlRepository()
+    job = submit_audio(repo, datetime.now(UTC), deadline=60)
+    repo.cancel_job(job.job_id)
+    app = create_app(
+        repo, client_token="client", worker_token="worker",
+        maintenance_interval_seconds=0.01, audio_text_retention_seconds=1,
+    )
+    async with app.router.lifespan_context(app):
+        await asyncio.sleep(0.15)
+        assert repo.get_job(job.job_id).payload["input"] == "private spoken text"
+        repo._jobs[job.job_id] = repo._jobs[job.job_id].with_updates(
+            finished_at=repo._jobs[job.job_id].finished_at - timedelta(seconds=5))
+        async with asyncio.timeout(2):
+            while repo.get_job(job.job_id).payload["input"] != AUDIO_TEXT_REDACTED:
+                await asyncio.sleep(0.01)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+def test_text_retention_argument_is_strict(value):
+    with pytest.raises(ValueError):
+        create_app(InMemoryControlRepository(), client_token="client",
+                   worker_token="worker", audio_text_retention_seconds=value)
+
+
+def test_text_retention_needs_a_supporting_repository():
+    class Bare:
+        pass
+
+    with pytest.raises(ValueError):
+        create_app(Bare(), client_token="client", worker_token="worker",
+                   audio_text_retention_seconds=60)

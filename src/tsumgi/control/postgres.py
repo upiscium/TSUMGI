@@ -67,6 +67,8 @@ from .repository import (
     _aware,
     _event_size,
     _failure_payload,
+    AUDIO_TEXT_CAPABILITIES,
+    AUDIO_TEXT_REDACTED,
     _lease_expiry,
     _lease_seconds_for,
     _submission_matches,
@@ -2219,6 +2221,49 @@ class PostgresControlRepository:
                     connection, job.assigned_worker_id, timestamp
                 )
             return self._job(updated)
+
+    def redact_audio_job_text(
+        self, older_than_seconds: int, *, now: datetime | None = None, limit: int = 500,
+    ) -> int:
+        """Same contract as the in-memory repository: terminal audio Jobs only,
+        payload ``input`` and result ``text`` replaced, nothing else touched."""
+        if type(older_than_seconds) is not int or older_than_seconds < 0:
+            raise ValueError("older_than_seconds must be a non-negative integer")
+        cutoff = _aware(now) - timedelta(seconds=older_than_seconds)
+        with self._transaction() as connection:
+            rows = connection.execute(
+                """
+                WITH due AS (
+                    SELECT id FROM jobs
+                    WHERE capability = ANY(%s)
+                      AND status IN ('succeeded', 'failed', 'cancelled')
+                      AND COALESCE(finished_at, updated_at) <= %s
+                      AND (
+                        (jsonb_typeof(payload -> 'input') = 'string'
+                         AND payload ->> 'input' <> %s)
+                        OR (jsonb_typeof(result -> 'text') = 'string'
+                            AND result ->> 'text' <> %s)
+                      )
+                    ORDER BY sequence
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE jobs SET
+                    payload = CASE
+                        WHEN jsonb_typeof(payload -> 'input') = 'string'
+                        THEN jsonb_set(payload, '{input}', to_jsonb(%s::text))
+                        ELSE payload END,
+                    result = CASE
+                        WHEN jsonb_typeof(result -> 'text') = 'string'
+                        THEN jsonb_set(result, '{text}', to_jsonb(%s::text))
+                        ELSE result END
+                FROM due WHERE jobs.id = due.id
+                RETURNING jobs.id
+                """,
+                (list(AUDIO_TEXT_CAPABILITIES), cutoff, AUDIO_TEXT_REDACTED,
+                 AUDIO_TEXT_REDACTED, limit, AUDIO_TEXT_REDACTED, AUDIO_TEXT_REDACTED),
+            ).fetchall()
+        return len(rows)
 
     def recover_expired_jobs(
         self, *, now: datetime | None = None

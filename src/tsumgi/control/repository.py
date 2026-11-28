@@ -253,6 +253,32 @@ def _lease_expiry(
     return expiry if deadline_at is None else min(expiry, deadline_at)
 
 
+# Audio Jobs keep the spoken text (TTS payload input) and the transcript (STT
+# result text) in durable JSON. After a bounded time past the terminal state
+# these two values are replaced by this fixed placeholder (#318 G7); ids,
+# status, timings, digests and every other field are kept.
+AUDIO_TEXT_REDACTED = "[redacted: audio text retention elapsed]"
+AUDIO_TEXT_CAPABILITIES = ("audio.synthesize", "audio.transcribe")
+_TERMINAL_STATUSES = frozenset({JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED})
+
+
+def _redacted_audio_job(job):
+    """Return the redacted copy of a terminal audio Job, or None if nothing to do."""
+    payload, result = job.payload, job.result
+    new_payload = new_result = None
+    if isinstance(payload.get("input"), str) and payload["input"] != AUDIO_TEXT_REDACTED:
+        new_payload = {**dict(payload), "input": AUDIO_TEXT_REDACTED}
+    if (result is not None and isinstance(result.text, str)
+            and result.text != AUDIO_TEXT_REDACTED):
+        new_result = replace(result, text=AUDIO_TEXT_REDACTED)
+    if new_payload is None and new_result is None:
+        return None
+    return job.with_updates(
+        payload=job.payload if new_payload is None else new_payload,
+        result=job.result if new_result is None else new_result,
+    )
+
+
 def _lease_seconds_for(
     lease_seconds: int, audio_lease_seconds: int | None, capability: str | None,
 ) -> int:
@@ -1331,6 +1357,29 @@ class InMemoryControlRepository:
             )
             self._jobs[job_id] = cancelled
             return cancelled
+
+    def redact_audio_job_text(
+        self, older_than_seconds: int, *, now: datetime | None = None, limit: int = 500,
+    ) -> int:
+        """Replace TTS input / STT transcript of audio Jobs terminal for at least
+        ``older_than_seconds``. Idempotent; returns the number of Jobs changed."""
+        if type(older_than_seconds) is not int or older_than_seconds < 0:
+            raise ValueError("older_than_seconds must be a non-negative integer")
+        cutoff = _aware(now) - timedelta(seconds=older_than_seconds)
+        changed = 0
+        with self._lock:
+            for job_id, job in sorted(self._jobs.items(), key=lambda item: item[1].sequence):
+                if changed >= limit:
+                    break
+                if (job.capability not in AUDIO_TEXT_CAPABILITIES
+                        or job.status not in _TERMINAL_STATUSES
+                        or (job.finished_at or job.updated_at) > cutoff):
+                    continue
+                redacted = _redacted_audio_job(job)
+                if redacted is not None:
+                    self._jobs[job_id] = redacted
+                    changed += 1
+        return changed
 
     def recover_expired_jobs(
         self, *, now: datetime | None = None

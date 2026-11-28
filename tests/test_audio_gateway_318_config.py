@@ -192,3 +192,43 @@ def test_audio_disabled_leaves_the_generic_lease_alone(env, monkeypatch):
     monkeypatch.setattr(daemon, "PostgresControlRepository", capture)
     env.build(None)
     assert seen["audio_lease_seconds"] is None
+
+
+def _app_kwargs(env, monkeypatch):
+    from tsumgi.control import daemon
+    seen = {}
+    original = daemon.create_app
+
+    def capture(*args, **kwargs):
+        seen.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(daemon, "create_app", capture)
+    env.build()
+    return seen
+
+
+def test_text_retention_default_is_one_hour(env, monkeypatch):
+    assert _app_kwargs(env, monkeypatch)["audio_text_retention_seconds"] == 3600
+
+
+@pytest.mark.parametrize("configured,expected", [(0, None), (45, 45), (30 * 24 * 3600, 2592000)])
+def test_text_retention_configurable_and_zero_disables(env, monkeypatch, configured, expected):
+    _set(env, "text_retention_seconds", configured)
+    assert _app_kwargs(env, monkeypatch)["audio_text_retention_seconds"] == expected
+
+
+@pytest.mark.parametrize("value", [-1, 30 * 24 * 3600 + 1, 1.5, True, "60"])
+def test_text_retention_is_strict(env, value):
+    _set(env, "text_retention_seconds", value)
+    _invalid(env)
+
+
+def test_audio_disabled_has_no_text_purge(env, monkeypatch):
+    from tsumgi.control import daemon
+    seen = {}
+    original = daemon.create_app
+    monkeypatch.setattr(daemon, "create_app",
+                        lambda *a, **k: (seen.update(k), original(*a, **k))[1])
+    env.build(None)
+    assert seen["audio_text_retention_seconds"] is None

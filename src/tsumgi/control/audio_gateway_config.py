@@ -27,6 +27,7 @@ from .auth import ClientAuthMode
 
 
 _INVALID = "audio_gateway configuration is invalid"
+_DEFAULT_TEXT_RETENTION_SECONDS = 3600
 _TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+=*\Z")
 _CATALOG_BYTES = 1024 * 1024
 
@@ -225,6 +226,9 @@ class AudioGatewayConfig:
     # both request deadlines so an unconfirmed Worker failure ends the Job
     # (502 backend_failure) before the Gateway gives up (504).
     claim_lease_seconds: int | None = None
+    # Seconds after a Job is terminal before its TTS input / STT transcript in
+    # the Job row is replaced by a placeholder; None = retained (0 in config).
+    text_retention_seconds: int | None = _DEFAULT_TEXT_RETENTION_SECONDS
 
     def build(self, repository) -> AudioGatewaySetup:
         """Build shared Control/Worker transport and public routers atomically."""
@@ -272,7 +276,7 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
             raise ValueError(_INVALID)
         allowed = {"enabled", "catalog", "ingress", "speech", "transcriptions",
                    "input_spool", "output_spool", "pcm"}
-        optional = frozenset({"claim_lease_seconds"})
+        optional = frozenset({"claim_lease_seconds", "text_retention_seconds"})
         if value.keys() - allowed - optional:
             raise ValueError(_INVALID)
         if not enabled:
@@ -308,6 +312,7 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
             catalog, token, ingress, speech, transcriptions, input_spool, output_spool,
             pcm["max_decoded_bytes"], pcm["max_duration_seconds"],
             _claim_lease(value, speech, transcriptions),
+            _text_retention(value),
         )
     except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
         # Never chain parser, filesystem or schema exceptions with operator data.
@@ -315,6 +320,14 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
 
 
 _DEFAULT_CLAIM_LEASE_SECONDS = 30
+_MAX_TEXT_RETENTION_SECONDS = 30 * 24 * 3600
+
+
+def _text_retention(value: dict) -> int | None:
+    seconds = value.get("text_retention_seconds", _DEFAULT_TEXT_RETENTION_SECONDS)
+    if type(seconds) is not int or not 0 <= seconds <= _MAX_TEXT_RETENTION_SECONDS:
+        raise ValueError(_INVALID)
+    return seconds or None  # 0 disables the purge
 
 
 def _claim_lease(value: dict, speech, transcriptions) -> int | None:
@@ -346,6 +359,7 @@ def _validate_policy_shapes(value: dict) -> tuple:
         "retry_after_seconds", "credit", "accepted_sample_rates", "accepted_channels",
     })))
     _claim_lease(value, speech, transcriptions)
+    _text_retention(value)
     pcm = _table(value.get("pcm"), {"max_decoded_bytes", "max_duration_seconds"})
     _positive_int(pcm["max_decoded_bytes"], 2)
     _positive_int(pcm["max_duration_seconds"])

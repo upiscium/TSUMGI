@@ -200,6 +200,9 @@ def build_app(config_path: str):
             audio_epoch_operator_token=epoch_operator_token,
             worker_credentials=worker_credentials,
             audio_preparation_ttl_seconds=preparation_ttl,
+            audio_text_retention_seconds=(
+                None if audio_config is None else audio_config.text_retention_seconds
+            ),
         )
 
         enabled = chat_section.get("enabled", False)
