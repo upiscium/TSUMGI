@@ -229,3 +229,38 @@ redistributed by this repository.
 7. Orphan, cancel and `SIGKILL`/`SIGSTOP` behaviour under the real service
    manager, and egress restriction by the deployment (the in-process guard is
    not a sandbox).
+
+## Follow-up: F2 silent-clip options measured (2026-11-28)
+
+Maintainer decision: **keep V0 (the measured decoding, no silence handling) and document
+the limitation.** Same real model on the RTX 4080 (shared with another tenant, so absolute
+latencies are inflated and comparable only between rows), float32, beam 5, language
+ja. The comparison rule was fixed before measuring: a variant is eligible only if the
+macro CER on the 245-case fixture is at most 0.052, both contrast targets stay 3/3, and
+no speech clip (the 245, and 30 selected clips attenuated by 20, 30 and 40 dB) comes
+back empty; among eligible variants the one returning empty for the most of 40
+non-speech clips wins.
+
+| Metric | V0 (current) | V2: `vad_filter=True`, default parameters |
+| --- | --- | --- |
+| Non-speech clips returned empty (silence, ±2 LSB noise, white and pink noise at -70/-50/-30/-20 dBFS; 0.2/1/5/29 s) | 0 of 40 | 40 of 40 |
+| CER / WER (macro, 245 cases) | 0.0471 / 0.0608 | 0.0484 / 0.0615 |
+| Exact match | 0.273 | 0.261 |
+| `散歩` / `3本` hits | 3/3 and 3/3 | 3/3 and 3/3 |
+| Fixture cases whose text differs from V0 | n/a | 63 (34 higher CER, 20 lower) |
+| Selected speech clips empty at 20 / 30 / 40 dB attenuation | 0 / 0 / 0 | 1 / 2 / 7 of 30 |
+| Warm latency p50 / p95, mean RTF | 1.34 / 1.96 s, 0.103 | 1.41 / 2.02 s, 0.106 |
+
+- **V1 (a Worker-side RMS gate) cannot be defined.** The loudest near-silent non-speech
+  clip is at -69.7 dBFS RMS; the quietest speech at 40 dB attenuation is at -101.0 dBFS
+  and already at 20 dB attenuation at -81.3 dBFS, so no threshold separates them. Loud
+  noise would not be caught by any RMS gate.
+- **Whisper's own no-speech heuristic cannot work with this model:** `no_speech_prob` is
+  0.000 for every clip, silence included, and `avg_logprob` for silence (-0.05 to -0.91)
+  overlaps speech (-0.04 to -0.40).
+- V2 fails the quiet-speech clause (the empties are at about -55 to -65 dBFS RMS,
+  far below normal speech). Redefining the clause by absolute level was offered and not
+  taken. V2's network use was not checked.
+
+The design note records the resulting limitation: silent or noise-only audio is
+transcribed as a short stock phrase.
