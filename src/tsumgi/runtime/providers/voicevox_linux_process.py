@@ -278,7 +278,16 @@ def _process_socket_inodes(pid: int) -> frozenset[int]:
     inodes = set()
     try:
         for entry in Path(f"/proc/{pid}/fd").iterdir():
-            link = os.readlink(entry)
+            try:
+                link = os.readlink(entry)
+            except FileNotFoundError:
+                # The listing is a snapshot of a live process. A descriptor
+                # (typically one HTTP connection of the engine) closed between
+                # the listing and this read no longer exists, so it cannot
+                # be the listener. Skipping it keeps the strict test: the
+                # listener inode must still be in the set. A vanished fd
+                # directory itself (dead process) still fails above.
+                continue
             if link.startswith("socket:[") and link.endswith("]"):
                 inodes.add(int(link[8:-1]))
     except (OSError, ValueError):

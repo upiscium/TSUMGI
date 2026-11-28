@@ -1296,3 +1296,56 @@ def test_changed_cmdline_is_not_retried(monkeypatch):
     module, reads = _fake_cmdline(monkeypatch, [b"/engine/other\0"])
     assert module._proc_fixed_command(4242, ("/engine/run",)) is False
     assert len(reads) == 1
+
+
+# G1 (#317): the engine opens and closes one socket per HTTP request, so a
+# descriptor can vanish between the /proc/<pid>/fd listing and its readlink.
+# That is an ordinary race, not an identity failure.
+def _readlink_vanishing(monkeypatch, keep_fd):
+    real = os.readlink
+
+    def readlink(path, *args, **kwargs):
+        if Path(path).parent.name == "fd" and Path(path).name != str(keep_fd):
+            raise FileNotFoundError(path)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "readlink", readlink)
+
+
+def test_fd_closed_between_listing_and_readlink_is_not_a_failure(monkeypatch):
+    from tsumgi.runtime.providers.voicevox_linux_process import _process_socket_inodes
+
+    with socket.socket() as probe:
+        inode = int(os.readlink(f"/proc/self/fd/{probe.fileno()}")[8:-1])
+        _readlink_vanishing(monkeypatch, probe.fileno())
+        assert _process_socket_inodes(os.getpid()) == frozenset({inode})
+
+
+def test_vanished_listener_fd_is_still_not_owned(monkeypatch):
+    from tsumgi.runtime.providers.voicevox_linux_process import _process_socket_inodes
+
+    with socket.socket() as probe:
+        inode = int(os.readlink(f"/proc/self/fd/{probe.fileno()}")[8:-1])
+        _readlink_vanishing(monkeypatch, -1)  # every fd vanishes, including the socket
+        assert inode not in _process_socket_inodes(os.getpid())
+
+
+def test_dead_process_and_other_readlink_errors_still_fail(monkeypatch):
+    import subprocess
+
+    from tsumgi.runtime.providers.voicevox_linux_process import (
+        VoicevoxOwnedProcessError,
+        _process_socket_inodes,
+    )
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    with pytest.raises(VoicevoxOwnedProcessError):
+        _process_socket_inodes(child.pid)
+
+    def denied(path, *args, **kwargs):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(os, "readlink", denied)
+    with pytest.raises(VoicevoxOwnedProcessError):
+        _process_socket_inodes(os.getpid())
