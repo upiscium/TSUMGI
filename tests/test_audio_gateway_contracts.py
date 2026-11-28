@@ -165,6 +165,7 @@ def test_exact_selection_and_preserved_input(catalog):
     (speech(input=[]), "invalid_request", "input"),
     (speech(input=12), "invalid_request", "input"),
     (speech(input="\ud800"), "invalid_utf8", "input"),
+    (speech(input="a\x00b"), "invalid_request", "input"),
     (speech(input="a" * 13), "request_too_large", "input"),
     (speech(input="あ" * 5), "request_too_large", "input"),
 ])
