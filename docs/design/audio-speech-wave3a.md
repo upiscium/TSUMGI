@@ -187,3 +187,20 @@ does not include untracked files. File hashes and final repository status are
 reported separately at freeze. No commit, push, PR, deployment, provider adapter,
 schema/migration, setup change, real audio E2E, production mount, real voice
 license approval, or full #175 completion is claimed.
+
+## Follow-up (#318): overload hint, credit header, release
+
+- 429 responses (`overloaded`, `admission_overloaded`) carry `Retry-After`
+  (integer seconds, 1 to 30, policy constant `retry_after_seconds`, default 2).
+  Overload remains load shedding, not queueing; the header only tells clients
+  when to retry.
+- A successful response carries `x-tsumgi-credit`: the voice's catalog
+  `attribution`, UTF-8 percent-encoded so the header is ASCII (decode with
+  `urllib.parse.unquote`; for example `VOICEVOX%3A%E3%81%9A...`). It is a
+  convenience; the catalog (`GET /v1/audio/voices`) stays the source and the
+  licence terms still apply. A catalog whose encoded attribution exceeds 2048
+  characters is refused when the router is built; credits are never truncated.
+- The output WAV is deleted as soon as the response bytes are in hand, not at
+  the TTL. Admission is refused with 503 `spool_disk_low` when the output
+  spool filesystem is below its free-space floor. See
+  [Phase A](audio-control-phase-a.md#lifecycle-and-admission-hardening-318-optional-keys).

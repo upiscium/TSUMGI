@@ -312,3 +312,24 @@ suites run at the same moment on one PostgreSQL server also produced a few
 different `test_postgres_*` failures; rerun one after the other, the branch and
 `origin/main` agree (64 passed, the same one failure). The documentation build
 (`scripts/build-docs.sh`) succeeded with this page.
+
+## Follow-up 2026-11-28: findings addressed in source (#318)
+
+This section only records what changed afterwards; the measured results above are
+unchanged and none of this was re-measured on the scratch stack or a Worker host.
+Each item is covered by deterministic unit tests (in-memory and, for the
+repository changes, a scratch PostgreSQL 17); behaviour on real engines, real
+disks and the production LXC is **not** re-verified. Audio stays off by default
+and every new key is optional. Details: Phase A page, "Lifecycle and admission
+hardening".
+
+| Finding | Status | How |
+|---|---|---|
+| G2 lease versus deadline | addressed in source | `audio.*` Jobs get their own lease (`claim_lease_seconds`, default `min(30, deadline/2)`, must be below the deadlines); the Worker still does not fail unconfirmed attempts, lease recovery does, so the client sees 502 instead of 504. |
+| G3 spool release | addressed in source | Input WAV deleted at terminal Job state; speech output deleted once served; client-read output deleted `read_grace_seconds` after the first read; TTL stays the backstop. |
+| G4 overload | partly addressed | `Retry-After` on 429. Still load shedding, not queueing. |
+| G5 admitted audio | addressed in source | Optional declared rates/channels refuse a mismatching WAV with 415 `unsupported_audio_format`; extra chunks get 415 `unsupported_audio_extra_chunk`. The canonical-44-byte policy is unchanged. The faster-whisper value (`[16000]`, `[1]`) must be set by the operator. |
+| G7 text retention | addressed in source | Placeholder after `text_retention_seconds` (default 3600) via the maintenance loop; disclosure in the Phase A page. Backups taken earlier are not rewritten. |
+| G9 attribution | addressed in source | `x-tsumgi-credit` on speech (catalog attribution); on STT only if `transcriptions.credit` is set. |
+| G10 free disk | addressed in source | Floor refuses admission with 503 `spool_disk_low`. A real ENOSPC was not tested (open item 7). |
+| G1, G6, G8 and the three status-class differences | not touched | |

@@ -175,3 +175,22 @@ Execution in the implementation session is **unverified**: neither `python` nor
 `python3` was available on PATH; a cached-only Nix test-environment attempt was
 denied by execution policy and was not retried. Source inspection and Git scope
 checks are not a substitute for passing tests. No E2E/restart/HA claim follows.
+
+## Follow-up (#318): format check, extra-chunk error, release, credit
+
+- **Early format rejection.** The STT serving contract does not declare sample
+  rate or channels. When the operator sets `transcriptions.accepted_sample_rates`
+  and `accepted_channels` (for faster-whisper: `[16000]` and `[1]`), a
+  PCM16 WAV with another rate or channel count is refused at admission with 415
+  `unsupported_audio_format` instead of becoming a Job that fails as 502. Unset
+  keeps the previous behaviour. Nothing is staged and the serving identity is
+  unchanged.
+- **Input release.** The staged WAV is deleted when the Job is terminal; the
+  earlier "retained until TTL" statements no longer hold for terminal Jobs. See
+  [Phase A](audio-control-phase-a.md#lifecycle-and-admission-hardening-318-optional-keys).
+- **Disk floor.** 503 `spool_disk_low` when the input spool filesystem is below
+  its floor; no file is written.
+- **Credit.** `x-tsumgi-credit` (percent-encoded) is sent only if the operator sets
+  `transcriptions.credit`; the STT catalog carries no credit text.
+- **Retention.** The transcript in `jobs.result` is replaced after
+  `text_retention_seconds` (default 3600), see Phase A for the disclosure.
