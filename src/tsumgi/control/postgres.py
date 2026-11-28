@@ -68,6 +68,7 @@ from .repository import (
     _event_size,
     _failure_payload,
     _lease_expiry,
+    _lease_seconds_for,
     _submission_matches,
     _validate_audio_attempt_arguments,
 )
@@ -221,7 +222,13 @@ class PostgresControlRepository:
         pool_min_size: int = 1,
         pool_max_size: int = 10,
         pool_timeout_seconds: float = 2.0,
+        audio_lease_seconds: int | None = None,
     ) -> None:
+        if audio_lease_seconds is not None and (
+            type(audio_lease_seconds) is not int or audio_lease_seconds < 1
+        ):
+            raise ValueError("audio_lease_seconds must be a positive integer")
+        self.audio_lease_seconds = audio_lease_seconds
         if not database_url:
             raise ValueError("database_url is required")
         if type(pool_min_size) is not int or pool_min_size < 0:
@@ -1301,7 +1308,10 @@ class PostgresControlRepository:
                     (
                         _lease_expiry(
                             timestamp,
-                            self.lease_seconds,
+                            _lease_seconds_for(
+                                self.lease_seconds, self.audio_lease_seconds,
+                                job_row.get("capability"),
+                            ),
                             job_row.get("deadline_at"),
                         ),
                         timestamp,
@@ -1972,7 +1982,10 @@ class PostgresControlRepository:
                     lease_token,
                     _lease_expiry(
                         timestamp,
-                        self.lease_seconds,
+                        _lease_seconds_for(
+                            self.lease_seconds, self.audio_lease_seconds,
+                            selected.capability,
+                        ),
                         selected.deadline_at,
                     ),
                     claimed_deployment_revision,

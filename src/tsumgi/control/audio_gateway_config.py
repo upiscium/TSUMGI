@@ -221,6 +221,10 @@ class AudioGatewayConfig:
     output_spool: _SpoolConfig
     max_decoded_bytes: int
     max_duration_seconds: int
+    # Lease for audio.* Jobs only (None: the generic lease applies). Always below
+    # both request deadlines so an unconfirmed Worker failure ends the Job
+    # (502 backend_failure) before the Gateway gives up (504).
+    claim_lease_seconds: int | None = None
 
     def build(self, repository) -> AudioGatewaySetup:
         """Build shared Control/Worker transport and public routers atomically."""
@@ -268,7 +272,8 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
             raise ValueError(_INVALID)
         allowed = {"enabled", "catalog", "ingress", "speech", "transcriptions",
                    "input_spool", "output_spool", "pcm"}
-        if value.keys() - allowed:
+        optional = frozenset({"claim_lease_seconds"})
+        if value.keys() - allowed - optional:
             raise ValueError(_INVALID)
         if not enabled:
             # Disabled tables may retain a complete valid policy, but incomplete
@@ -276,7 +281,7 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
             if value.keys() - {"enabled"}:
                 _validate_policy_shapes(value)
             return None
-        _table(value, allowed)
+        _table(value, allowed, optional)
         token = os.environ.get("TSUMGI_AUDIO_CLIENT_TOKEN", "")
         if (_TOKEN.fullmatch(token) is None or token.lower() == "anon"
                 or token in (os.environ.get("TSUMGI_CLIENT_TOKEN", ""),
@@ -302,10 +307,26 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
         return AudioGatewayConfig(
             catalog, token, ingress, speech, transcriptions, input_spool, output_spool,
             pcm["max_decoded_bytes"], pcm["max_duration_seconds"],
+            _claim_lease(value, speech, transcriptions),
         )
     except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
         # Never chain parser, filesystem or schema exceptions with operator data.
         raise RuntimeError(_INVALID) from None
+
+
+_DEFAULT_CLAIM_LEASE_SECONDS = 30
+
+
+def _claim_lease(value: dict, speech, transcriptions) -> int | None:
+    deadline = min(speech.request_timeout_seconds, transcriptions.request_timeout_seconds)
+    if "claim_lease_seconds" not in value:
+        # Documented default: min(30, deadline / 2), when that is a whole second.
+        derived = min(_DEFAULT_CLAIM_LEASE_SECONDS, int(deadline // 2))
+        return derived if derived >= 1 else None
+    lease = value["claim_lease_seconds"]
+    if type(lease) is not int or lease < 1 or lease >= deadline:
+        raise ValueError(_INVALID)
+    return lease
 
 
 def _validate_policy_shapes(value: dict) -> tuple:
@@ -324,6 +345,7 @@ def _validate_policy_shapes(value: dict) -> tuple:
     }, frozenset({
         "retry_after_seconds", "credit", "accepted_sample_rates", "accepted_channels",
     })))
+    _claim_lease(value, speech, transcriptions)
     pcm = _table(value.get("pcm"), {"max_decoded_bytes", "max_duration_seconds"})
     _positive_int(pcm["max_decoded_bytes"], 2)
     _positive_int(pcm["max_duration_seconds"])

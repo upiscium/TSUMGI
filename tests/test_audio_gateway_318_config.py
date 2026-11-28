@@ -140,3 +140,55 @@ def test_output_read_grace_zero_disables_and_value_is_used(env, monkeypatch):
 def test_read_grace_is_strict(env, path, value):
     _set(env, path, value)
     _invalid(env)
+
+
+def _repository_kwargs(env, monkeypatch):
+    from tsumgi.control import daemon
+    seen = {}
+
+    def capture(*args, **kwargs):
+        seen.update(kwargs)
+        return env.repository
+
+    monkeypatch.setattr(daemon, "PostgresControlRepository", capture)
+    env.build()
+    return seen
+
+
+def test_claim_lease_default_is_below_the_request_deadlines(env, monkeypatch):
+    # deadlines are 2.0 s and 1.5 s here: min(30, floor(1.5 / 2)) = 0 -> not derivable
+    seen = _repository_kwargs(env, monkeypatch)
+    assert seen["audio_lease_seconds"] is None and seen["lease_seconds"] == 300
+
+
+@pytest.mark.parametrize("timeout,expected", [(120.0, 30), (40.0, 20), (3.0, 1)])
+def test_claim_lease_default_derivation(env, monkeypatch, timeout, expected):
+    _set(env, "speech.request_timeout_seconds", timeout)
+    _set(env, "transcriptions.request_timeout_seconds", timeout)
+    _set(env, "input_spool.ttl_seconds", timeout + 100)
+    _set(env, "output_spool.ttl_seconds", timeout + 100)
+    assert _repository_kwargs(env, monkeypatch)["audio_lease_seconds"] == expected
+
+
+def test_claim_lease_explicit_and_below_deadline(env, monkeypatch):
+    _set(env, "claim_lease_seconds", 1)
+    assert _repository_kwargs(env, monkeypatch)["audio_lease_seconds"] == 1
+
+
+@pytest.mark.parametrize("value", [0, -3, 2, 1.5, True, "1"])  # 2 >= the 1.5 s deadline
+def test_claim_lease_must_be_a_whole_second_strictly_below_the_deadline(env, value):
+    _set(env, "claim_lease_seconds", value)
+    _invalid(env)
+
+
+def test_audio_disabled_leaves_the_generic_lease_alone(env, monkeypatch):
+    from tsumgi.control import daemon
+    seen = {}
+
+    def capture(*args, **kwargs):
+        seen.update(kwargs)
+        return env.repository
+
+    monkeypatch.setattr(daemon, "PostgresControlRepository", capture)
+    env.build(None)
+    assert seen["audio_lease_seconds"] is None

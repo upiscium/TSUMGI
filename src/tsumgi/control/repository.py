@@ -253,6 +253,20 @@ def _lease_expiry(
     return expiry if deadline_at is None else min(expiry, deadline_at)
 
 
+def _lease_seconds_for(
+    lease_seconds: int, audio_lease_seconds: int | None, capability: str | None,
+) -> int:
+    """Lease length for a Job: the audio lease applies to audio.* capabilities only.
+
+    Capability is immutable, so claim and heartbeat renewal agree. Non-audio
+    Jobs and an unset audio lease always get ``lease_seconds`` unchanged.
+    """
+    if (audio_lease_seconds is not None and isinstance(capability, str)
+            and capability.startswith("audio.")):
+        return audio_lease_seconds
+    return lease_seconds
+
+
 def _event_size(kind: str, payload: Mapping[str, object]) -> int:
     if not isinstance(payload, Mapping):
         raise TypeError("event payload must be a mapping")
@@ -378,7 +392,13 @@ class InMemoryControlRepository:
         event_max_payload_bytes: int = 65536,
         event_max_total_bytes: int = 4 * 1024 * 1024,
         event_max_read: int = 512,
+        audio_lease_seconds: int | None = None,
     ) -> None:
+        if audio_lease_seconds is not None and (
+            type(audio_lease_seconds) is not int or audio_lease_seconds < 1
+        ):
+            raise ValueError("audio_lease_seconds must be a positive integer")
+        self.audio_lease_seconds = audio_lease_seconds
         for value, name in (
             (worker_ttl_seconds, "worker_ttl_seconds"),
             (lease_seconds, "lease_seconds"),
@@ -820,7 +840,10 @@ class InMemoryControlRepository:
                 )
                 renewed = job.with_updates(
                     lease_expires_at=_lease_expiry(
-                        timestamp, self.lease_seconds, job.deadline_at
+                        timestamp,
+                        _lease_seconds_for(
+                            self.lease_seconds, self.audio_lease_seconds, job.capability),
+                        job.deadline_at,
                     ),
                     updated_at=timestamp,
                 )
@@ -1125,7 +1148,10 @@ class InMemoryControlRepository:
                 assigned_worker_id=worker_id,
                 lease_token=str(uuid4()),
                 lease_expires_at=_lease_expiry(
-                    timestamp, self.lease_seconds, selected.deadline_at
+                    timestamp,
+                    _lease_seconds_for(
+                        self.lease_seconds, self.audio_lease_seconds, selected.capability),
+                    selected.deadline_at,
                 ),
                 started_at=timestamp,
                 finished_at=None,

@@ -126,6 +126,9 @@ def build_app(config_path: str):
         database_url,
         worker_ttl_seconds=int(section.get("worker_ttl_seconds", 60)),
         lease_seconds=int(section.get("lease_seconds", 300)),
+        audio_lease_seconds=(
+            None if audio_config is None else audio_config.claim_lease_seconds
+        ),
         event_max_count=int(section.get("event_max_count", 4096)),
         event_max_payload_bytes=int(
             section.get("event_max_payload_bytes", 65536)

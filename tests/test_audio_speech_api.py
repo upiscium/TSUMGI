@@ -1011,3 +1011,28 @@ def test_read_grace_is_validated(env, value):
     with pytest.raises(ValueError):
         AudioOutputChannel(env.repo, env.channel._spool, max_bytes=512,
                            read_grace_seconds=value)
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_worker_failure_is_a_502_not_a_504(env):
+    """#318 G2: with an audio lease below the deadline, lease recovery fails the
+    Job and the Gateway answers 502 backend_failure inside its own deadline."""
+    env.repo.audio_lease_seconds = 1
+    claimed = []
+
+    def claim_and_vanish(record):
+        claimed.append(claim(env, record))  # Worker takes it, never reports back
+
+    env.repo.after_submit = claim_and_vanish
+
+    async def maintenance():
+        await wait_until(lambda: bool(claimed))
+        job = claimed[0]
+        assert job.lease_expires_at <= utc_now() + timedelta(seconds=1)
+        env.repo.recover_expired_jobs(now=utc_now() + timedelta(seconds=2))
+
+    task = asyncio.create_task(maintenance())
+    response = await post(app(env))
+    await task
+    assert_error(response, 502, "backend_failure")
+    assert env.repo.list_jobs()[0].status is JobStatus.FAILED
