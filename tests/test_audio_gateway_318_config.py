@@ -46,3 +46,15 @@ def test_retry_after_defaults_and_is_configurable(env, monkeypatch, configured):
 def test_retry_after_is_strict(env, section, value):
     _set(env, f"{section}.retry_after_seconds", value)
     _invalid(env)
+
+
+def test_transcription_credit_is_optional_and_strict(env, monkeypatch):
+    _set(env, "transcriptions.credit", "Synthetic STT credit")
+    seen = _limits(env, monkeypatch)
+    assert seen["create_audio_transcriptions_router"].credit == "Synthetic STT credit"
+
+
+@pytest.mark.parametrize("value", ["", "x" * 257, "a\nb", 3, True])
+def test_transcription_credit_rejects_malformed(env, value):
+    _set(env, "transcriptions.credit", value)
+    _invalid(env)

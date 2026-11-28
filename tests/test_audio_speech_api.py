@@ -866,3 +866,49 @@ async def test_non_overload_errors_have_no_retry_after(env, monkeypatch):
 def test_retry_after_limit_is_bounded_one_to_thirty(value):
     with pytest.raises(ValueError):
         replace(LIMITS, retry_after_seconds=value)
+
+
+@pytest.mark.asyncio
+async def test_speech_response_carries_percent_encoded_catalog_credit(env):
+    """#318 G9: the voice attribution travels with the audio, ASCII-safe."""
+    from urllib.parse import unquote
+
+    attribution = "VOICEVOX:ずんだもん"
+    profile = make_profile("voicevox", attribution=attribution)
+    env.catalog = AudioProfileCatalog((profile,))
+    resolved = profile.resolved
+    env.repo.register_worker(WorkerRegistration(
+        spec=WorkerSpec(
+            worker_id=profile.profile_id, worker_class="synthetic-cpu",
+            resources=ResourceShape(), capabilities=frozenset({"audio.synthesize"}),
+        ),
+        serving=WorkerServingAdvertisement(
+            deployment_revision=resolved.deployment.revision,
+            runtime_instance=RuntimeInstance(resolved.deployment.revision, EPOCH),
+            contracts=(resolved.contract,),
+        ),
+    ))
+    env.repo.after_submit = lambda record: publish(env, record)
+    response = await post(app(env))
+    assert response.status_code == 200, response.text
+    header = response.headers["x-tsumgi-credit"]
+    assert header.isascii() and header.isprintable()
+    assert unquote(header) == attribution
+    assert len(header) <= 2048
+
+
+@pytest.mark.asyncio
+async def test_failed_speech_has_no_credit_header(env, monkeypatch):
+    monkeypatch.setattr(env.repo, "submit_job", lambda *a, **k: (_ for _ in ()).throw(
+        OverloadedError("x")))
+    assert "x-tsumgi-credit" not in (await post(app(env))).headers
+
+
+def test_over_long_attribution_is_refused_at_construction_not_truncated(env):
+    long_text = "あ" * 200  # 1800 encoded chars: fine
+    env.catalog = AudioProfileCatalog((make_profile("voicevox", attribution=long_text),))
+    router(env)
+    huge = "あ" * 250  # 2250 encoded chars: refused
+    env.catalog = AudioProfileCatalog((make_profile("voicevox", attribution=huge),))
+    with pytest.raises(ValueError, match="too long"):
+        router(env)

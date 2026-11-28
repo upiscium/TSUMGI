@@ -635,3 +635,26 @@ async def test_overload_429_carries_bounded_integer_retry_after(env, monkeypatch
 def test_retry_after_limit_is_bounded_one_to_thirty(value):
     with pytest.raises(ValueError):
         replace(LIMITS, retry_after_seconds=value)
+
+
+@pytest.mark.asyncio
+async def test_transcription_credit_header_only_when_configured(env):
+    """#318 G9: STT has no catalog credit; an operator-set credit is percent-encoded."""
+    from urllib.parse import unquote
+
+    env.repo.after_submit = lambda record: finish(env, record)
+    plain = await post(app(env))
+    assert plain.status_code == 200 and "x-tsumgi-credit" not in plain.headers
+    credit = "faster-whisper large-v3 (MIT); モデル表記"
+    instance = FastAPI()
+    instance.include_router(router(env, limits=replace(LIMITS, credit=credit)))
+    response = await post(instance)
+    assert response.status_code == 200
+    assert response.headers["x-tsumgi-credit"].isascii()
+    assert unquote(response.headers["x-tsumgi-credit"]) == credit
+
+
+@pytest.mark.parametrize("value", ["", " ", "x" * 257, "a\nb", "\ud800", 5])
+def test_invalid_credit(value):
+    with pytest.raises(ValueError):
+        replace(LIMITS, credit=value)

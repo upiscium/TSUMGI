@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 import math
 import secrets
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -31,6 +32,9 @@ from .audio_ingress import (
 from .audio_voice_api import _TOKEN, _require_voice_client
 
 
+CREDIT_HEADER = "x-tsumgi-credit"
+
+
 def _error(code: str, status: int = 400) -> AudioGatewayError:
     return AudioGatewayError(code, "request", status_code=status)
 
@@ -43,8 +47,22 @@ class AudioTranscriptionsLimits:
     poll_interval_seconds: float
     # Seconds advertised in Retry-After on 429 responses (load shedding, G4).
     retry_after_seconds: int = 2
+    # Optional model/licence credit for the response header (G9). The catalog
+    # carries attribution for voices only, so an STT credit is operator policy.
+    credit: str | None = None
 
     def __post_init__(self) -> None:
+        if self.credit is not None and (
+            type(self.credit) is not str or not self.credit.strip()
+            or len(self.credit) > 256
+            or any(ord(char) < 32 or ord(char) == 127 for char in self.credit)
+        ):
+            raise ValueError("invalid transcription credit")
+        if self.credit is not None:
+            try:
+                self.credit.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError("invalid transcription credit") from None
         if (type(self.retry_after_seconds) is not int
                 or not 1 <= self.retry_after_seconds <= 30):
             raise ValueError("invalid transcription retry-after")
@@ -366,6 +384,8 @@ def create_audio_transcriptions_router(
             if request.scope.get("query_string", b""):
                 raise _error("unsupported_query")
             result = await service.complete(request, reviewed, ingress_limits)
+            if limits.credit is not None:
+                headers[CREDIT_HEADER] = quote(limits.credit, safe=" :-._~")
             return JSONResponse(result, headers=headers)
         except AudioGatewayError as exc:
             if exc.status_code == 401:

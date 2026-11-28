@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 import math
 import secrets
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -211,7 +212,10 @@ class AudioSpeechService:
                 return
             await asyncio.sleep(0.01)
 
-    async def complete(self, request: Request, catalog, ingress_limits) -> bytes:
+    async def complete(
+        self, request: Request, catalog, ingress_limits, meta: dict | None = None,
+    ) -> bytes:
+        """Return WAV bytes; ``meta`` (optional) receives the validated profile/voice."""
         if self.in_flight >= self.limits.max_pending_admissions:
             raise _error("admission_overloaded", 429)
         self.in_flight += 1
@@ -226,6 +230,9 @@ class AudioSpeechService:
                 validated = await parse_speech_ingress(request, catalog, limits=ingress_limits)
                 if loop.time() >= stop:
                     raise _error("deadline_exceeded", 408)
+                if meta is not None:
+                    meta["profile_id"] = validated.profile.profile_id
+                    meta["voice"] = validated.voice.alias
                 submission = JobSubmission(
                     capability="audio.synthesize", serving=validated.profile.binding,
                     payload={"input": validated.input, "voice": {
@@ -259,6 +266,15 @@ class AudioSpeechService:
                 self.in_flight -= 1
 
 
+CREDIT_HEADER = "x-tsumgi-credit"
+_MAX_CREDIT_HEADER_CHARS = 2048
+
+
+def _credit_header(attribution: str) -> str:
+    """ASCII-only, percent-encoded UTF-8 of the reviewed catalog attribution."""
+    return quote(attribution, safe=" :-._~")
+
+
 def create_audio_speech_router(
     catalog: AudioProfileCatalog, repository, audio_output_channel: AudioOutputChannel, *,
     client_auth: ClientAuthMode | str, client_token: str | None,
@@ -283,6 +299,14 @@ def create_audio_speech_router(
         "submit_job", "get_job", "get_job_by_idempotency_key", "cancel_job",
     )):
         raise ValueError("audio speech requires durable repository operations")
+    credits = {}
+    for profile in reviewed.profiles:
+        for voice in profile.voices:
+            value = _credit_header(voice.attribution)
+            if len(value) > _MAX_CREDIT_HEADER_CHARS:
+                # Never truncate a legal credit; refuse the catalog instead.
+                raise ValueError("audio speech attribution is too long for a header")
+            credits[(profile.profile_id, voice.alias)] = value
     service = AudioSpeechService(repository, audio_output_channel, limits)
     router = APIRouter()
 
@@ -293,7 +317,12 @@ def create_audio_speech_router(
             _require_voice_client(request, client_token)
             if request.scope.get("query_string", b""):
                 raise _error("unsupported_query", 400)
-            data = await service.complete(request, reviewed, ingress_limits)
+            meta: dict = {}
+            data = await service.complete(request, reviewed, ingress_limits, meta)
+            credit = credits.get((meta.get("profile_id"), meta.get("voice")))
+            if credit is not None:
+                # The voice catalog is the single source of the credit text.
+                headers[CREDIT_HEADER] = credit
             return Response(data, media_type="audio/wav", headers=headers)
         except AudioGatewayError as exc:
             if exc.status_code == 401:
