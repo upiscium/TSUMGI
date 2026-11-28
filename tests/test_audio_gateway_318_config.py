@@ -218,7 +218,7 @@ def test_text_retention_configurable_and_zero_disables(env, monkeypatch, configu
     assert _app_kwargs(env, monkeypatch)["audio_text_retention_seconds"] == expected
 
 
-@pytest.mark.parametrize("value", [-1, 30 * 24 * 3600 + 1, 1.5, True, "60"])
+@pytest.mark.parametrize("value", [-1, 30 * 24 * 3600 + 1, 1.5, True, "60", 2, 1])  # 1, 2 <= 2.0 s deadline
 def test_text_retention_is_strict(env, value):
     _set(env, "text_retention_seconds", value)
     _invalid(env)

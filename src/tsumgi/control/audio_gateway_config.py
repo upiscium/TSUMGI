@@ -312,7 +312,7 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
             catalog, token, ingress, speech, transcriptions, input_spool, output_spool,
             pcm["max_decoded_bytes"], pcm["max_duration_seconds"],
             _claim_lease(value, speech, transcriptions),
-            _text_retention(value),
+            _text_retention(value, _max_deadline(speech, transcriptions)),
         )
     except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
         # Never chain parser, filesystem or schema exceptions with operator data.
@@ -323,9 +323,16 @@ _DEFAULT_CLAIM_LEASE_SECONDS = 30
 _MAX_TEXT_RETENTION_SECONDS = 30 * 24 * 3600
 
 
-def _text_retention(value: dict) -> int | None:
+def _max_deadline(speech, transcriptions) -> float:
+    return max(speech.request_timeout_seconds, transcriptions.request_timeout_seconds)
+
+
+def _text_retention(value: dict, deadline: float) -> int | None:
     seconds = value.get("text_retention_seconds", _DEFAULT_TEXT_RETENTION_SECONDS)
     if type(seconds) is not int or not 0 <= seconds <= _MAX_TEXT_RETENTION_SECONDS:
+        raise ValueError(_INVALID)
+    # A Gateway request still polling its Job must never see redacted text.
+    if seconds and seconds <= deadline:
         raise ValueError(_INVALID)
     return seconds or None  # 0 disables the purge
 
@@ -359,7 +366,7 @@ def _validate_policy_shapes(value: dict) -> tuple:
         "retry_after_seconds", "credit", "accepted_sample_rates", "accepted_channels",
     })))
     _claim_lease(value, speech, transcriptions)
-    _text_retention(value)
+    _text_retention(value, _max_deadline(speech, transcriptions))
     pcm = _table(value.get("pcm"), {"max_decoded_bytes", "max_duration_seconds"})
     _positive_int(pcm["max_decoded_bytes"], 2)
     _positive_int(pcm["max_duration_seconds"])

@@ -89,7 +89,7 @@ unknown keys are still rejected.
 | `input_spool.min_free_bytes`, `output_spool.min_free_bytes` | `max(1 GiB, 2 x max artifact)` | Free-disk floor of the spool filesystem; `0` disables. Below it, new admission is refused (see below). |
 | `output_spool.read_grace_seconds` | `60` | Delete a client-read output this long after its first full read; `0` disables (TTL only). Not accepted on `input_spool` (inputs follow Job state). |
 | `claim_lease_seconds` | `min(30, deadline / 2)` | Lease of `audio.*` Jobs only. Whole seconds, at least 1, strictly below both request deadlines (otherwise the policy is rejected). When no whole second fits below the deadlines (deadline of 2 s or less) the generic lease is kept. |
-| `text_retention_seconds` | `3600` | Seconds after a Job is terminal before TTS input and STT transcript in the Job row are replaced; `0` disables; at most 30 days. |
+| `text_retention_seconds` | `3600` | Seconds after a Job is terminal before TTS input and STT transcript in the Job row are replaced; `0` disables; at most 30 days; must exceed both request deadlines so a polling request never sees redacted text. |
 
 **Free disk (G10).** `DiskFloor` measures the spool filesystem on every admission
 (`shutil.disk_usage`, injectable in tests). Staging an STT input and admitting a
