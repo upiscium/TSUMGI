@@ -617,3 +617,28 @@ async def test_ollama_release_rechecks_ownership_after_awaited_reachability():
     api.list_models = exited_during_response
     await runtime.release()
     assert api.closed and api.unloaded == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detail,logged", [
+    ("test_runtime_probe_failed", True),           # the provider's own prefixed fixed code
+    ("other_runtime_probe_failed", False),         # another provider's prefix
+    ("test_runtime_token=private-sentinel", False),  # right prefix, not a code
+    ("test_runtime_" + "x" * 80, False),            # too long
+    ("test_runtime_Probe", False),                  # not lower snake case
+    ("private-sentinel", False),                    # free text
+    (None, False),
+])
+async def test_only_a_providers_own_fixed_failure_code_is_logged(detail, logged, caplog):
+    managed = Managed()
+    supervisor = RuntimeHealthSupervisor(managed, interval_seconds=0.02, timeout_seconds=0.2)
+    with caplog.at_level("ERROR", logger="tsumgi.worker.supervision"):
+        managed.value = RuntimeHealth(state=RuntimeHealthState.FAILED, ready=False, detail=detail)
+        assert await supervisor.check() is False
+    assert supervisor.failure_reason == "health_not_ready"
+    assert "health_not_ready" in caplog.text
+    if logged:
+        assert f"provider reported {detail}" in caplog.text
+    else:
+        assert "provider reported" not in caplog.text
+    assert "private-sentinel" not in caplog.text
