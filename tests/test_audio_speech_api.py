@@ -24,7 +24,8 @@ from tsumgi.control import (
 from tsumgi.control.auth import ClientAuthMode
 from tsumgi.control.models import utc_now
 from tsumgi.control.repository import (
-    DeadlineExceededError, NoCompatibleDeployment, OverloadedError, StorageUnavailable,
+    DeadlineExceededError, NoCompatibleDeployment, NotFoundError, OverloadedError,
+    StorageUnavailable,
 )
 from tsumgi.execution import JobResult
 from tsumgi.gateway.audio import AudioGatewayError, AudioProfileCatalog
@@ -926,3 +927,87 @@ async def test_low_disk_refuses_speech_admission_with_stable_503(env):
     free[0] = 10
     env.repo.after_submit = lambda record: publish(env, record)
     assert (await post(app(env))).status_code == 200
+
+
+# ---- #318 G3: output release ----
+
+@pytest.mark.asyncio
+async def test_speech_output_is_released_as_soon_as_it_is_served(env):
+    env.repo.after_submit = lambda record: publish(env, record)
+    for _ in range(6):  # more than max_artifacts=4: no TTL-bound throughput cap
+        response = await post(app(env))
+        assert response.status_code == 200 and response.content == WAV
+        assert not env.channel._spool._records and not env.channel._staged
+    assert not env.repo.cancellations
+
+
+@pytest.mark.asyncio
+async def test_failed_release_keeps_the_ttl_backstop(env, monkeypatch):
+    env.repo.after_submit = lambda record: publish(env, record)
+    monkeypatch.setattr(env.channel._spool, "delete",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("busy")))
+    response = await post(app(env))
+    assert response.status_code == 200
+    assert len(env.channel._spool._records) == 1  # charged until TTL reap
+
+
+class _Clock:
+    now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _grace_channel(env, grace):
+    clock = _Clock()
+    channel = AudioOutputChannel(env.repo, env.channel._spool, max_bytes=512,
+                                 read_grace_seconds=grace, clock=clock)
+    env.channel = channel
+    return channel, clock
+
+
+
+
+def _submission(env):
+    from tsumgi.control.models import JobSubmission
+    profile = next(p for p in env.catalog.profiles if p.profile_id == "synthetic-voicevox")
+    return JobSubmission(
+        capability="audio.synthesize", serving=profile.binding,
+        payload={"input": "x", "voice": {}, "response_format": "wav"},
+        deadline_at=utc_now() + timedelta(seconds=30), max_attempts=1,
+        idempotency_key="grace-0",
+    )
+
+
+def test_output_is_deleted_a_grace_period_after_the_first_full_read(env):
+    channel, clock = _grace_channel(env, 30)
+    record = env.repo.submit_job(_submission(env))
+    ref = publish(env, record)
+    aid = ref.uri.removeprefix("tsumgi-audio:")
+    assert channel.reap_consumed() == 0  # never read: only the TTL applies
+    assert channel.read_published(record.job_id, aid) == WAV
+    clock.now += 29
+    assert channel.read_published(record.job_id, aid) == WAV  # still re-readable
+    assert channel.reap_consumed() == 0
+    clock.now += 2  # 31 s after the FIRST read
+    assert channel.reap_consumed() == 1
+    assert not env.channel._spool._records
+    with pytest.raises(NotFoundError):
+        channel.read_published(record.job_id, aid)
+    assert channel.reap_consumed() == 0  # idempotent
+
+
+def test_grace_disabled_keeps_output_until_ttl(env):
+    channel, clock = _grace_channel(env, None)
+    record = env.repo.submit_job(_submission(env))
+    aid = publish(env, record).uri.removeprefix("tsumgi-audio:")
+    channel.read_published(record.job_id, aid)
+    clock.now += 10_000
+    assert channel.reap_consumed() == 0 and env.channel._spool._records
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), "5", True])
+def test_read_grace_is_validated(env, value):
+    with pytest.raises(ValueError):
+        AudioOutputChannel(env.repo, env.channel._spool, max_bytes=512,
+                           read_grace_seconds=value)

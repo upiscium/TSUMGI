@@ -40,7 +40,8 @@ def _table(value: object, keys: set[str], optional: frozenset[str] = frozenset()
 
 
 _SPOOL_KEYS = {"root", "ttl_seconds", "max_total_bytes", "max_artifacts"}
-_SPOOL_OPTIONAL = frozenset({"min_free_bytes"})
+_SPOOL_OPTIONAL = frozenset({"min_free_bytes", "read_grace_seconds"})
+_DEFAULT_READ_GRACE_SECONDS = 60.0
 
 
 def _min_free(data: dict) -> int | None:
@@ -50,6 +51,14 @@ def _min_free(data: dict) -> int | None:
     if type(value) is not int or value < 0:
         raise ValueError(_INVALID)
     return value
+
+
+def _read_grace(data: dict) -> float:
+    value = data.get("read_grace_seconds", _DEFAULT_READ_GRACE_SECONDS)
+    if (type(value) not in (int, float) or not math.isfinite(value)
+            or not 0 <= value <= 3600):
+        raise ValueError(_INVALID)
+    return float(value)
 
 
 def _positive_int(value: object, minimum: int = 1) -> int:
@@ -117,10 +126,17 @@ class _SpoolConfig:
     max_artifacts: int
     # None means the documented default, max(1 GiB, 2 x max artifact); 0 disables.
     min_free_bytes: int | None = None
+    # Output spool only: delete this long after the first full read. Default
+    # 60 s; 0 disables early release (TTL only).
+    read_grace_seconds: float = _DEFAULT_READ_GRACE_SECONDS
 
     @classmethod
-    def parse(cls, value: object, *, max_bytes: int, deadline: float) -> _SpoolConfig:
+    def parse(
+        cls, value: object, *, max_bytes: int, deadline: float, output: bool = False,
+    ) -> _SpoolConfig:
         data = _table(value, _SPOOL_KEYS, _SPOOL_OPTIONAL)
+        if not output and "read_grace_seconds" in data:
+            raise ValueError(_INVALID)
         ttl = data["ttl_seconds"]
         if (type(ttl) not in (int, float) or not math.isfinite(ttl)
                 or ttl <= deadline):
@@ -130,6 +146,7 @@ class _SpoolConfig:
             _positive_int(data["max_total_bytes"], max_bytes),
             _positive_int(data["max_artifacts"]),
             _min_free(data),
+            _read_grace(data),
         )
 
     def floor(self, max_bytes: int) -> DiskFloor:
@@ -221,6 +238,7 @@ class AudioGatewayConfig:
             output_channel = AudioOutputChannel(
                 repository, output_spool, max_bytes=self.speech.output_bytes,
                 disk_floor=self.output_spool.floor(self.speech.output_bytes),
+                read_grace_seconds=self.output_spool.read_grace_seconds or None,
             )
             auth = {"client_auth": ClientAuthMode.BEARER, "client_token": self.token}
             routers = (
@@ -275,7 +293,7 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
         )
         output_spool = _SpoolConfig.parse(
             value["output_spool"], max_bytes=speech.output_bytes,
-            deadline=speech.request_timeout_seconds,
+            deadline=speech.request_timeout_seconds, output=True,
         )
         left, right = input_spool.root, output_spool.root
         if (left == right or left in right.parents or right in left.parents
@@ -319,6 +337,9 @@ def _validate_policy_shapes(value: dict) -> tuple:
     for name in ("input_spool", "output_spool"):
         data = _table(value.get(name), _SPOOL_KEYS, _SPOOL_OPTIONAL)
         _min_free(data)
+        _read_grace(data)
+        if name == "input_spool" and "read_grace_seconds" in data:
+            raise ValueError(_INVALID)  # inputs are released on terminal, not on read
         if type(data["root"]) is not str or not data["root"].strip():
             raise ValueError(_INVALID)
         ttl = data["ttl_seconds"]

@@ -192,6 +192,15 @@ class AudioSpeechService:
                         _check_wav(data)
                     except AudioGatewayError:
                         raise _error("invalid_audio_output", 502) from None
+                    try:
+                        # The only reader holds the bytes: release the WAV now
+                        # instead of at the TTL (#318 G3). Failure keeps the TTL.
+                        await asyncio.to_thread(
+                            self.channel.release_published, job_id,
+                            ref.uri[len("tsumgi-audio:"):],
+                        )
+                    except Exception:
+                        pass
                     if abort.is_set() or asyncio.get_running_loop().time() >= stop:
                         raise _error("deadline_exceeded", 504)
                     return data

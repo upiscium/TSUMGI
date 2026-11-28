@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import RLock
+import time
 
 from ..control.models import JobStatus
 from ..control.repository import ConflictError, NotFoundError, RepositoryError
@@ -42,7 +43,15 @@ class AudioOutputChannel:
     def __init__(
         self, repository, spool: ArtifactSpool, *, max_bytes: int,
         disk_floor: DiskFloor | None = None,
+        read_grace_seconds: float | None = None, clock=time.monotonic,
     ):
+        if read_grace_seconds is not None and (
+                type(read_grace_seconds) not in (int, float)
+                or not 0 < read_grace_seconds < float("inf")):
+            raise ValueError("read_grace_seconds must be positive and finite or None")
+        self._read_grace = read_grace_seconds
+        self._clock = clock
+        self._first_read: dict[str, float] = {}
         if disk_floor is not None and not isinstance(disk_floor, DiskFloor):
             raise TypeError("disk_floor must be DiskFloor")
         self.disk_floor = disk_floor
@@ -67,7 +76,37 @@ class AudioOutputChannel:
         for artifact_id in tuple(self._staged):
             if artifact_id not in self._spool._records:
                 del self._staged[artifact_id]
+                self._first_read.pop(artifact_id, None)
         return removed
+
+    def _delete_locked(self, artifact_id: str) -> bool:
+        staged = self._staged.get(artifact_id)
+        if staged is None:
+            return True
+        try:
+            self._spool.delete(artifact_id, scope=staged.scope)
+        except (OSError, ValueError):
+            return False  # keep receipt and quota until deletion is verified
+        del self._staged[artifact_id]
+        self._first_read.pop(artifact_id, None)
+        return True
+
+    def reap_consumed(self) -> int:
+        """Delete outputs whose first full read is older than the grace period.
+
+        Purely local (no repository access): only an output that was already
+        served in full and verified SUCCEEDED at that moment is ever marked.
+        Disabled when no grace period is configured; the TTL still applies.
+        """
+        if self._read_grace is None:
+            return 0
+        with self._lock:
+            now = self._clock()
+            removed = 0
+            for artifact_id, first in tuple(self._first_read.items()):
+                if now - first >= self._read_grace and self._delete_locked(artifact_id):
+                    removed += 1
+            return removed
 
     def check_disk(self) -> None:
         """Admission pre-check for a Job whose output will land in this spool."""
@@ -252,6 +291,23 @@ class AudioOutputChannel:
                 runtime_instance_epoch=runtime_instance_epoch,
             )
 
+    def release_published(self, job_id: str, artifact_id: str) -> bool:
+        """Free a SUCCEEDED output right after its only reader (the Gateway
+        speech service) holds the complete bytes. Best effort and idempotent:
+        a failed deletion keeps receipt and quota until the TTL."""
+        with self._lock:
+            staged = self._staged.get(artifact_id)
+            if staged is None or staged.job_id != job_id:
+                return False
+            try:
+                record = self.repository.get_job(job_id)
+            except RepositoryError:
+                return False
+            if (record.status is not JobStatus.SUCCEEDED or record.result is None
+                    or staged.reference not in record.result.artifacts):
+                return False
+            return self._delete_locked(artifact_id)
+
     def read_published(self, job_id: str, artifact_id: str) -> bytes:
         """Expose an intact SUCCEEDED output only while its epoch is not fenced.
 
@@ -275,6 +331,10 @@ class AudioOutputChannel:
             else:
                 raise NotFoundError("audio output unavailable")
             try:
-                return self._spool.read(artifact_id, scope=staged.scope)
+                data = self._spool.read(artifact_id, scope=staged.scope)
             except ValueError as exc:
                 raise NotFoundError("audio output unavailable") from exc
+            # The caller now holds the complete bytes of a SUCCEEDED output.
+            if self._read_grace is not None:
+                self._first_read.setdefault(artifact_id, self._clock())
+            return data

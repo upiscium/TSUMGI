@@ -100,3 +100,43 @@ def test_spool_disk_floor_default_and_override(env, monkeypatch, section, max_by
 def test_spool_disk_floor_is_strict(env, section, value):
     _set(env, f"{section}.min_free_bytes", value)
     _invalid(env)
+
+
+def test_output_read_grace_default_and_override(env, monkeypatch):
+    seen = {}
+    from tsumgi.audio.output_channel import AudioOutputChannel
+    original = AudioOutputChannel.__init__
+
+    def spy(self, *args, **kwargs):
+        seen.update(kwargs)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(AudioOutputChannel, "__init__", spy)
+    env.build()
+    assert seen["read_grace_seconds"] == 60.0
+
+
+def test_output_read_grace_zero_disables_and_value_is_used(env, monkeypatch):
+    seen = {}
+    from tsumgi.audio.output_channel import AudioOutputChannel
+    original = AudioOutputChannel.__init__
+
+    def spy(self, *args, **kwargs):
+        seen.update(kwargs)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(AudioOutputChannel, "__init__", spy)
+    _set(env, "output_spool.read_grace_seconds", 0)
+    env.build()
+    assert seen["read_grace_seconds"] is None
+
+
+@pytest.mark.parametrize("path,value", [
+    ("output_spool.read_grace_seconds", -1), ("output_spool.read_grace_seconds", 3601),
+    ("output_spool.read_grace_seconds", float("inf")),
+    ("output_spool.read_grace_seconds", "5"), ("output_spool.read_grace_seconds", True),
+    ("input_spool.read_grace_seconds", 5),  # inputs follow Job state, not reads
+])
+def test_read_grace_is_strict(env, path, value):
+    _set(env, path, value)
+    _invalid(env)

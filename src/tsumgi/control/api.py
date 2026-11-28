@@ -219,6 +219,11 @@ def create_app(
                     except Exception:
                         # Failed deletion stays charged; retry next interval.
                         continue
+            if audio_output_channel is not None:
+                try:
+                    await asyncio.to_thread(audio_output_channel.reap_consumed)
+                except Exception:
+                    pass
             try:
                 await asyncio.to_thread(repository.expire_stale_workers)
                 await asyncio.to_thread(repository.expire_deadline_jobs)
@@ -228,7 +233,13 @@ def create_app(
             except Exception:
                 # Repository/API calls still expose current storage failures.
                 # Maintenance must not terminate the server process.
-                continue
+                pass
+            if audio_input_channel is not None:
+                try:
+                    # Inputs of terminal Jobs are released here, not at the TTL.
+                    await asyncio.to_thread(audio_input_channel.reap_terminal)
+                except Exception:
+                    continue
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

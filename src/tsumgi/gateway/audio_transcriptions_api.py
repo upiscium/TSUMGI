@@ -302,8 +302,17 @@ class AudioTranscriptionsService:
         finally:
             if uri is not None and not entered_submit:
                 await self._discard(uri)
-            # Once submit is entered, discard is forbidden even after cancel or
-            # success. #174 retains bound/pending inputs until verified TTL reap.
+            # Once submit is entered, discard is forbidden: the Job may exist.
+            # Instead ask the channel to release the input if (and only if) the
+            # durable Job is terminal; it re-reads the Job itself. Anything it
+            # cannot prove stays for the maintenance reaper and the TTL (#318 G3).
+            # (After a lost commit acknowledgement there is no record: the
+            # maintenance reaper resolves it by idempotency key, not this path.)
+            if record is not None:
+                try:
+                    await asyncio.to_thread(self.channel.release_terminal, record.job_id)
+                except Exception:
+                    self.cleanup_failures += 1
 
     def _check_declared_format(self, wav: bytes) -> None:
         # _check_wav already proved the canonical header, so these offsets hold.
