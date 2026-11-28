@@ -100,6 +100,8 @@ Deliberate differences from earlier providers (docs/validation/audio-tts-real-en
 Decisions to confirm: a silent or no-speech clip yields an empty transcript,
 which is returned as a valid empty result (the transcription API and JobResult
 already treat empty text as valid silence) and does not revoke the instance.
+**Update:** the real-engine run ([evidence](../validation/audio-stt-179-real-engine.md), defect F2) found that digital silence does *not* yield an empty transcript with the frozen `vad_filter=False` decoding: the model returns a fixed stock phrase, which this provider accepts as valid text. This decision is therefore open again.
+
 The temperature fallback schedule is the faster-whisper 1.2.1 default, as
 measured, so output is not guaranteed bit-deterministic.
 
