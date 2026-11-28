@@ -39,3 +39,71 @@ async def test_maintenance_reaps_expired_input_despite_unrelated_failure(
         async with asyncio.timeout(2):
             while artifact.exists():
                 await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repository_down", [False, True])
+async def test_maintenance_releases_terminal_inputs_and_consumed_outputs(
+    tmp_path, monkeypatch, repository_down,
+):
+    """#318 G3: release does not wait for the TTL; consumed outputs need no database."""
+    repo = InMemoryControlRepository()
+    output = new_env(tmp_path, repository=repo).channel
+    channel = make_channel(tmp_path, repo)
+    calls = []
+    monkeypatch.setattr(channel, "reap_terminal", lambda: calls.append("terminal") or 0)
+    monkeypatch.setattr(output, "reap_consumed", lambda: calls.append("consumed") or 0)
+    if repository_down:
+        def unavailable():
+            raise OSError("unavailable")
+        monkeypatch.setattr(repo, "expire_stale_workers", unavailable)
+    app = create_app(
+        repo, client_token="client", worker_token="worker",
+        audio_input_channel=channel, audio_output_channel=output,
+        maintenance_interval_seconds=0.01,
+    )
+    async with app.router.lifespan_context(app):
+        async with asyncio.timeout(2):
+            while "consumed" not in calls or ("terminal" not in calls):
+                await asyncio.sleep(0.01)
+    assert {"terminal", "consumed"} <= set(calls)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_purges_audio_text_after_the_retention(tmp_path):
+    """#318 G7: the existing maintenance loop applies the retention to Job rows."""
+    from datetime import UTC, datetime, timedelta
+    from tsumgi.control.repository import AUDIO_TEXT_REDACTED
+    from test_audio_lease_retention import submit_audio
+
+    repo = InMemoryControlRepository()
+    job = submit_audio(repo, datetime.now(UTC), deadline=60)
+    repo.cancel_job(job.job_id)
+    app = create_app(
+        repo, client_token="client", worker_token="worker",
+        maintenance_interval_seconds=0.01, audio_text_retention_seconds=1,
+    )
+    async with app.router.lifespan_context(app):
+        await asyncio.sleep(0.15)
+        assert repo.get_job(job.job_id).payload["input"] == "private spoken text"
+        repo._jobs[job.job_id] = repo._jobs[job.job_id].with_updates(
+            finished_at=repo._jobs[job.job_id].finished_at - timedelta(seconds=5))
+        async with asyncio.timeout(2):
+            while repo.get_job(job.job_id).payload["input"] != AUDIO_TEXT_REDACTED:
+                await asyncio.sleep(0.01)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+def test_text_retention_argument_is_strict(value):
+    with pytest.raises(ValueError):
+        create_app(InMemoryControlRepository(), client_token="client",
+                   worker_token="worker", audio_text_retention_seconds=value)
+
+
+def test_text_retention_needs_a_supporting_repository():
+    class Bare:
+        pass
+
+    with pytest.raises(ValueError):
+        create_app(Bare(), client_token="client", worker_token="worker",
+                   audio_text_retention_seconds=60)

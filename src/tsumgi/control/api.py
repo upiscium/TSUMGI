@@ -169,8 +169,14 @@ def create_app(
     audio_epoch_operator_token: str | None = None,
     worker_credentials: WorkerCredentials | None = None,
     audio_preparation_ttl_seconds: int | None = None,
+    audio_text_retention_seconds: int | None = None,
 ) -> FastAPI:
     mode = ClientAuthMode(client_auth)
+    if audio_text_retention_seconds is not None and (
+        type(audio_text_retention_seconds) is not int or audio_text_retention_seconds < 1
+        or not callable(getattr(repository, "redact_audio_job_text", None))
+    ):
+        raise ValueError("audio text retention needs a positive integer and a supporting repository")
     if audio_output_channel is not None:
         if (not isinstance(audio_output_channel, AudioOutputChannel)
                 or audio_output_channel.repository is not repository):
@@ -219,6 +225,11 @@ def create_app(
                     except Exception:
                         # Failed deletion stays charged; retry next interval.
                         continue
+            if audio_output_channel is not None:
+                try:
+                    await asyncio.to_thread(audio_output_channel.reap_consumed)
+                except Exception:
+                    pass
             try:
                 await asyncio.to_thread(repository.expire_stale_workers)
                 await asyncio.to_thread(repository.expire_deadline_jobs)
@@ -228,7 +239,21 @@ def create_app(
             except Exception:
                 # Repository/API calls still expose current storage failures.
                 # Maintenance must not terminate the server process.
-                continue
+                pass
+            if audio_text_retention_seconds is not None:
+                try:
+                    # Bounded retention of spoken text / transcripts in Job rows.
+                    await asyncio.to_thread(
+                        repository.redact_audio_job_text, audio_text_retention_seconds,
+                    )
+                except Exception:
+                    pass
+            if audio_input_channel is not None:
+                try:
+                    # Inputs of terminal Jobs are released here, not at the TTL.
+                    await asyncio.to_thread(audio_input_channel.reap_terminal)
+                except Exception:
+                    continue
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

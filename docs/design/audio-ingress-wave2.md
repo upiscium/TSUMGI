@@ -134,3 +134,22 @@ cancellation, idle/total timeout, fixed error redaction and exact size edges.
 Coordinator execution and independent review remain outstanding; do not infer a
 passing result from test source. Preserve the worktree without commit/add/push,
 PR/Issue writes, merge, release, deployment or permission configuration changes.
+
+## Follow-up (#318): WAV policy unchanged, precise error for extra chunks
+
+The accepted WAV is still exactly the canonical 44-byte header (`fmt ` of 16 bytes,
+then one `data` chunk, no padding or trailing bytes). It was not relaxed.
+A WAV that is well formed but differs only in layout (a `LIST`/`INFO` or `bext`
+chunk, padding, trailing bytes, an extended `fmt `) now returns 415
+`unsupported_audio_extra_chunk` instead of the generic `unsupported_audio`, so a
+client knows to re-encode rather than treat the file as corrupt. Re-encode without
+metadata, for example:
+
+```sh
+ffmpeg -i in.wav -map_metadata -1 -fflags +bitexact -flags:a +bitexact \
+  -c:a pcm_s16le -ar 16000 -ac 1 out.wav
+```
+
+(`-bitexact` stops the muxer from adding a `LIST`/`INFO` encoder chunk.) Check the
+result with `xxd out.wav | head -3`: `data` must start at byte 36. Sample rate
+and channel count are a separate check, see the transcription follow-up.

@@ -216,12 +216,15 @@ async def test_success_exact_identity_and_fenced_input_before_ack(env, language)
     assert WAV not in json.dumps(job_record_to_dict(durable)).encode()
     assert env.catalog.to_dict() == before
     assert not env.repo.readbacks and not env.repo.cancellations
-    # No unsafe post-admission deletion. TTL reap remains the channel authority.
+    # #318 G3: the Job is terminal, so the input was released at once (the
+    # channel re-read the Job itself); discard() still refuses a bound input and
+    # the TTL reap has nothing left to do.
+    assert not env.spool._records
     with pytest.raises(NotFoundError):
         env.channel.discard(receipt["uri"])
     expired = env.spool._clock() + 61
     env.spool._clock = lambda: expired
-    assert env.channel.reap_expired() == 1
+    assert env.channel.reap_expired() == 0
 
 
 @pytest.mark.asyncio
@@ -529,7 +532,11 @@ async def test_late_io_keeps_slot_and_cleans_by_admission_state(env, monkeypatch
         assert not env.repo.submissions
         assert len(env.spool._records) == (1 if phase == "stage-discard-error" else 0)
     else:
-        assert len(env.repo.submissions) == 1 and len(env.spool._records) == 1
+        # #318 G3: a late-cancelled Job is terminal, so its input is released
+        # at once; after a lost commit acknowledgement there is no record here,
+        # so it waits for the maintenance reaper (see test_audio_input_release).
+        assert len(env.repo.submissions) == 1
+        assert len(env.spool._records) == (1 if phase == "lost-ack" else 0)
         assert env.repo.list_jobs()[0].status is JobStatus.CANCELLED
 
 
@@ -613,3 +620,247 @@ async def test_opt_in_route_only(env):
     assert [(r.path, r.methods) for r in router(env).routes] == [
         ("/v1/audio/transcriptions", {"POST"}),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [None, 30])
+async def test_overload_429_carries_bounded_integer_retry_after(env, monkeypatch, seconds):
+    """#318 G4: the Retry-After value is a policy constant, not Job content."""
+    def refuse(submission):
+        raise OverloadedError("private-repository-error")
+
+    monkeypatch.setattr(env.repo, "submit_job", refuse)
+    limits = LIMITS if seconds is None else replace(LIMITS, retry_after_seconds=seconds)
+    instance = FastAPI()
+    instance.include_router(router(env, limits=limits))
+    response = await post(instance)
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == str(seconds or 2)
+
+
+@pytest.mark.parametrize("value", [0, 31, 2.5, True])
+def test_retry_after_limit_is_bounded_one_to_thirty(value):
+    with pytest.raises(ValueError):
+        replace(LIMITS, retry_after_seconds=value)
+
+
+@pytest.mark.asyncio
+async def test_transcription_credit_header_only_when_configured(env):
+    """#318 G9: STT has no catalog credit; an operator-set credit is percent-encoded."""
+    from urllib.parse import unquote
+
+    env.repo.after_submit = lambda record: finish(env, record)
+    plain = await post(app(env))
+    assert plain.status_code == 200 and "x-tsumgi-credit" not in plain.headers
+    credit = "faster-whisper large-v3 (MIT); モデル表記"
+    instance = FastAPI()
+    instance.include_router(router(env, limits=replace(LIMITS, credit=credit)))
+    response = await post(instance)
+    assert response.status_code == 200
+    assert response.headers["x-tsumgi-credit"].isascii()
+    assert unquote(response.headers["x-tsumgi-credit"]) == credit
+
+
+@pytest.mark.parametrize("value", ["", " ", "x" * 257, "a\nb", "\ud800", 5])
+def test_invalid_credit(value):
+    with pytest.raises(ValueError):
+        replace(LIMITS, credit=value)
+
+
+def wav_with(*, rate=16000, channels=1, list_chunk=False):
+    """Canonical-layout WAV (or one with a LIST/INFO chunk before data)."""
+    samples = b"\x00\x00" * channels
+    fmt = struct.pack("<HHIIHH", 1, channels, rate, rate * channels * 2, channels * 2, 16)
+    extra = b""
+    if list_chunk:
+        info = b"INFOISFT" + struct.pack("<I", 4) + b"Lav\x00"
+        extra = b"LIST" + struct.pack("<I", len(info)) + info
+    body = (b"WAVEfmt " + struct.pack("<I", 16) + fmt + extra
+            + b"data" + struct.pack("<I", len(samples)) + samples)
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+@pytest.mark.asyncio
+async def test_list_chunk_wav_gets_precise_extra_chunk_error_not_relaxed(env):
+    """#318 G5: the canonical-44-byte policy stays; the error says what to fix."""
+    response = await post(app(env), body=multipart(data=wav_with(list_chunk=True)))
+    assert_error(response, 415, "unsupported_audio_extra_chunk")
+    assert not env.repo.submissions and not env.spool._records
+    # Plain garbage and a bad codec stay the generic error.
+    assert_error(await post(app(env), body=multipart(data=b"fLaC")), 415)
+    assert_error(await post(app(env), body=multipart(data=WAV[:-1])), 415)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rate,channels,accepted", [
+    (16000, 1, True), (8000, 1, False), (24000, 1, False), (44100, 1, False),
+    (16000, 2, False),
+])
+async def test_declared_stt_format_is_rejected_at_admission(env, rate, channels, accepted):
+    limits = replace(LIMITS, accepted_sample_rates=[16000], accepted_channels=(1,))
+    instance = FastAPI()
+    instance.include_router(router(env, limits=limits))
+    env.repo.after_submit = lambda record: finish(env, record)
+    response = await post(instance, body=multipart(data=wav_with(rate=rate, channels=channels)))
+    if accepted:
+        assert response.status_code == 200
+    else:
+        assert_error(response, 415, "unsupported_audio_format")
+        assert not env.repo.submissions and not env.spool._records
+        assert not env.repo.list_jobs()
+
+
+@pytest.mark.asyncio
+async def test_undeclared_stt_format_keeps_previous_admission_behaviour(env):
+    stereo = wav_with(rate=24000, channels=2)
+
+    def done(record):
+        claimed, credentials = claim(env, record)
+        assert env.channel.read_for_worker(
+            record.job_id, attempt=claimed.attempts, **credentials) == stereo
+        env.repo.complete_job(record.job_id, JobResult(text="x"), **credentials)
+
+    env.repo.after_submit = done
+    response = await post(app(env), body=multipart(data=stereo))
+    assert response.status_code == 200 and len(env.repo.submissions) == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("accepted_sample_rates", [7999]), ("accepted_sample_rates", [48001]),
+    ("accepted_sample_rates", [16000.0]), ("accepted_channels", [3]),
+    ("accepted_channels", [True]), ("accepted_channels", "1"),
+    ("accepted_sample_rates", list(range(8000, 8009))),
+])
+def test_invalid_declared_format(field, value):
+    with pytest.raises(ValueError):
+        replace(LIMITS, **{field: value})
+
+
+@pytest.mark.asyncio
+async def test_low_disk_refuses_transcription_admission_with_stable_503(env):
+    """#318 G10: nothing is staged and no Job exists below the floor."""
+    from tsumgi.audio.disk_floor import DiskFloor
+    env.channel.disk_floor = DiskFloor("/synthetic", 10, lambda _p: 5)
+    response = await post(app(env))
+    assert_error(response, 503, "spool_disk_low")
+    assert not env.repo.submissions and not env.spool._records and not env.repo.list_jobs()
+
+
+# ---- #318 G3: the input is released when its Job is terminal, not at the TTL ----
+
+def _bound_job(env, key="release-1", *, max_attempts=1):
+    """Stage + admit one input through the channel (no HTTP); returns (uri, record)."""
+    from datetime import UTC, datetime
+    from tsumgi.control.models import JobSubmission
+    receipt = env.channel.stage(WAV)
+    submission = JobSubmission(
+        capability="audio.transcribe", serving=env.profile.binding,
+        payload={"language": "ja", "response_format": "json"},
+        deadline_at=datetime.now(UTC) + timedelta(seconds=30),
+        max_attempts=max_attempts, idempotency_key=key,
+    )
+    return receipt["uri"], env.channel.submit(submission, artifact_uri=receipt["uri"])
+
+
+def test_input_is_kept_while_running_and_released_when_terminal(env):
+    _, record = _bound_job(env)
+    claimed, credentials = claim(env, record)
+    assert env.channel.reap_terminal() == 0 and len(env.spool._records) == 1
+    env.repo.complete_job(record.job_id, JobResult(text="x"), **credentials)
+    assert env.channel.release_terminal(record.job_id) == 1
+    assert not env.spool._records and not env.channel._inputs
+    assert env.channel.reap_terminal() == 0  # idempotent
+
+
+@pytest.mark.parametrize("terminal", ["failed", "cancelled"])
+def test_failed_and_cancelled_jobs_release_their_input(env, terminal):
+    _, record = _bound_job(env)
+    claimed, credentials = claim(env, record)
+    if terminal == "failed":
+        env.repo.fail_job(record.job_id, "boom", retryable=False, **credentials)
+    else:
+        env.repo.cancel_job(record.job_id)
+    assert env.channel.reap_terminal() == 1 and not env.spool._records
+
+
+def test_retryable_failure_keeps_the_input_for_the_next_attempt(env):
+    _, record = _bound_job(env, max_attempts=3)
+    claimed, credentials = claim(env, record)
+    env.repo.fail_job(record.job_id, "transient", retryable=True, **credentials)
+    assert env.repo.get_job(record.job_id).status is JobStatus.QUEUED
+    assert env.channel.reap_terminal() == 0 and len(env.spool._records) == 1
+    claimed, credentials = claim(env, record)
+    assert env.channel.read_for_worker(record.job_id, attempt=claimed.attempts,
+                                       **credentials) == WAV
+
+
+def test_retry_after_cancel_cannot_read_or_rebind_the_released_input(env):
+    """A stale attempt and a resubmission after cancel both fail closed."""
+    from datetime import UTC, datetime
+    from tsumgi.control.models import JobSubmission
+    uri, record = _bound_job(env, "retry-after-cancel")
+    claimed, credentials = claim(env, record)
+    env.repo.cancel_job(record.job_id)
+    assert env.channel.release_terminal(record.job_id) == 1
+    with pytest.raises((NotFoundError, ConflictError)):
+        env.channel.read_for_worker(record.job_id, attempt=claimed.attempts, **credentials)
+    again = JobSubmission(
+        capability="audio.transcribe", serving=env.profile.binding,
+        payload={"language": "ja", "response_format": "json"},
+        deadline_at=datetime.now(UTC) + timedelta(seconds=30),
+        max_attempts=1, idempotency_key="retry-after-cancel",
+    )
+    with pytest.raises(ConflictError):
+        env.channel.submit(again, artifact_uri=uri)
+    assert len(env.repo.list_jobs()) == 1
+
+
+def test_release_is_decided_by_the_repository_not_the_caller(env, monkeypatch):
+    _, record = _bound_job(env)
+    claim(env, record)
+    # Asking for a RUNNING Job's input to be released is a no-op.
+    assert env.channel.release_terminal(record.job_id) == 0 and env.spool._records
+    # An unreadable repository keeps everything.
+    env.repo.cancel_job(record.job_id)
+    monkeypatch.setattr(env.repo, "get_job", lambda _id: (_ for _ in ()).throw(
+        StorageUnavailable("down")))
+    assert env.channel.reap_terminal() == 0 and env.spool._records
+    monkeypatch.undo()
+    assert env.channel.reap_terminal() == 1
+
+
+def test_quota_is_not_capped_by_ttl_after_jobs_finish(env):
+    """max_artifacts=4: a fifth input fits once the earlier Jobs are terminal."""
+    records = [_bound_job(env, f"k{i}")[1] for i in range(4)]
+    with pytest.raises(ValueError, match="quota"):
+        env.channel.stage(WAV)  # nothing terminal yet: still refused
+    for record in records[:2]:
+        claimed, credentials = claim(env, record)
+        env.repo.complete_job(record.job_id, JobResult(text="x"), **credentials)
+    assert env.channel.stage(WAV)["size_bytes"] == len(WAV)
+    assert len(env.spool._records) == 3
+
+
+def test_lost_commit_ack_input_is_released_by_idempotency_lookup(env, monkeypatch):
+    from datetime import UTC, datetime
+    from tsumgi.control.models import JobSubmission
+    receipt = env.channel.stage(WAV)
+    submission = JobSubmission(
+        capability="audio.transcribe", serving=env.profile.binding,
+        payload={"language": "ja", "response_format": "json"},
+        deadline_at=datetime.now(UTC) + timedelta(seconds=30),
+        max_attempts=1, idempotency_key="lost-ack-release",
+    )
+    original = env.repo.submit_job
+
+    def lost(sub, **kwargs):
+        original(sub, **kwargs)
+        raise StorageUnavailable("lost ack")
+
+    monkeypatch.setattr(env.repo, "submit_job", lost)
+    with pytest.raises(StorageUnavailable):
+        env.channel.submit(submission, artifact_uri=receipt["uri"])
+    monkeypatch.undo()
+    assert env.channel.reap_terminal() == 0  # Job still queued
+    env.repo.cancel_job(env.repo.list_jobs()[0].job_id)
+    assert env.channel.reap_terminal() == 1 and not env.spool._records

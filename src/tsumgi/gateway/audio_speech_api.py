@@ -11,10 +11,12 @@ from dataclasses import dataclass
 from datetime import timedelta
 import math
 import secrets
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
+from ..audio.disk_floor import SpoolDiskLow
 from ..audio.output_channel import AudioOutputChannel
 from ..control.auth import ClientAuthMode
 from ..control.models import JobStatus, JobSubmission, utc_now
@@ -39,8 +41,14 @@ class AudioSpeechLimits:
     request_timeout_seconds: float
     max_pending_admissions: int
     poll_interval_seconds: float
+    # Seconds advertised in Retry-After on 429 responses (load shedding, G4).
+    # A constant of this policy; never derived from Job or request content.
+    retry_after_seconds: int = 2
 
     def __post_init__(self) -> None:
+        if (type(self.retry_after_seconds) is not int
+                or not 1 <= self.retry_after_seconds <= 30):
+            raise ValueError("invalid speech retry-after")
         if type(self.output_bytes) is not int or not 46 <= self.output_bytes <= 16 * 1024 * 1024:
             raise ValueError("invalid speech output limit")
         if (type(self.max_pending_admissions) is not int
@@ -122,6 +130,11 @@ class AudioSpeechService:
         job_id = None
         try:
             try:
+                # Do not admit a Job whose output the spool could not store.
+                await asyncio.to_thread(self.channel.check_disk)
+            except SpoolDiskLow:
+                raise _error("spool_disk_low", 503) from None
+            try:
                 record = await asyncio.to_thread(
                     self.repository.submit_job, submission,
                     admission_deadline_at=submission.deadline_at,
@@ -179,6 +192,15 @@ class AudioSpeechService:
                         _check_wav(data)
                     except AudioGatewayError:
                         raise _error("invalid_audio_output", 502) from None
+                    try:
+                        # The only reader holds the bytes: release the WAV now
+                        # instead of at the TTL (#318 G3). Failure keeps the TTL.
+                        await asyncio.to_thread(
+                            self.channel.release_published, job_id,
+                            ref.uri[len("tsumgi-audio:"):],
+                        )
+                    except Exception:
+                        pass
                     if abort.is_set() or asyncio.get_running_loop().time() >= stop:
                         raise _error("deadline_exceeded", 504)
                     return data
@@ -220,6 +242,10 @@ class AudioSpeechService:
                 validated = await parse_speech_ingress(request, catalog, limits=ingress_limits)
                 if loop.time() >= stop:
                     raise _error("deadline_exceeded", 408)
+                # Let the route attach the credit without changing this signature.
+                request.state.audio_credit_key = (
+                    validated.profile.profile_id, validated.voice.alias,
+                )
                 submission = JobSubmission(
                     capability="audio.synthesize", serving=validated.profile.binding,
                     payload={"input": validated.input, "voice": {
@@ -253,6 +279,15 @@ class AudioSpeechService:
                 self.in_flight -= 1
 
 
+CREDIT_HEADER = "x-tsumgi-credit"
+_MAX_CREDIT_HEADER_CHARS = 2048
+
+
+def _credit_header(attribution: str) -> str:
+    """ASCII-only, percent-encoded UTF-8 of the reviewed catalog attribution."""
+    return quote(attribution, safe=" :-._~")
+
+
 def create_audio_speech_router(
     catalog: AudioProfileCatalog, repository, audio_output_channel: AudioOutputChannel, *,
     client_auth: ClientAuthMode | str, client_token: str | None,
@@ -277,6 +312,14 @@ def create_audio_speech_router(
         "submit_job", "get_job", "get_job_by_idempotency_key", "cancel_job",
     )):
         raise ValueError("audio speech requires durable repository operations")
+    credits = {}
+    for profile in reviewed.profiles:
+        for voice in profile.voices:
+            value = _credit_header(voice.attribution)
+            if len(value) > _MAX_CREDIT_HEADER_CHARS:
+                # Never truncate a legal credit; refuse the catalog instead.
+                raise ValueError("audio speech attribution is too long for a header")
+            credits[(profile.profile_id, voice.alias)] = value
     service = AudioSpeechService(repository, audio_output_channel, limits)
     router = APIRouter()
 
@@ -288,10 +331,16 @@ def create_audio_speech_router(
             if request.scope.get("query_string", b""):
                 raise _error("unsupported_query", 400)
             data = await service.complete(request, reviewed, ingress_limits)
+            credit = credits.get(getattr(request.state, "audio_credit_key", None))
+            if credit is not None:
+                # The voice catalog is the single source of the credit text.
+                headers[CREDIT_HEADER] = credit
             return Response(data, media_type="audio/wav", headers=headers)
         except AudioGatewayError as exc:
             if exc.status_code == 401:
                 headers["WWW-Authenticate"] = "Bearer"
+            if exc.status_code == 429:
+                headers["Retry-After"] = str(limits.retry_after_seconds)
             return JSONResponse(exc.to_dict(), status_code=exc.status_code, headers=headers)
         except Exception:
             exc = _error("audio_unavailable", 503)

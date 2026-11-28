@@ -11,6 +11,7 @@ import re
 import stat
 
 from ..audio.artifact_spool import ArtifactSpool
+from ..audio.disk_floor import DiskFloor, default_min_free_bytes
 from ..audio.input_channel import AudioInputChannel
 from ..audio.output_channel import AudioOutputChannel
 from ..gateway.audio import (
@@ -26,14 +27,39 @@ from .auth import ClientAuthMode
 
 
 _INVALID = "audio_gateway configuration is invalid"
+_DEFAULT_TEXT_RETENTION_SECONDS = 3600
 _TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+=*\Z")
 _CATALOG_BYTES = 1024 * 1024
 
 
-def _table(value: object, keys: set[str]) -> dict:
-    if type(value) is not dict or value.keys() != keys:
+def _table(value: object, keys: set[str], optional: frozenset[str] = frozenset()) -> dict:
+    """Exact key set: every required key, plus only the listed optional keys."""
+    if (type(value) is not dict or not keys <= value.keys()
+            or value.keys() - keys - optional):
         raise ValueError(_INVALID)
     return value
+
+
+_SPOOL_KEYS = {"root", "ttl_seconds", "max_total_bytes", "max_artifacts"}
+_SPOOL_OPTIONAL = frozenset({"min_free_bytes", "read_grace_seconds"})
+_DEFAULT_READ_GRACE_SECONDS = 60.0
+
+
+def _min_free(data: dict) -> int | None:
+    value = data.get("min_free_bytes")
+    if value is None:
+        return None
+    if type(value) is not int or value < 0:
+        raise ValueError(_INVALID)
+    return value
+
+
+def _read_grace(data: dict) -> float:
+    value = data.get("read_grace_seconds", _DEFAULT_READ_GRACE_SECONDS)
+    if (type(value) not in (int, float) or not math.isfinite(value)
+            or not 0 <= value <= 3600):
+        raise ValueError(_INVALID)
+    return float(value)
 
 
 def _positive_int(value: object, minimum: int = 1) -> int:
@@ -99,10 +125,19 @@ class _SpoolConfig:
     ttl_seconds: float
     max_total_bytes: int
     max_artifacts: int
+    # None means the documented default, max(1 GiB, 2 x max artifact); 0 disables.
+    min_free_bytes: int | None = None
+    # Output spool only: delete this long after the first full read. Default
+    # 60 s; 0 disables early release (TTL only).
+    read_grace_seconds: float = _DEFAULT_READ_GRACE_SECONDS
 
     @classmethod
-    def parse(cls, value: object, *, max_bytes: int, deadline: float) -> _SpoolConfig:
-        data = _table(value, {"root", "ttl_seconds", "max_total_bytes", "max_artifacts"})
+    def parse(
+        cls, value: object, *, max_bytes: int, deadline: float, output: bool = False,
+    ) -> _SpoolConfig:
+        data = _table(value, _SPOOL_KEYS, _SPOOL_OPTIONAL)
+        if not output and "read_grace_seconds" in data:
+            raise ValueError(_INVALID)
         ttl = data["ttl_seconds"]
         if (type(ttl) not in (int, float) or not math.isfinite(ttl)
                 or ttl <= deadline):
@@ -111,7 +146,14 @@ class _SpoolConfig:
             _check_root(data["root"]), ttl,
             _positive_int(data["max_total_bytes"], max_bytes),
             _positive_int(data["max_artifacts"]),
+            _min_free(data),
+            _read_grace(data),
         )
+
+    def floor(self, max_bytes: int) -> DiskFloor:
+        minimum = (default_min_free_bytes(max_bytes)
+                   if self.min_free_bytes is None else self.min_free_bytes)
+        return DiskFloor(str(self.root), minimum)
 
     def create(self, max_bytes: int) -> ArtifactSpool:
         return ArtifactSpool(
@@ -180,6 +222,13 @@ class AudioGatewayConfig:
     output_spool: _SpoolConfig
     max_decoded_bytes: int
     max_duration_seconds: int
+    # Lease for audio.* Jobs only (None: the generic lease applies). Always below
+    # both request deadlines so an unconfirmed Worker failure ends the Job
+    # (502 backend_failure) before the Gateway gives up (504).
+    claim_lease_seconds: int | None = None
+    # Seconds after a Job is terminal before its TTS input / STT transcript in
+    # the Job row is replaced by a placeholder; None = retained (0 in config).
+    text_retention_seconds: int | None = _DEFAULT_TEXT_RETENTION_SECONDS
 
     def build(self, repository) -> AudioGatewaySetup:
         """Build shared Control/Worker transport and public routers atomically."""
@@ -191,10 +240,13 @@ class AudioGatewayConfig:
                 max_bytes=self.ingress.file_bytes,
                 max_decoded_bytes=self.max_decoded_bytes,
                 max_duration_seconds=self.max_duration_seconds,
+                disk_floor=self.input_spool.floor(self.ingress.file_bytes),
             )
             output_spool = self.output_spool.create(self.speech.output_bytes)
             output_channel = AudioOutputChannel(
                 repository, output_spool, max_bytes=self.speech.output_bytes,
+                disk_floor=self.output_spool.floor(self.speech.output_bytes),
+                read_grace_seconds=self.output_spool.read_grace_seconds or None,
             )
             auth = {"client_auth": ClientAuthMode.BEARER, "client_token": self.token}
             routers = (
@@ -224,7 +276,8 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
             raise ValueError(_INVALID)
         allowed = {"enabled", "catalog", "ingress", "speech", "transcriptions",
                    "input_spool", "output_spool", "pcm"}
-        if value.keys() - allowed:
+        optional = frozenset({"claim_lease_seconds", "text_retention_seconds"})
+        if value.keys() - allowed - optional:
             raise ValueError(_INVALID)
         if not enabled:
             # Disabled tables may retain a complete valid policy, but incomplete
@@ -232,7 +285,7 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
             if value.keys() - {"enabled"}:
                 _validate_policy_shapes(value)
             return None
-        _table(value, allowed)
+        _table(value, allowed, optional)
         token = os.environ.get("TSUMGI_AUDIO_CLIENT_TOKEN", "")
         if (_TOKEN.fullmatch(token) is None or token.lower() == "anon"
                 or token in (os.environ.get("TSUMGI_CLIENT_TOKEN", ""),
@@ -249,7 +302,7 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
         )
         output_spool = _SpoolConfig.parse(
             value["output_spool"], max_bytes=speech.output_bytes,
-            deadline=speech.request_timeout_seconds,
+            deadline=speech.request_timeout_seconds, output=True,
         )
         left, right = input_spool.root, output_spool.root
         if (left == right or left in right.parents or right in left.parents
@@ -258,10 +311,42 @@ def load_audio_gateway_config(value: object) -> AudioGatewayConfig | None:
         return AudioGatewayConfig(
             catalog, token, ingress, speech, transcriptions, input_spool, output_spool,
             pcm["max_decoded_bytes"], pcm["max_duration_seconds"],
+            _claim_lease(value, speech, transcriptions),
+            _text_retention(value, _max_deadline(speech, transcriptions)),
         )
     except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
         # Never chain parser, filesystem or schema exceptions with operator data.
         raise RuntimeError(_INVALID) from None
+
+
+_DEFAULT_CLAIM_LEASE_SECONDS = 30
+_MAX_TEXT_RETENTION_SECONDS = 30 * 24 * 3600
+
+
+def _max_deadline(speech, transcriptions) -> float:
+    return max(speech.request_timeout_seconds, transcriptions.request_timeout_seconds)
+
+
+def _text_retention(value: dict, deadline: float) -> int | None:
+    seconds = value.get("text_retention_seconds", _DEFAULT_TEXT_RETENTION_SECONDS)
+    if type(seconds) is not int or not 0 <= seconds <= _MAX_TEXT_RETENTION_SECONDS:
+        raise ValueError(_INVALID)
+    # A Gateway request still polling its Job must never see redacted text.
+    if seconds and seconds <= deadline:
+        raise ValueError(_INVALID)
+    return seconds or None  # 0 disables the purge
+
+
+def _claim_lease(value: dict, speech, transcriptions) -> int | None:
+    deadline = min(speech.request_timeout_seconds, transcriptions.request_timeout_seconds)
+    if "claim_lease_seconds" not in value:
+        # Documented default: min(30, deadline / 2), when that is a whole second.
+        derived = min(_DEFAULT_CLAIM_LEASE_SECONDS, int(deadline // 2))
+        return derived if derived >= 1 else None
+    lease = value["claim_lease_seconds"]
+    if type(lease) is not int or lease < 1 or lease >= deadline:
+        raise ValueError(_INVALID)
+    return lease
 
 
 def _validate_policy_shapes(value: dict) -> tuple:
@@ -273,11 +358,15 @@ def _validate_policy_shapes(value: dict) -> tuple:
     speech = AudioSpeechLimits(**_table(value.get("speech"), {
         "output_bytes", "request_timeout_seconds", "max_pending_admissions",
         "poll_interval_seconds",
-    }))
+    }, frozenset({"retry_after_seconds"})))
     transcriptions = AudioTranscriptionsLimits(**_table(value.get("transcriptions"), {
         "text_bytes", "request_timeout_seconds", "max_pending_admissions",
         "poll_interval_seconds",
-    }))
+    }, frozenset({
+        "retry_after_seconds", "credit", "accepted_sample_rates", "accepted_channels",
+    })))
+    _claim_lease(value, speech, transcriptions)
+    _text_retention(value, _max_deadline(speech, transcriptions))
     pcm = _table(value.get("pcm"), {"max_decoded_bytes", "max_duration_seconds"})
     _positive_int(pcm["max_decoded_bytes"], 2)
     _positive_int(pcm["max_duration_seconds"])
@@ -289,9 +378,11 @@ def _validate_policy_shapes(value: dict) -> tuple:
     if type(value.get("catalog")) is not str or not value["catalog"].strip():
         raise ValueError(_INVALID)
     for name in ("input_spool", "output_spool"):
-        data = _table(value.get(name), {
-            "root", "ttl_seconds", "max_total_bytes", "max_artifacts",
-        })
+        data = _table(value.get(name), _SPOOL_KEYS, _SPOOL_OPTIONAL)
+        _min_free(data)
+        _read_grace(data)
+        if name == "input_spool" and "read_grace_seconds" in data:
+            raise ValueError(_INVALID)  # inputs are released on terminal, not on read
         if type(data["root"]) is not str or not data["root"].strip():
             raise ValueError(_INVALID)
         ttl = data["ttl_seconds"]

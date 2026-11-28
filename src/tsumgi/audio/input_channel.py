@@ -16,10 +16,17 @@ from ..control.models import JobSubmission, JobStatus
 from ..control.repository import (
     _submission_matches,
     ConflictError, DeadlineExceededError, NoCompatibleDeployment,
-    NotFoundError, OverloadedError, StorageUnavailable,
+    NotFoundError, OverloadedError, RepositoryError, StorageUnavailable,
 )
 from .artifact_spool import ArtifactSpool
+from .disk_floor import DiskFloor
 from .pcm16 import validate_pcm16_wav
+
+
+# A Job in one of these states can never again hold a Worker attempt, so its
+# staged input is dead weight (and private audio). A retryable failure goes back
+# to QUEUED and is not terminal, so its input is kept for the next attempt.
+_TERMINAL = frozenset({JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED})
 
 
 @dataclass(frozen=True)
@@ -37,7 +44,11 @@ class AudioInputChannel:
     def __init__(
         self, repository, spool: ArtifactSpool, *, max_bytes: int,
         max_decoded_bytes: int | None = None, max_duration_seconds: int = 60,
+        disk_floor: DiskFloor | None = None,
     ):
+        if disk_floor is not None and not isinstance(disk_floor, DiskFloor):
+            raise TypeError("expected a DiskFloor")
+        self.disk_floor = disk_floor
         if not isinstance(spool, ArtifactSpool):
             raise TypeError("expected an ArtifactSpool")
         if (type(max_bytes) is not int or max_bytes < 44
@@ -68,6 +79,55 @@ class AudioInputChannel:
                     del self._inputs[ident]
             return count
 
+    def _release_terminal_locked(self, job_id: str | None = None) -> int:
+        """Delete the input of every bound Job that is durably terminal.
+
+        Authority is the repository read made here, never the caller's belief.
+        Uncertainty (repository error, failed deletion) keeps file and receipt;
+        the TTL remains the backstop. Idempotent.
+        """
+        removed = 0
+        for ident, staged in tuple(self._inputs.items()):
+            try:
+                if staged.job_id is not None:
+                    if job_id is not None and staged.job_id != job_id:
+                        continue
+                    job = self.repository.get_job(staged.job_id)
+                elif staged.submission is not None and staged.submission.idempotency_key:
+                    # A lost COMMIT acknowledgement: find the Job only by the
+                    # pinned request identity, exactly as read_for_worker does.
+                    job = self.repository.get_job_by_idempotency_key(
+                        staged.submission.idempotency_key)
+                    if (job is None or (job_id is not None and job.job_id != job_id)
+                            or not _submission_matches(job, staged.submission)):
+                        continue
+                else:
+                    continue
+            except RepositoryError:
+                continue
+            if job.status not in _TERMINAL:
+                continue
+            try:
+                self.spool.delete(ident, scope=staged.scope)
+            except (OSError, ValueError):
+                continue
+            del self._inputs[ident]
+            removed += 1
+        return removed
+
+    def release_terminal(self, job_id: str | None = None) -> int:
+        """Release the input of one terminal Job, or of all of them."""
+        with self._lock:
+            return self._release_terminal_locked(job_id)
+
+    def reap_terminal(self) -> int:
+        with self._lock:
+            return self._release_terminal_locked()
+
+    def disk_status(self) -> dict | None:
+        """Free-space health view for operators; None when no floor is set."""
+        return None if self.disk_floor is None else self.disk_floor.status()
+
     def stage(self, data: bytes) -> dict:
         """Receive verified bounded WAV bytes under an unguessable local ID."""
         with self._lock:
@@ -77,6 +137,13 @@ class AudioInputChannel:
                 max_decoded_bytes=self.max_decoded_bytes,
                 max_duration_seconds=self.max_duration_seconds,
             )
+            if (len(self.spool._records) >= self.spool._max_artifacts
+                    or self.spool._total_bytes + len(data) > self.spool._max_total_bytes):
+                # Quota is tight: free finished Jobs' inputs before refusing, so
+                # throughput is not capped by max_artifacts / TTL.
+                self._release_terminal_locked()
+            if self.disk_floor is not None:
+                self.disk_floor.check()  # SpoolDiskLow before any file is written
             scope = "input-stage:" + secrets.token_hex(16)
             receipt = self.spool.stage(data, scope=scope)
             aid = receipt["artifact_id"]

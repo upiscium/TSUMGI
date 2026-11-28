@@ -253,6 +253,46 @@ def _lease_expiry(
     return expiry if deadline_at is None else min(expiry, deadline_at)
 
 
+# Audio Jobs keep the spoken text (TTS payload input) and the transcript (STT
+# result text) in durable JSON. After a bounded time past the terminal state
+# these two values are replaced by this fixed placeholder (#318 G7); ids,
+# status, timings, digests and every other field are kept.
+AUDIO_TEXT_REDACTED = "[redacted: audio text retention elapsed]"
+AUDIO_TEXT_CAPABILITIES = ("audio.synthesize", "audio.transcribe")
+_TERMINAL_STATUSES = frozenset({JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED})
+
+
+def _redacted_audio_job(job):
+    """Return the redacted copy of a terminal audio Job, or None if nothing to do."""
+    payload, result = job.payload, job.result
+    new_payload = new_result = None
+    if isinstance(payload.get("input"), str) and payload["input"] != AUDIO_TEXT_REDACTED:
+        new_payload = {**dict(payload), "input": AUDIO_TEXT_REDACTED}
+    if (result is not None and isinstance(result.text, str)
+            and result.text != AUDIO_TEXT_REDACTED):
+        new_result = replace(result, text=AUDIO_TEXT_REDACTED)
+    if new_payload is None and new_result is None:
+        return None
+    return job.with_updates(
+        payload=job.payload if new_payload is None else new_payload,
+        result=job.result if new_result is None else new_result,
+    )
+
+
+def _lease_seconds_for(
+    lease_seconds: int, audio_lease_seconds: int | None, capability: str | None,
+) -> int:
+    """Lease length for a Job: the audio lease applies to audio.* capabilities only.
+
+    Capability is immutable, so claim and heartbeat renewal agree. Non-audio
+    Jobs and an unset audio lease always get ``lease_seconds`` unchanged.
+    """
+    if (audio_lease_seconds is not None and isinstance(capability, str)
+            and capability.startswith("audio.")):
+        return audio_lease_seconds
+    return lease_seconds
+
+
 def _event_size(kind: str, payload: Mapping[str, object]) -> int:
     if not isinstance(payload, Mapping):
         raise TypeError("event payload must be a mapping")
@@ -378,7 +418,13 @@ class InMemoryControlRepository:
         event_max_payload_bytes: int = 65536,
         event_max_total_bytes: int = 4 * 1024 * 1024,
         event_max_read: int = 512,
+        audio_lease_seconds: int | None = None,
     ) -> None:
+        if audio_lease_seconds is not None and (
+            type(audio_lease_seconds) is not int or audio_lease_seconds < 1
+        ):
+            raise ValueError("audio_lease_seconds must be a positive integer")
+        self.audio_lease_seconds = audio_lease_seconds
         for value, name in (
             (worker_ttl_seconds, "worker_ttl_seconds"),
             (lease_seconds, "lease_seconds"),
@@ -820,7 +866,10 @@ class InMemoryControlRepository:
                 )
                 renewed = job.with_updates(
                     lease_expires_at=_lease_expiry(
-                        timestamp, self.lease_seconds, job.deadline_at
+                        timestamp,
+                        _lease_seconds_for(
+                            self.lease_seconds, self.audio_lease_seconds, job.capability),
+                        job.deadline_at,
                     ),
                     updated_at=timestamp,
                 )
@@ -1125,7 +1174,10 @@ class InMemoryControlRepository:
                 assigned_worker_id=worker_id,
                 lease_token=str(uuid4()),
                 lease_expires_at=_lease_expiry(
-                    timestamp, self.lease_seconds, selected.deadline_at
+                    timestamp,
+                    _lease_seconds_for(
+                        self.lease_seconds, self.audio_lease_seconds, selected.capability),
+                    selected.deadline_at,
                 ),
                 started_at=timestamp,
                 finished_at=None,
@@ -1305,6 +1357,29 @@ class InMemoryControlRepository:
             )
             self._jobs[job_id] = cancelled
             return cancelled
+
+    def redact_audio_job_text(
+        self, older_than_seconds: int, *, now: datetime | None = None, limit: int = 500,
+    ) -> int:
+        """Replace TTS input / STT transcript of audio Jobs terminal for at least
+        ``older_than_seconds``. Idempotent; returns the number of Jobs changed."""
+        if type(older_than_seconds) is not int or older_than_seconds < 0:
+            raise ValueError("older_than_seconds must be a non-negative integer")
+        cutoff = _aware(now) - timedelta(seconds=older_than_seconds)
+        changed = 0
+        with self._lock:
+            for job_id, job in sorted(self._jobs.items(), key=lambda item: item[1].sequence):
+                if changed >= limit:
+                    break
+                if (job.capability not in AUDIO_TEXT_CAPABILITIES
+                        or job.status not in _TERMINAL_STATUSES
+                        or (job.finished_at or job.updated_at) > cutoff):
+                    continue
+                redacted = _redacted_audio_job(job)
+                if redacted is not None:
+                    self._jobs[job_id] = redacted
+                    changed += 1
+        return changed
 
     def recover_expired_jobs(
         self, *, now: datetime | None = None

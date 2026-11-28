@@ -24,7 +24,8 @@ from tsumgi.control import (
 from tsumgi.control.auth import ClientAuthMode
 from tsumgi.control.models import utc_now
 from tsumgi.control.repository import (
-    DeadlineExceededError, NoCompatibleDeployment, OverloadedError, StorageUnavailable,
+    DeadlineExceededError, NoCompatibleDeployment, NotFoundError, OverloadedError,
+    StorageUnavailable,
 )
 from tsumgi.execution import JobResult
 from tsumgi.gateway.audio import AudioGatewayError, AudioProfileCatalog
@@ -836,3 +837,202 @@ async def test_router_is_opt_in_and_does_not_register_other_endpoints(env):
     assert [(r.path, r.methods) for r in router(env).routes if r.path.startswith("/v1/")] == [
         ("/v1/audio/speech", {"POST"}),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [None, 7])
+async def test_overload_429_carries_bounded_integer_retry_after(env, monkeypatch, seconds):
+    """#318 G4: load shedding tells the client when to retry; policy, not Job content."""
+    limits = LIMITS if seconds is None else replace(LIMITS, retry_after_seconds=seconds)
+
+    def refuse(*args, **kwargs):
+        raise OverloadedError("private-repository-error")
+
+    monkeypatch.setattr(env.repo, "submit_job", refuse)
+    response = await post(app(env, limits=limits))
+    assert_error(response, 429, "overloaded")
+    assert response.headers["retry-after"] == str(seconds or 2)
+    assert response.headers["retry-after"].isdigit()
+
+
+@pytest.mark.asyncio
+async def test_non_overload_errors_have_no_retry_after(env, monkeypatch):
+    monkeypatch.setattr(env.repo, "submit_job", lambda *a, **k: (_ for _ in ()).throw(
+        NoCompatibleDeployment("x")))
+    response = await post(app(env))
+    assert response.status_code == 503 and "retry-after" not in response.headers
+
+
+@pytest.mark.parametrize("value", [0, 31, -1, 2.0, True, "5"])
+def test_retry_after_limit_is_bounded_one_to_thirty(value):
+    with pytest.raises(ValueError):
+        replace(LIMITS, retry_after_seconds=value)
+
+
+@pytest.mark.asyncio
+async def test_speech_response_carries_percent_encoded_catalog_credit(env):
+    """#318 G9: the voice attribution travels with the audio, ASCII-safe."""
+    from urllib.parse import unquote
+
+    attribution = "VOICEVOX:ずんだもん"
+    profile = make_profile("voicevox", attribution=attribution)
+    env.catalog = AudioProfileCatalog((profile,))
+    resolved = profile.resolved
+    env.repo.register_worker(WorkerRegistration(
+        spec=WorkerSpec(
+            worker_id=profile.profile_id, worker_class="synthetic-cpu",
+            resources=ResourceShape(), capabilities=frozenset({"audio.synthesize"}),
+        ),
+        serving=WorkerServingAdvertisement(
+            deployment_revision=resolved.deployment.revision,
+            runtime_instance=RuntimeInstance(resolved.deployment.revision, EPOCH),
+            contracts=(resolved.contract,),
+        ),
+    ))
+    env.repo.after_submit = lambda record: publish(env, record)
+    response = await post(app(env))
+    assert response.status_code == 200, response.text
+    header = response.headers["x-tsumgi-credit"]
+    assert header.isascii() and header.isprintable()
+    assert unquote(header) == attribution
+    assert len(header) <= 2048
+
+
+@pytest.mark.asyncio
+async def test_failed_speech_has_no_credit_header(env, monkeypatch):
+    monkeypatch.setattr(env.repo, "submit_job", lambda *a, **k: (_ for _ in ()).throw(
+        OverloadedError("x")))
+    assert "x-tsumgi-credit" not in (await post(app(env))).headers
+
+
+def test_over_long_attribution_is_refused_at_construction_not_truncated(env):
+    long_text = "あ" * 200  # 1800 encoded chars: fine
+    env.catalog = AudioProfileCatalog((make_profile("voicevox", attribution=long_text),))
+    router(env)
+    huge = "あ" * 250  # 2250 encoded chars: refused
+    env.catalog = AudioProfileCatalog((make_profile("voicevox", attribution=huge),))
+    with pytest.raises(ValueError, match="too long"):
+        router(env)
+
+
+@pytest.mark.asyncio
+async def test_low_disk_refuses_speech_admission_with_stable_503(env):
+    """#318 G10: no Job is created when the output spool filesystem is below its floor."""
+    from tsumgi.audio.disk_floor import DiskFloor
+    free = [0]
+    env.channel.disk_floor = DiskFloor("/synthetic", 10, lambda _p: free[0])
+    response = await post(app(env))
+    assert_error(response, 503, "spool_disk_low")
+    assert not env.repo.submissions and not env.repo.list_jobs()
+    free[0] = 10
+    env.repo.after_submit = lambda record: publish(env, record)
+    assert (await post(app(env))).status_code == 200
+
+
+# ---- #318 G3: output release ----
+
+@pytest.mark.asyncio
+async def test_speech_output_is_released_as_soon_as_it_is_served(env):
+    env.repo.after_submit = lambda record: publish(env, record)
+    for _ in range(6):  # more than max_artifacts=4: no TTL-bound throughput cap
+        response = await post(app(env))
+        assert response.status_code == 200 and response.content == WAV
+        assert not env.channel._spool._records and not env.channel._staged
+    assert not env.repo.cancellations
+
+
+@pytest.mark.asyncio
+async def test_failed_release_keeps_the_ttl_backstop(env, monkeypatch):
+    env.repo.after_submit = lambda record: publish(env, record)
+    monkeypatch.setattr(env.channel._spool, "delete",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("busy")))
+    response = await post(app(env))
+    assert response.status_code == 200
+    assert len(env.channel._spool._records) == 1  # charged until TTL reap
+
+
+class _Clock:
+    now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _grace_channel(env, grace):
+    clock = _Clock()
+    channel = AudioOutputChannel(env.repo, env.channel._spool, max_bytes=512,
+                                 read_grace_seconds=grace, clock=clock)
+    env.channel = channel
+    return channel, clock
+
+
+
+
+def _submission(env):
+    from tsumgi.control.models import JobSubmission
+    profile = next(p for p in env.catalog.profiles if p.profile_id == "synthetic-voicevox")
+    return JobSubmission(
+        capability="audio.synthesize", serving=profile.binding,
+        payload={"input": "x", "voice": {}, "response_format": "wav"},
+        deadline_at=utc_now() + timedelta(seconds=30), max_attempts=1,
+        idempotency_key="grace-0",
+    )
+
+
+def test_output_is_deleted_a_grace_period_after_the_first_full_read(env):
+    channel, clock = _grace_channel(env, 30)
+    record = env.repo.submit_job(_submission(env))
+    ref = publish(env, record)
+    aid = ref.uri.removeprefix("tsumgi-audio:")
+    assert channel.reap_consumed() == 0  # never read: only the TTL applies
+    assert channel.read_published(record.job_id, aid) == WAV
+    clock.now += 29
+    assert channel.read_published(record.job_id, aid) == WAV  # still re-readable
+    assert channel.reap_consumed() == 0
+    clock.now += 2  # 31 s after the FIRST read
+    assert channel.reap_consumed() == 1
+    assert not env.channel._spool._records
+    with pytest.raises(NotFoundError):
+        channel.read_published(record.job_id, aid)
+    assert channel.reap_consumed() == 0  # idempotent
+
+
+def test_grace_disabled_keeps_output_until_ttl(env):
+    channel, clock = _grace_channel(env, None)
+    record = env.repo.submit_job(_submission(env))
+    aid = publish(env, record).uri.removeprefix("tsumgi-audio:")
+    channel.read_published(record.job_id, aid)
+    clock.now += 10_000
+    assert channel.reap_consumed() == 0 and env.channel._spool._records
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), "5", True])
+def test_read_grace_is_validated(env, value):
+    with pytest.raises(ValueError):
+        AudioOutputChannel(env.repo, env.channel._spool, max_bytes=512,
+                           read_grace_seconds=value)
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_worker_failure_is_a_502_not_a_504(env):
+    """#318 G2: with an audio lease below the deadline, lease recovery fails the
+    Job and the Gateway answers 502 backend_failure inside its own deadline."""
+    env.repo.audio_lease_seconds = 1
+    claimed = []
+
+    def claim_and_vanish(record):
+        claimed.append(claim(env, record))  # Worker takes it, never reports back
+
+    env.repo.after_submit = claim_and_vanish
+
+    async def maintenance():
+        await wait_until(lambda: bool(claimed))
+        job = claimed[0]
+        assert job.lease_expires_at <= utc_now() + timedelta(seconds=1)
+        env.repo.recover_expired_jobs(now=utc_now() + timedelta(seconds=2))
+
+    task = asyncio.create_task(maintenance())
+    response = await post(app(env))
+    await task
+    assert_error(response, 502, "backend_failure")
+    assert env.repo.list_jobs()[0].status is JobStatus.FAILED

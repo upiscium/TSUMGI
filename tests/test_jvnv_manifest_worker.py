@@ -368,9 +368,13 @@ async def test_actual_worker_renews_and_publishes_job_not_probe(tmp_path, monkey
             ref, = done.result.artifacts
             artifact = await client.get(f"/v1/jobs/{done.job_id}/audio/output/{ref.uri.split(':')[1]}",
                                         headers={"Authorization": "Bearer synthetic-client"})
-            assert artifact.status_code == speech.result().status_code == 200
+            # #318 G3: the speech service releases the WAV once it holds the bytes,
+            # so a concurrent client read is either served or already 404.
+            assert speech.result().status_code == 200
+            assert artifact.status_code in (200, 404)
             data = speech.result().content
-            assert artifact.content == data
+            if artifact.status_code == 200:
+                assert artifact.content == data
             assert ref.digest == "sha256:" + hashlib.sha256(data).hexdigest()
             assert data.endswith(b"\x02\x00") and len(data) == ref.size_bytes == 24044
     finally:

@@ -11,10 +11,12 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 import math
 import secrets
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..audio.disk_floor import SpoolDiskLow
 from ..audio.input_channel import AudioInputChannel
 from ..audio.pcm16 import validate_pcm16_wav
 from ..control.auth import ClientAuthMode
@@ -31,6 +33,9 @@ from .audio_ingress import (
 from .audio_voice_api import _TOKEN, _require_voice_client
 
 
+CREDIT_HEADER = "x-tsumgi-credit"
+
+
 def _error(code: str, status: int = 400) -> AudioGatewayError:
     return AudioGatewayError(code, "request", status_code=status)
 
@@ -41,8 +46,38 @@ class AudioTranscriptionsLimits:
     request_timeout_seconds: float
     max_pending_admissions: int
     poll_interval_seconds: float
+    # Seconds advertised in Retry-After on 429 responses (load shedding, G4).
+    retry_after_seconds: int = 2
+    # Optional model/licence credit for the response header (G9). The catalog
+    # carries attribution for voices only, so an STT credit is operator policy.
+    credit: str | None = None
+    # Early rejection of audio the selected STT Worker cannot take (G5). Empty
+    # means "not declared": admit as before. The serving identity is unchanged.
+    accepted_sample_rates: tuple = ()
+    accepted_channels: tuple = ()
 
     def __post_init__(self) -> None:
+        for name, allowed in (("accepted_sample_rates", range(8000, 48001)),
+                              ("accepted_channels", (1, 2))):
+            value = getattr(self, name)
+            if type(value) not in (tuple, list) or len(value) > 8 or any(
+                    type(item) is not int or item not in allowed for item in value):
+                raise ValueError("invalid transcription accepted audio format")
+            object.__setattr__(self, name, tuple(sorted(set(value))))
+        if self.credit is not None and (
+            type(self.credit) is not str or not self.credit.strip()
+            or len(self.credit) > 256
+            or any(ord(char) < 32 or ord(char) == 127 for char in self.credit)
+        ):
+            raise ValueError("invalid transcription credit")
+        if self.credit is not None:
+            try:
+                self.credit.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError("invalid transcription credit") from None
+        if (type(self.retry_after_seconds) is not int
+                or not 1 <= self.retry_after_seconds <= 30):
+            raise ValueError("invalid transcription retry-after")
         if type(self.text_bytes) is not int or not 1 <= self.text_bytes <= 1024 * 1024:
             raise ValueError("invalid transcription text limit")
         if (type(self.max_pending_admissions) is not int
@@ -215,7 +250,10 @@ class AudioTranscriptionsService:
                 raise AudioGatewayError("unsupported_audio", "file", status_code=415) from None
             if abort.is_set() or asyncio.get_running_loop().time() >= stop:
                 raise _error("deadline_exceeded", 504)
-            receipt = await asyncio.to_thread(self.channel.stage, validated.wav_bytes)
+            try:
+                receipt = await asyncio.to_thread(self.channel.stage, validated.wav_bytes)
+            except SpoolDiskLow:
+                raise _error("spool_disk_low", 503) from None
             uri = receipt["uri"]
             if abort.is_set() or asyncio.get_running_loop().time() >= stop:
                 raise _error("deadline_exceeded", 504)
@@ -264,8 +302,26 @@ class AudioTranscriptionsService:
         finally:
             if uri is not None and not entered_submit:
                 await self._discard(uri)
-            # Once submit is entered, discard is forbidden even after cancel or
-            # success. #174 retains bound/pending inputs until verified TTL reap.
+            # Once submit is entered, discard is forbidden: the Job may exist.
+            # Instead ask the channel to release the input if (and only if) the
+            # durable Job is terminal; it re-reads the Job itself. Anything it
+            # cannot prove stays for the maintenance reaper and the TTL (#318 G3).
+            # (After a lost commit acknowledgement there is no record: the
+            # maintenance reaper resolves it by idempotency key, not this path.)
+            if record is not None:
+                try:
+                    await asyncio.to_thread(self.channel.release_terminal, record.job_id)
+                except Exception:
+                    self.cleanup_failures += 1
+
+    def _check_declared_format(self, wav: bytes) -> None:
+        # _check_wav already proved the canonical header, so these offsets hold.
+        channels = int.from_bytes(wav[22:24], "little")
+        rate = int.from_bytes(wav[24:28], "little")
+        if ((self.limits.accepted_channels and channels not in self.limits.accepted_channels)
+                or (self.limits.accepted_sample_rates
+                    and rate not in self.limits.accepted_sample_rates)):
+            raise AudioGatewayError("unsupported_audio_format", "file", status_code=415)
 
     def _finished(self, task) -> None:
         self.operations.discard(task)
@@ -294,6 +350,7 @@ class AudioTranscriptionsService:
         try:
             async with asyncio.timeout_at(stop):
                 validated = await _parse_ingress(request, catalog, ingress_limits)
+                self._check_declared_format(validated.wav_bytes)
                 if loop.time() >= stop:
                     raise _error("deadline_exceeded", 408)
                 submission = JobSubmission(
@@ -361,10 +418,14 @@ def create_audio_transcriptions_router(
             if request.scope.get("query_string", b""):
                 raise _error("unsupported_query")
             result = await service.complete(request, reviewed, ingress_limits)
+            if limits.credit is not None:
+                headers[CREDIT_HEADER] = quote(limits.credit, safe=" :-._~")
             return JSONResponse(result, headers=headers)
         except AudioGatewayError as exc:
             if exc.status_code == 401:
                 headers["WWW-Authenticate"] = "Bearer"
+            if exc.status_code == 429:
+                headers["Retry-After"] = str(limits.retry_after_seconds)
             return JSONResponse(exc.to_dict(), status_code=exc.status_code, headers=headers)
         except Exception:
             exc = _error("audio_unavailable", 503)
