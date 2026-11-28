@@ -5,12 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import time
 
 from ..runtime.contracts import ManagedRuntime, RuntimeHealth, RuntimeHealthState
 from ..runtime.lifecycle import RuntimeLifecycleManager
 
 _LOG = logging.getLogger(__name__)
+
+# A provider's fixed failure codes carry the provider's own name as a prefix, for example
+# `voicevox_probe_failed`. Only such a code is logged, so that a latched failure can be
+# told apart from another one; any other detail (free text can embed paths or
+# credentials) is never retained or logged.
+_CODE_TAIL = re.compile(r"[a-z0-9][a-z0-9_]{0,47}\Z")
 
 
 class RuntimeUnavailable(RuntimeError):
@@ -22,7 +29,8 @@ class RuntimeHealthSupervisor:
 
     The fixed daemon policy is one probe per second with a five-second total
     async budget. Constructor overrides are for embedding/tests, not hidden
-    environment overrides. No raw provider detail/metadata is retained here.
+    environment overrides. No raw provider detail/metadata is retained here; a
+    provider's own fixed failure code is logged when it has the provider's prefix.
     """
 
     def __init__(
@@ -73,13 +81,28 @@ class RuntimeHealthSupervisor:
     def failure_reason(self) -> str | None:
         return self._reason
 
-    def _fail(self, reason: str) -> None:
+    def _provider_code(self, detail: object) -> str | None:
+        provider = getattr(self.runtime, "provider_id", None)
+        if not isinstance(provider, str) or not isinstance(detail, str):
+            return None
+        prefix = provider.replace("-", "_") + "_"
+        if detail.startswith(prefix) and _CODE_TAIL.fullmatch(detail[len(prefix):]):
+            return detail
+        return None
+
+    def _fail(self, reason: str, provider_code: str | None = None) -> None:
         if self.failed.is_set() or self._closed:
             return
         self._valid_until = 0.0
         self._reason = reason
         self.failed.set()
-        _LOG.error("Runtime health lost (%s); restart required, claims paused", reason)
+        if provider_code is None:
+            _LOG.error("Runtime health lost (%s); restart required, claims paused", reason)
+        else:
+            _LOG.error(
+                "Runtime health lost (%s, provider reported %s); restart required, claims paused",
+                reason, provider_code,
+            )
 
     async def check(self) -> bool:
         """Also used after executor errors; probes never overlap.
@@ -105,7 +128,7 @@ class RuntimeHealthSupervisor:
                     elif not isinstance(health, RuntimeHealth):
                         self._fail("health_invalid")
                     elif health.state is not RuntimeHealthState.READY or health.ready is not True:
-                        self._fail("health_not_ready")
+                        self._fail("health_not_ready", self._provider_code(health.detail))
                     else:
                         self._valid_until = started + self.interval_seconds + self.timeout_seconds
         except TimeoutError:
