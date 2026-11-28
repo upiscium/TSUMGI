@@ -341,6 +341,10 @@ def validate_speech_request(
     _size(encoded_size, limits["input_bytes"], "input")
     if not text.strip():
         raise AudioGatewayError("invalid_request", "input")
+    # U+0000 is valid JSON but PostgreSQL jsonb refuses it, which surfaced as a
+    # 503 admission_unavailable instead of a 400 (found by the #181 real-audio run).
+    if "\x00" in text:
+        raise AudioGatewayError("invalid_request", "input")
     if encoded_size > measured_size:
         raise AudioGatewayError("invalid_request", "request_bytes")
     return ValidatedSpeechRequest(profile, text, voice, encoded_size)
