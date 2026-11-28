@@ -279,7 +279,9 @@ def _validate_policy_shapes(value: dict) -> tuple:
     transcriptions = AudioTranscriptionsLimits(**_table(value.get("transcriptions"), {
         "text_bytes", "request_timeout_seconds", "max_pending_admissions",
         "poll_interval_seconds",
-    }, frozenset({"retry_after_seconds", "credit"})))
+    }, frozenset({
+        "retry_after_seconds", "credit", "accepted_sample_rates", "accepted_channels",
+    })))
     pcm = _table(value.get("pcm"), {"max_decoded_bytes", "max_duration_seconds"})
     _positive_int(pcm["max_decoded_bytes"], 2)
     _positive_int(pcm["max_duration_seconds"])

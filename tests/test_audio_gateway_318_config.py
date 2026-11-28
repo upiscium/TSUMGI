@@ -58,3 +58,19 @@ def test_transcription_credit_is_optional_and_strict(env, monkeypatch):
 def test_transcription_credit_rejects_malformed(env, value):
     _set(env, "transcriptions.credit", value)
     _invalid(env)
+
+
+def test_declared_stt_format_keys(env, monkeypatch):
+    _set(env, "transcriptions.accepted_sample_rates", [16000])
+    _set(env, "transcriptions.accepted_channels", [1])
+    limits = _limits(env, monkeypatch)["create_audio_transcriptions_router"]
+    assert limits.accepted_sample_rates == (16000,) and limits.accepted_channels == (1,)
+
+
+@pytest.mark.parametrize("key,value", [
+    ("accepted_sample_rates", [100]), ("accepted_sample_rates", "16000"),
+    ("accepted_channels", [0]), ("accepted_channels", [1.0]),
+])
+def test_declared_stt_format_keys_are_strict(env, key, value):
+    _set(env, f"transcriptions.{key}", value)
+    _invalid(env)

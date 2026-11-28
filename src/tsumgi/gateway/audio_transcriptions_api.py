@@ -50,8 +50,19 @@ class AudioTranscriptionsLimits:
     # Optional model/licence credit for the response header (G9). The catalog
     # carries attribution for voices only, so an STT credit is operator policy.
     credit: str | None = None
+    # Early rejection of audio the selected STT Worker cannot take (G5). Empty
+    # means "not declared": admit as before. The serving identity is unchanged.
+    accepted_sample_rates: tuple = ()
+    accepted_channels: tuple = ()
 
     def __post_init__(self) -> None:
+        for name, allowed in (("accepted_sample_rates", range(8000, 48001)),
+                              ("accepted_channels", (1, 2))):
+            value = getattr(self, name)
+            if type(value) not in (tuple, list) or len(value) > 8 or any(
+                    type(item) is not int or item not in allowed for item in value):
+                raise ValueError("invalid transcription accepted audio format")
+            object.__setattr__(self, name, tuple(sorted(set(value))))
         if self.credit is not None and (
             type(self.credit) is not str or not self.credit.strip()
             or len(self.credit) > 256
@@ -290,6 +301,15 @@ class AudioTranscriptionsService:
             # Once submit is entered, discard is forbidden even after cancel or
             # success. #174 retains bound/pending inputs until verified TTL reap.
 
+    def _check_declared_format(self, wav: bytes) -> None:
+        # _check_wav already proved the canonical header, so these offsets hold.
+        channels = int.from_bytes(wav[22:24], "little")
+        rate = int.from_bytes(wav[24:28], "little")
+        if ((self.limits.accepted_channels and channels not in self.limits.accepted_channels)
+                or (self.limits.accepted_sample_rates
+                    and rate not in self.limits.accepted_sample_rates)):
+            raise AudioGatewayError("unsupported_audio_format", "file", status_code=415)
+
     def _finished(self, task) -> None:
         self.operations.discard(task)
         self.in_flight -= 1
@@ -317,6 +337,7 @@ class AudioTranscriptionsService:
         try:
             async with asyncio.timeout_at(stop):
                 validated = await _parse_ingress(request, catalog, ingress_limits)
+                self._check_declared_format(validated.wav_bytes)
                 if loop.time() >= stop:
                     raise _error("deadline_exceeded", 408)
                 submission = JobSubmission(

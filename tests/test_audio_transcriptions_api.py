@@ -658,3 +658,72 @@ async def test_transcription_credit_header_only_when_configured(env):
 def test_invalid_credit(value):
     with pytest.raises(ValueError):
         replace(LIMITS, credit=value)
+
+
+def wav_with(*, rate=16000, channels=1, list_chunk=False):
+    """Canonical-layout WAV (or one with a LIST/INFO chunk before data)."""
+    samples = b"\x00\x00" * channels
+    fmt = struct.pack("<HHIIHH", 1, channels, rate, rate * channels * 2, channels * 2, 16)
+    extra = b""
+    if list_chunk:
+        info = b"INFOISFT" + struct.pack("<I", 4) + b"Lav\x00"
+        extra = b"LIST" + struct.pack("<I", len(info)) + info
+    body = (b"WAVEfmt " + struct.pack("<I", 16) + fmt + extra
+            + b"data" + struct.pack("<I", len(samples)) + samples)
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+@pytest.mark.asyncio
+async def test_list_chunk_wav_gets_precise_extra_chunk_error_not_relaxed(env):
+    """#318 G5: the canonical-44-byte policy stays; the error says what to fix."""
+    response = await post(app(env), body=multipart(data=wav_with(list_chunk=True)))
+    assert_error(response, 415, "unsupported_audio_extra_chunk")
+    assert not env.repo.submissions and not env.spool._records
+    # Plain garbage and a bad codec stay the generic error.
+    assert_error(await post(app(env), body=multipart(data=b"fLaC")), 415)
+    assert_error(await post(app(env), body=multipart(data=WAV[:-1])), 415)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rate,channels,accepted", [
+    (16000, 1, True), (8000, 1, False), (24000, 1, False), (44100, 1, False),
+    (16000, 2, False),
+])
+async def test_declared_stt_format_is_rejected_at_admission(env, rate, channels, accepted):
+    limits = replace(LIMITS, accepted_sample_rates=[16000], accepted_channels=(1,))
+    instance = FastAPI()
+    instance.include_router(router(env, limits=limits))
+    env.repo.after_submit = lambda record: finish(env, record)
+    response = await post(instance, body=multipart(data=wav_with(rate=rate, channels=channels)))
+    if accepted:
+        assert response.status_code == 200
+    else:
+        assert_error(response, 415, "unsupported_audio_format")
+        assert not env.repo.submissions and not env.spool._records
+        assert not env.repo.list_jobs()
+
+
+@pytest.mark.asyncio
+async def test_undeclared_stt_format_keeps_previous_admission_behaviour(env):
+    stereo = wav_with(rate=24000, channels=2)
+
+    def done(record):
+        claimed, credentials = claim(env, record)
+        assert env.channel.read_for_worker(
+            record.job_id, attempt=claimed.attempts, **credentials) == stereo
+        env.repo.complete_job(record.job_id, JobResult(text="x"), **credentials)
+
+    env.repo.after_submit = done
+    response = await post(app(env), body=multipart(data=stereo))
+    assert response.status_code == 200 and len(env.repo.submissions) == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("accepted_sample_rates", [7999]), ("accepted_sample_rates", [48001]),
+    ("accepted_sample_rates", [16000.0]), ("accepted_channels", [3]),
+    ("accepted_channels", [True]), ("accepted_channels", "1"),
+    ("accepted_sample_rates", list(range(8000, 8009))),
+])
+def test_invalid_declared_format(field, value):
+    with pytest.raises(ValueError):
+        replace(LIMITS, **{field: value})

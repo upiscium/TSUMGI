@@ -370,6 +370,27 @@ def _multipart(
     raise _error("too_many_parts", "multipart")
 
 
+def _has_extra_chunk(raw: bytes) -> bool:
+    """True for a well-formed RIFF/WAVE with fmt and data whose layout is not
+    the canonical 44-byte header (a LIST/INFO/bext chunk, padding, trailing
+    bytes or an extended fmt). Used only to pick a precise error code; it never
+    widens what is accepted.
+    """
+    if len(raw) < 20 or raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
+        return False
+    if int.from_bytes(raw[4:8], "little") != len(raw) - 8:
+        return False
+    position, seen = 12, set()
+    while position + 8 <= len(raw):
+        size = int.from_bytes(raw[position + 4:position + 8], "little")
+        end = position + 8 + size + (size & 1)
+        if end > len(raw):
+            return False
+        seen.add(raw[position:position + 4])
+        position = end
+    return position == len(raw) and {b"fmt ", b"data"} <= seen
+
+
 def _check_wav(raw: bytes) -> None:
     # Intentionally tiny container subset: fmt(PCM16) then one nonempty data
     # chunk, no ancillary chunks, padding, trailing bytes or extended formats.
@@ -379,7 +400,12 @@ def _check_wav(raw: bytes) -> None:
         or int.from_bytes(raw[4:8], "little") != len(raw) - 8
         or int.from_bytes(raw[16:20], "little") != 16
         or raw[36:40] != b"data"
+        or int.from_bytes(raw[40:44], "little") != len(raw) - 44
     ):
+        if _has_extra_chunk(raw):
+            # Same 415 and same policy; the code tells the client to re-encode
+            # without metadata chunks (see the audio docs), not that it is corrupt.
+            raise _error("unsupported_audio_extra_chunk", "file", 415)
         raise _error("unsupported_audio", "file", 415)
     codec, channels, rate, byte_rate, alignment, bits = struct.unpack_from("<HHIIHH", raw, 20)
     size = int.from_bytes(raw[40:44], "little")
