@@ -74,3 +74,29 @@ def test_declared_stt_format_keys(env, monkeypatch):
 def test_declared_stt_format_keys_are_strict(env, key, value):
     _set(env, f"transcriptions.{key}", value)
     _invalid(env)
+
+
+@pytest.mark.parametrize("section,max_bytes", [("input_spool", 1024), ("output_spool", 512)])
+def test_spool_disk_floor_default_and_override(env, monkeypatch, section, max_bytes):
+    from tsumgi.control import audio_gateway_config as audio_config
+    built = {}
+    original = audio_config._SpoolConfig.floor
+
+    def spy(self, size):
+        floor = original(self, size)
+        built[self.root.name] = floor
+        return floor
+
+    monkeypatch.setattr(audio_config._SpoolConfig, "floor", spy)
+    _set(env, f"{section}.min_free_bytes", 12345)
+    env.build()
+    other = "output_spool" if section == "input_spool" else "input_spool"
+    assert built[env.policy[section]["root"].rsplit("/", 1)[1]].min_free_bytes == 12345
+    assert built[env.policy[other]["root"].rsplit("/", 1)[1]].min_free_bytes == 1024 ** 3
+
+
+@pytest.mark.parametrize("section", ["input_spool", "output_spool"])
+@pytest.mark.parametrize("value", [-1, 1.5, True, "1"])
+def test_spool_disk_floor_is_strict(env, section, value):
+    _set(env, f"{section}.min_free_bytes", value)
+    _invalid(env)

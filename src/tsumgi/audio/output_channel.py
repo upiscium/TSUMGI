@@ -14,6 +14,7 @@ from ..control.models import JobStatus
 from ..control.repository import ConflictError, NotFoundError, RepositoryError
 from ..execution import ArtifactRef, JobResult
 from .artifact_spool import ArtifactSpool
+from .disk_floor import DiskFloor
 
 
 _ERROR = "audio output authority rejected"
@@ -38,7 +39,13 @@ class AudioOutputChannel:
     methods are serialized. No bytes appear in durable Job JSON.
     """
 
-    def __init__(self, repository, spool: ArtifactSpool, *, max_bytes: int):
+    def __init__(
+        self, repository, spool: ArtifactSpool, *, max_bytes: int,
+        disk_floor: DiskFloor | None = None,
+    ):
+        if disk_floor is not None and not isinstance(disk_floor, DiskFloor):
+            raise TypeError("disk_floor must be DiskFloor")
+        self.disk_floor = disk_floor
         if type(max_bytes) is not int or max_bytes < 12:
             raise ValueError("max_bytes must be an integer >= 12")
         if not isinstance(spool, ArtifactSpool):
@@ -61,6 +68,14 @@ class AudioOutputChannel:
             if artifact_id not in self._spool._records:
                 del self._staged[artifact_id]
         return removed
+
+    def check_disk(self) -> None:
+        """Admission pre-check for a Job whose output will land in this spool."""
+        if self.disk_floor is not None:
+            self.disk_floor.check()
+
+    def disk_status(self) -> dict | None:
+        return None if self.disk_floor is None else self.disk_floor.status()
 
     def reap_expired(self) -> int:
         """Reclaim TTL-expired quota and orphaned in-memory output receipts."""
@@ -168,6 +183,8 @@ class AudioOutputChannel:
                     )
                     return staged.reference
 
+            if self.disk_floor is not None:
+                self.disk_floor.check()  # SpoolDiskLow before any file is written
             scope = self._scope(job_id, worker_id, attempt, runtime_instance_epoch)
             receipt = self._spool.stage(data, scope=scope)
             artifact_id = receipt["artifact_id"]

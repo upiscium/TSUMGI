@@ -727,3 +727,13 @@ async def test_undeclared_stt_format_keeps_previous_admission_behaviour(env):
 def test_invalid_declared_format(field, value):
     with pytest.raises(ValueError):
         replace(LIMITS, **{field: value})
+
+
+@pytest.mark.asyncio
+async def test_low_disk_refuses_transcription_admission_with_stable_503(env):
+    """#318 G10: nothing is staged and no Job exists below the floor."""
+    from tsumgi.audio.disk_floor import DiskFloor
+    env.channel.disk_floor = DiskFloor("/synthetic", 10, lambda _p: 5)
+    response = await post(app(env))
+    assert_error(response, 503, "spool_disk_low")
+    assert not env.repo.submissions and not env.spool._records and not env.repo.list_jobs()

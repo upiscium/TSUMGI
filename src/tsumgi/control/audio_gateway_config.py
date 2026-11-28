@@ -11,6 +11,7 @@ import re
 import stat
 
 from ..audio.artifact_spool import ArtifactSpool
+from ..audio.disk_floor import DiskFloor, default_min_free_bytes
 from ..audio.input_channel import AudioInputChannel
 from ..audio.output_channel import AudioOutputChannel
 from ..gateway.audio import (
@@ -34,6 +35,19 @@ def _table(value: object, keys: set[str], optional: frozenset[str] = frozenset()
     """Exact key set: every required key, plus only the listed optional keys."""
     if (type(value) is not dict or not keys <= value.keys()
             or value.keys() - keys - optional):
+        raise ValueError(_INVALID)
+    return value
+
+
+_SPOOL_KEYS = {"root", "ttl_seconds", "max_total_bytes", "max_artifacts"}
+_SPOOL_OPTIONAL = frozenset({"min_free_bytes"})
+
+
+def _min_free(data: dict) -> int | None:
+    value = data.get("min_free_bytes")
+    if value is None:
+        return None
+    if type(value) is not int or value < 0:
         raise ValueError(_INVALID)
     return value
 
@@ -101,10 +115,12 @@ class _SpoolConfig:
     ttl_seconds: float
     max_total_bytes: int
     max_artifacts: int
+    # None means the documented default, max(1 GiB, 2 x max artifact); 0 disables.
+    min_free_bytes: int | None = None
 
     @classmethod
     def parse(cls, value: object, *, max_bytes: int, deadline: float) -> _SpoolConfig:
-        data = _table(value, {"root", "ttl_seconds", "max_total_bytes", "max_artifacts"})
+        data = _table(value, _SPOOL_KEYS, _SPOOL_OPTIONAL)
         ttl = data["ttl_seconds"]
         if (type(ttl) not in (int, float) or not math.isfinite(ttl)
                 or ttl <= deadline):
@@ -113,7 +129,13 @@ class _SpoolConfig:
             _check_root(data["root"]), ttl,
             _positive_int(data["max_total_bytes"], max_bytes),
             _positive_int(data["max_artifacts"]),
+            _min_free(data),
         )
+
+    def floor(self, max_bytes: int) -> DiskFloor:
+        minimum = (default_min_free_bytes(max_bytes)
+                   if self.min_free_bytes is None else self.min_free_bytes)
+        return DiskFloor(str(self.root), minimum)
 
     def create(self, max_bytes: int) -> ArtifactSpool:
         return ArtifactSpool(
@@ -193,10 +215,12 @@ class AudioGatewayConfig:
                 max_bytes=self.ingress.file_bytes,
                 max_decoded_bytes=self.max_decoded_bytes,
                 max_duration_seconds=self.max_duration_seconds,
+                disk_floor=self.input_spool.floor(self.ingress.file_bytes),
             )
             output_spool = self.output_spool.create(self.speech.output_bytes)
             output_channel = AudioOutputChannel(
                 repository, output_spool, max_bytes=self.speech.output_bytes,
+                disk_floor=self.output_spool.floor(self.speech.output_bytes),
             )
             auth = {"client_auth": ClientAuthMode.BEARER, "client_token": self.token}
             routers = (
@@ -293,9 +317,8 @@ def _validate_policy_shapes(value: dict) -> tuple:
     if type(value.get("catalog")) is not str or not value["catalog"].strip():
         raise ValueError(_INVALID)
     for name in ("input_spool", "output_spool"):
-        data = _table(value.get(name), {
-            "root", "ttl_seconds", "max_total_bytes", "max_artifacts",
-        })
+        data = _table(value.get(name), _SPOOL_KEYS, _SPOOL_OPTIONAL)
+        _min_free(data)
         if type(data["root"]) is not str or not data["root"].strip():
             raise ValueError(_INVALID)
         ttl = data["ttl_seconds"]

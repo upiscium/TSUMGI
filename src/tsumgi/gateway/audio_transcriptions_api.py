@@ -16,6 +16,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..audio.disk_floor import SpoolDiskLow
 from ..audio.input_channel import AudioInputChannel
 from ..audio.pcm16 import validate_pcm16_wav
 from ..control.auth import ClientAuthMode
@@ -249,7 +250,10 @@ class AudioTranscriptionsService:
                 raise AudioGatewayError("unsupported_audio", "file", status_code=415) from None
             if abort.is_set() or asyncio.get_running_loop().time() >= stop:
                 raise _error("deadline_exceeded", 504)
-            receipt = await asyncio.to_thread(self.channel.stage, validated.wav_bytes)
+            try:
+                receipt = await asyncio.to_thread(self.channel.stage, validated.wav_bytes)
+            except SpoolDiskLow:
+                raise _error("spool_disk_low", 503) from None
             uri = receipt["uri"]
             if abort.is_set() or asyncio.get_running_loop().time() >= stop:
                 raise _error("deadline_exceeded", 504)

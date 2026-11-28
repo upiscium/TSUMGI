@@ -19,6 +19,7 @@ from ..control.repository import (
     NotFoundError, OverloadedError, StorageUnavailable,
 )
 from .artifact_spool import ArtifactSpool
+from .disk_floor import DiskFloor
 from .pcm16 import validate_pcm16_wav
 
 
@@ -37,7 +38,11 @@ class AudioInputChannel:
     def __init__(
         self, repository, spool: ArtifactSpool, *, max_bytes: int,
         max_decoded_bytes: int | None = None, max_duration_seconds: int = 60,
+        disk_floor: DiskFloor | None = None,
     ):
+        if disk_floor is not None and not isinstance(disk_floor, DiskFloor):
+            raise TypeError("expected a DiskFloor")
+        self.disk_floor = disk_floor
         if not isinstance(spool, ArtifactSpool):
             raise TypeError("expected an ArtifactSpool")
         if (type(max_bytes) is not int or max_bytes < 44
@@ -68,6 +73,10 @@ class AudioInputChannel:
                     del self._inputs[ident]
             return count
 
+    def disk_status(self) -> dict | None:
+        """Free-space health view for operators; None when no floor is set."""
+        return None if self.disk_floor is None else self.disk_floor.status()
+
     def stage(self, data: bytes) -> dict:
         """Receive verified bounded WAV bytes under an unguessable local ID."""
         with self._lock:
@@ -77,6 +86,8 @@ class AudioInputChannel:
                 max_decoded_bytes=self.max_decoded_bytes,
                 max_duration_seconds=self.max_duration_seconds,
             )
+            if self.disk_floor is not None:
+                self.disk_floor.check()  # SpoolDiskLow before any file is written
             scope = "input-stage:" + secrets.token_hex(16)
             receipt = self.spool.stage(data, scope=scope)
             aid = receipt["artifact_id"]

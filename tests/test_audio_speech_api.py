@@ -912,3 +912,17 @@ def test_over_long_attribution_is_refused_at_construction_not_truncated(env):
     env.catalog = AudioProfileCatalog((make_profile("voicevox", attribution=huge),))
     with pytest.raises(ValueError, match="too long"):
         router(env)
+
+
+@pytest.mark.asyncio
+async def test_low_disk_refuses_speech_admission_with_stable_503(env):
+    """#318 G10: no Job is created when the output spool filesystem is below its floor."""
+    from tsumgi.audio.disk_floor import DiskFloor
+    free = [0]
+    env.channel.disk_floor = DiskFloor("/synthetic", 10, lambda _p: free[0])
+    response = await post(app(env))
+    assert_error(response, 503, "spool_disk_low")
+    assert not env.repo.submissions and not env.repo.list_jobs()
+    free[0] = 10
+    env.repo.after_submit = lambda record: publish(env, record)
+    assert (await post(app(env))).status_code == 200

@@ -16,6 +16,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
+from ..audio.disk_floor import SpoolDiskLow
 from ..audio.output_channel import AudioOutputChannel
 from ..control.auth import ClientAuthMode
 from ..control.models import JobStatus, JobSubmission, utc_now
@@ -129,6 +130,11 @@ class AudioSpeechService:
         job_id = None
         try:
             try:
+                # Do not admit a Job whose output the spool could not store.
+                await asyncio.to_thread(self.channel.check_disk)
+            except SpoolDiskLow:
+                raise _error("spool_disk_low", 503) from None
+            try:
                 record = await asyncio.to_thread(
                     self.repository.submit_job, submission,
                     admission_deadline_at=submission.deadline_at,
@@ -212,10 +218,7 @@ class AudioSpeechService:
                 return
             await asyncio.sleep(0.01)
 
-    async def complete(
-        self, request: Request, catalog, ingress_limits, meta: dict | None = None,
-    ) -> bytes:
-        """Return WAV bytes; ``meta`` (optional) receives the validated profile/voice."""
+    async def complete(self, request: Request, catalog, ingress_limits) -> bytes:
         if self.in_flight >= self.limits.max_pending_admissions:
             raise _error("admission_overloaded", 429)
         self.in_flight += 1
@@ -230,9 +233,10 @@ class AudioSpeechService:
                 validated = await parse_speech_ingress(request, catalog, limits=ingress_limits)
                 if loop.time() >= stop:
                     raise _error("deadline_exceeded", 408)
-                if meta is not None:
-                    meta["profile_id"] = validated.profile.profile_id
-                    meta["voice"] = validated.voice.alias
+                # Let the route attach the credit without changing this signature.
+                request.state.audio_credit_key = (
+                    validated.profile.profile_id, validated.voice.alias,
+                )
                 submission = JobSubmission(
                     capability="audio.synthesize", serving=validated.profile.binding,
                     payload={"input": validated.input, "voice": {
@@ -317,9 +321,8 @@ def create_audio_speech_router(
             _require_voice_client(request, client_token)
             if request.scope.get("query_string", b""):
                 raise _error("unsupported_query", 400)
-            meta: dict = {}
-            data = await service.complete(request, reviewed, ingress_limits, meta)
-            credit = credits.get((meta.get("profile_id"), meta.get("voice")))
+            data = await service.complete(request, reviewed, ingress_limits)
+            credit = credits.get(getattr(request.state, "audio_credit_key", None))
             if credit is not None:
                 # The voice catalog is the single source of the credit text.
                 headers[CREDIT_HEADER] = credit
