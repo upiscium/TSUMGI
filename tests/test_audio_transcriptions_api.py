@@ -613,3 +613,25 @@ async def test_opt_in_route_only(env):
     assert [(r.path, r.methods) for r in router(env).routes] == [
         ("/v1/audio/transcriptions", {"POST"}),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [None, 30])
+async def test_overload_429_carries_bounded_integer_retry_after(env, monkeypatch, seconds):
+    """#318 G4: the Retry-After value is a policy constant, not Job content."""
+    def refuse(submission):
+        raise OverloadedError("private-repository-error")
+
+    monkeypatch.setattr(env.repo, "submit_job", refuse)
+    limits = LIMITS if seconds is None else replace(LIMITS, retry_after_seconds=seconds)
+    instance = FastAPI()
+    instance.include_router(router(env, limits=limits))
+    response = await post(instance)
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == str(seconds or 2)
+
+
+@pytest.mark.parametrize("value", [0, 31, 2.5, True])
+def test_retry_after_limit_is_bounded_one_to_thirty(value):
+    with pytest.raises(ValueError):
+        replace(LIMITS, retry_after_seconds=value)

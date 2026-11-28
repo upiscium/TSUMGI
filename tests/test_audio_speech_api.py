@@ -836,3 +836,33 @@ async def test_router_is_opt_in_and_does_not_register_other_endpoints(env):
     assert [(r.path, r.methods) for r in router(env).routes if r.path.startswith("/v1/")] == [
         ("/v1/audio/speech", {"POST"}),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [None, 7])
+async def test_overload_429_carries_bounded_integer_retry_after(env, monkeypatch, seconds):
+    """#318 G4: load shedding tells the client when to retry; policy, not Job content."""
+    limits = LIMITS if seconds is None else replace(LIMITS, retry_after_seconds=seconds)
+
+    def refuse(*args, **kwargs):
+        raise OverloadedError("private-repository-error")
+
+    monkeypatch.setattr(env.repo, "submit_job", refuse)
+    response = await post(app(env, limits=limits))
+    assert_error(response, 429, "overloaded")
+    assert response.headers["retry-after"] == str(seconds or 2)
+    assert response.headers["retry-after"].isdigit()
+
+
+@pytest.mark.asyncio
+async def test_non_overload_errors_have_no_retry_after(env, monkeypatch):
+    monkeypatch.setattr(env.repo, "submit_job", lambda *a, **k: (_ for _ in ()).throw(
+        NoCompatibleDeployment("x")))
+    response = await post(app(env))
+    assert response.status_code == 503 and "retry-after" not in response.headers
+
+
+@pytest.mark.parametrize("value", [0, 31, -1, 2.0, True, "5"])
+def test_retry_after_limit_is_bounded_one_to_thirty(value):
+    with pytest.raises(ValueError):
+        replace(LIMITS, retry_after_seconds=value)

@@ -30,8 +30,10 @@ _TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+=*\Z")
 _CATALOG_BYTES = 1024 * 1024
 
 
-def _table(value: object, keys: set[str]) -> dict:
-    if type(value) is not dict or value.keys() != keys:
+def _table(value: object, keys: set[str], optional: frozenset[str] = frozenset()) -> dict:
+    """Exact key set: every required key, plus only the listed optional keys."""
+    if (type(value) is not dict or not keys <= value.keys()
+            or value.keys() - keys - optional):
         raise ValueError(_INVALID)
     return value
 
@@ -273,11 +275,11 @@ def _validate_policy_shapes(value: dict) -> tuple:
     speech = AudioSpeechLimits(**_table(value.get("speech"), {
         "output_bytes", "request_timeout_seconds", "max_pending_admissions",
         "poll_interval_seconds",
-    }))
+    }, frozenset({"retry_after_seconds"})))
     transcriptions = AudioTranscriptionsLimits(**_table(value.get("transcriptions"), {
         "text_bytes", "request_timeout_seconds", "max_pending_admissions",
         "poll_interval_seconds",
-    }))
+    }, frozenset({"retry_after_seconds"})))
     pcm = _table(value.get("pcm"), {"max_decoded_bytes", "max_duration_seconds"})
     _positive_int(pcm["max_decoded_bytes"], 2)
     _positive_int(pcm["max_duration_seconds"])

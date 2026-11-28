@@ -41,8 +41,13 @@ class AudioTranscriptionsLimits:
     request_timeout_seconds: float
     max_pending_admissions: int
     poll_interval_seconds: float
+    # Seconds advertised in Retry-After on 429 responses (load shedding, G4).
+    retry_after_seconds: int = 2
 
     def __post_init__(self) -> None:
+        if (type(self.retry_after_seconds) is not int
+                or not 1 <= self.retry_after_seconds <= 30):
+            raise ValueError("invalid transcription retry-after")
         if type(self.text_bytes) is not int or not 1 <= self.text_bytes <= 1024 * 1024:
             raise ValueError("invalid transcription text limit")
         if (type(self.max_pending_admissions) is not int
@@ -365,6 +370,8 @@ def create_audio_transcriptions_router(
         except AudioGatewayError as exc:
             if exc.status_code == 401:
                 headers["WWW-Authenticate"] = "Bearer"
+            if exc.status_code == 429:
+                headers["Retry-After"] = str(limits.retry_after_seconds)
             return JSONResponse(exc.to_dict(), status_code=exc.status_code, headers=headers)
         except Exception:
             exc = _error("audio_unavailable", 503)
